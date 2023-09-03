@@ -35,4 +35,27 @@ function read_linear_sys(path; sparse_fmt)
 end
 
 
+function calc_effective_diffusivity(c, template)
+    Δc = 1.0
+    L = size(c)[1]
+    A = prod(size(c)) / L
+    rate = nansum(c[1, :, :] - c[2, :, :])
+    Deff = rate * (L-1) / A / Δc
+    return Deff
+end
+
+
+function calc_formation_factor(c, template)
+    Deff = calc_effective_diffusivity(c, template)
+    return 1 / Deff    
+end
+
+
+function calc_tortuosity(c, template)
+    ε = sum(template) / length(template)
+    Deff = calc_effective_diffusivity(c, template)
+    return ε / Deff
+end
+
+
 nothing
