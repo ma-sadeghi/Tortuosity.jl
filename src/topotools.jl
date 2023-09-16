@@ -8,7 +8,7 @@ function laplacian(adjacency)
 end
 
 
-function find_adjacent_indices(im)
+function create_connectivity_list(im)
     im = ndims(im) == 2 ? reshape(im, size(im)..., 1) : im
     nnodes = sum(im)
     nx, ny, nz = size(im)
@@ -39,7 +39,7 @@ function find_boundary_nodes(im, face)
     nnodes = sum(im)
     indices = fill(-1, size(im))
     indices[im] .= 1:nnodes
-    
+
     face_dict = Dict(
         :left   => indices[1, :, :],
         :right  => indices[end, :, :],

@@ -17,7 +17,7 @@ im = denoise(im, 2)
 display(heatmap(im, aspect_ratio=:equal, color=:viridis, clim=(0, 1)))
 
 nnodes = sum(im)
-conns = find_adjacent_indices(im)
+conns = create_connectivity_list(im)
 am = create_adjacency_matrix(conns, nnodes=nnodes, weights=gd)
 A = laplacian(am)
 b = zeros(nnodes)
