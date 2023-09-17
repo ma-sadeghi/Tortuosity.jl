@@ -2,3 +2,5 @@
 
 # Datasets
 *.h5
+*.npz
+*.gz
