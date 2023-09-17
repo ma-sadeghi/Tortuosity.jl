@@ -23,7 +23,7 @@ function create_connectivity_list(im)
 end
 
 
-function create_adjacency_matrix(conns; nnodes, weights=1)
+function create_adjacency_matrix(conns; n, weights=1)
     nedges = size(conns, 1)
     conns = vcat(conns, conns[:, [2, 1]])
     if length(weights) == 1
@@ -31,7 +31,7 @@ function create_adjacency_matrix(conns; nnodes, weights=1)
     elseif length(weights) == nedges
         weights = vcat(weights, weights)
     end
-    sparse(conns[:, 1], conns[:, 2], weights, nnodes, nnodes)
+    sparse(conns[:, 1], conns[:, 2], weights, n, n)
 end
 
 
