@@ -16,7 +16,8 @@ end
 
 
 function apply_gaussian_blur(im, sigma)
-    imfilter(im, Kernel.gaussian(sigma))
+    kernel = Kernel.gaussian(fill(sigma, ndims(im)))
+    imfilter(im, kernel)
 end
 
 
@@ -30,8 +31,13 @@ function disk(r)
 end
 
 
+function ball(r)
+    Bool.([sqrt((i - r - 1)^2 + (j - r - 1)^2 + (k - r - 1)^2) <= r for i in 1:2*r+1, j in 1:2*r+1, k in 1:2*r+1])
+end
+
+
 function denoise(im, kernel_radius)
-    selem = disk(kernel_radius)
+    selem = ndims(im) == 3 ? ball(kernel_radius) : disk(kernel_radius)
     im = closing(im, selem)
     opening(im, selem)
 end
