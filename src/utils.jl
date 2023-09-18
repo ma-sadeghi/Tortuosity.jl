@@ -28,25 +28,35 @@ function read_linear_sys(path; sparse_fmt)
 end
 
 
-function calc_effective_diffusivity(c, template)
+function compute_effective_diffusivity(scalar_field, axis)
     Δc = 1.0
-    L = size(c)[1]
-    A = prod(size(c)) / L
-    rate = nansum(c[1, :, :] - c[2, :, :])
+    axis_idx = Dict(:x => 1, :y => 2, :z => 3)[axis]
+    L = size(scalar_field)[axis_idx]
+    A = prod(size(scalar_field)) / L
+
+    # Extract slices based on the specified axis
+    function slice_at_dim(dim, index)
+        return ntuple(i -> i == dim ? index : :, 3)
+    end
+
+    first_slice = scalar_field[slice_at_dim(axis_idx, 1)...]
+    second_slice = scalar_field[slice_at_dim(axis_idx, 2)...]
+    rate = nansum(first_slice - second_slice)
     Deff = rate * (L-1) / A / Δc
     return Deff
 end
 
 
-function calc_formation_factor(c, template)
-    Deff = calc_effective_diffusivity(c, template)
+function compute_formation_factor(c, axis)
+    Deff = compute_effective_diffusivity(c, axis)
     return 1 / Deff
 end
 
 
-function calc_tortuosity(c, template)
-    ε = sum(template) / length(template)
-    Deff = calc_effective_diffusivity(c, template)
+function compute_tortuosity_factor(c, axis)
+    # !: Assumes that c is NaN-filled outside the pore space
+    ε = sum(isfinite.(c)) / prod(size(c))
+    Deff = compute_effective_diffusivity(c, axis)
     return ε / Deff
 end
 
