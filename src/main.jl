@@ -4,10 +4,12 @@ using CUDA.CUSPARSE
 using LinearSolve
 using NaNStatistics
 using Plots
+using Printf
 using Random
 using SparseArrays
 using Statistics
 
+includet("dnstools.jl")
 includet("imgen.jl")
 includet("numpytools.jl")
 includet("pdetools.jl")
@@ -23,9 +25,9 @@ gpu_id = 1
 
 # %% Generate/load the image
 @info "Generating/loading the voxel image"
-img = blobs(shape=(256, 256, 256), porosity=0.65, blobiness=1)
+img = blobs(shape=(64, 64, 64), porosity=0.65, blobiness=1)
 img = denoise(img, 2)
-display(imshow(img, z_idx=1))
+isinteractive() && display(imshow(img, slice=1))
 @info "Image size: $(size(img))"
 
 # %% Build Ax = b on CPU/GPU
@@ -39,14 +41,11 @@ prob = gpu ? LinearProblem(cu(prob.A), cu(prob.b)) : prob
 @info "Solving the system using KrylovJL_CG"
 @time sol = solve(prob, KrylovJL_CG(), verbose=true, reltol=1.0f-5)
 @info "Average concentration: $(mean(sol.u))"
-# %% Visualize the solution (2D slice)
-isinteractive() && display(imshow(img, vals=sol.u, z_idx=100))
 
+# %% Compute the tortuosity factor and visualize the solution
 c = vec_to_field(sol.u, img)
-tau = calc_tortuosity(c, img)
-ff = calc_formation_factor(c, img)
+tau = compute_tortuosity_factor(c, :x)
+ff = compute_formation_factor(c, :x)
 eps = sum(img) / length(img)
-
-@info "Tortuosity factor: $tau"
-@info "Formation factor: $ff"
-@info "Porosity: $eps"
+@info "τ: $(@sprintf("%.3f", tau)), ℱℱ: $(@sprintf("%.3f", ff)), ε = $(@sprintf("%.3f", eps))"
+isinteractive() && display(imshow(c, slice=1))
