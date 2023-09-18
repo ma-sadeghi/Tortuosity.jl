@@ -23,7 +23,7 @@ function imshow(im; vals=nothing, z_idx=1)
 end
 
 
-function reshape(u, im)
+function vec_to_field(u, im)
     c = fill(NaN, size(im))
     c[im] = Array(u)
     return c

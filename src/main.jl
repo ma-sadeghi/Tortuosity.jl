@@ -42,7 +42,7 @@ prob = gpu ? LinearProblem(cu(prob.A), cu(prob.b)) : prob
 # %% Visualize the solution (2D slice)
 isinteractive() && display(imshow(img, vals=sol.u, z_idx=100))
 
-c = reshape(sol.u, img)
+c = vec_to_field(sol.u, img)
 tau = calc_tortuosity(c, img)
 ff = calc_formation_factor(c, img)
 eps = sum(img) / length(img)
