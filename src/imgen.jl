@@ -43,7 +43,7 @@ function denoise(im, kernel_radius)
 end
 
 
-function blobs(shape, porosity, blobiness)
+function blobs(;shape, porosity, blobiness)
     im = rand(Bool, shape...)
     sigma = mean(shape) / 40 / blobiness
     im = apply_gaussian_blur(im, sigma)
