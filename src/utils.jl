@@ -2,13 +2,6 @@ using HDF5
 using Plots
 
 
-function set_plotsjl_defaults()
-    default()
-    default(size=(600, 400), thickness_scaling=1.25)
-    scalefontsizes(1.25)
-end
-
-
 function read_linear_sys(path; sparse_fmt)
     @assert sparse_fmt in ["csc", "coo"]
     fid = h5open(path, "r")
@@ -22,7 +15,7 @@ function read_linear_sys(path; sparse_fmt)
     # Load matrix-specific attributes
     if sparse_fmt == "csc"
         # NOTE: Convert to 1-based indexing
-        colptr = read(fid["colptr"]) .+ 1   
+        colptr = read(fid["colptr"]) .+ 1
         rowval = read(fid["rowval"]) .+ 1
         spmat_args = (colptr, rowval, nzval, shape)
     elseif sparse_fmt == "coo"
@@ -47,7 +40,7 @@ end
 
 function calc_formation_factor(c, template)
     Deff = calc_effective_diffusivity(c, template)
-    return 1 / Deff    
+    return 1 / Deff
 end
 
 
@@ -60,11 +53,8 @@ end
 
 function parse_args(s::String)
     # Parse command-line arguments in the form of "--key=value"
-    regex = r"--(\w+)=([^\s]+)"    
+    regex = r"--(\w+)=([^\s]+)"
     matches = eachmatch(regex, s)
     pairs = Dict(m.captures[1] => m.captures[2] for m in matches)
     return pairs
 end
-
-
-nothing
