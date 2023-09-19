@@ -33,8 +33,6 @@ fpath, path_export, gpu_id = format_args_dict(args_dict)
 # %% Read the matrix ingredients and the RHS to build Ax = b
 @info "Reading the voxel image"
 img = npzread(fpath)["arr_0"][1:600, 1:600, :]
-# TODO: permute x and z axes until I fix the bug in dnstools.jl
-img = permutedims(img, [3, 2, 1])
 @info "Size of the image: $(size(img))"
 
 # %% Build Ax = b on CPU/GPU

@@ -4,7 +4,7 @@ includet("topotools.jl")
 includet("pdetools.jl")
 
 
-function tortuosity_fdm(img; axis=:x)
+function tortuosity_fdm(img; axis)
     nnodes = sum(img)
     conns = create_connectivity_list🚀(img)
     # * Voxel size = 1 => ℓ = A = 1, set D = 1 => diffusive conductance = 1

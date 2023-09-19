@@ -116,10 +116,10 @@ function find_boundary_nodes(im, face)
     face_dict = Dict(
         :left   => indices[1, :, :],
         :right  => indices[end, :, :],
-        :bottom => indices[:, 1, :],
-        :top    => indices[:, end, :],
-        :front  => indices[:, :, 1],
-        :back   => indices[:, :, end]
+        :bottom => indices[:, :, 1],
+        :top    => indices[:, :, end],
+        :front  => indices[:, 1, :],
+        :back   => indices[:, end, :]
     )
 
     nodes = face_dict[face][:]
