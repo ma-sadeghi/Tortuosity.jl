@@ -14,3 +14,12 @@ function format_args_dict(args_dict)
     gpu_id = parse(Int, args_dict["gpu_id"])
     return fpath, path_export, gpu_id
 end
+
+
+function export_to_hdf5(fname; kwargs...)
+    h5open(fname, "w") do fid
+        for (name, value) in pairs(kwargs)
+            fid[String(name)] = value
+        end
+    end
+end
