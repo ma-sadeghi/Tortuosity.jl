@@ -23,3 +23,10 @@ function export_to_hdf5(fname; kwargs...)
         end
     end
 end
+
+
+function vec_to_field(u, im)
+    c = fill(NaN, size(im))
+    c[im] = Array(u)
+    return c
+end

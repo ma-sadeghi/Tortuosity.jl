@@ -21,10 +21,3 @@ end
 #     u_slice = ndims(im) == 3 ? u[:, :, slice] : u
 #     heatmap(u_slice, aspect_ratio=:equal, color=:viridis, clim=(0, 1))
 # end
-
-
-function vec_to_field(u, im)
-    c = fill(NaN, size(im))
-    c[im] = Array(u)
-    return c
-end
