@@ -1,6 +1,6 @@
 using SparseArrays
 
-includet("numpytools.jl")
+include("numpytools.jl")
 
 
 function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
