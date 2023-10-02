@@ -1,3 +1,5 @@
+module imgen
+
 using Images
 using ImageFiltering
 using ImageMorphology
@@ -43,10 +45,13 @@ function denoise(im, kernel_radius)
 end
 
 
-function blobs(;shape, porosity, blobiness)
+function blobs(;shape, porosity, blobiness, seed=nothing)
+    Random.seed!(seed)
     im = rand(Bool, shape...)
     sigma = mean(shape) / 40 / blobiness
     im = apply_gaussian_blur(im, sigma)
     im = norm_to_uniform(im)
     to_binary(im, porosity)
+end
+
 end
