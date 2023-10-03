@@ -5,9 +5,15 @@ include("imgen.jl")
 include("simulations.jl")
 include("utils.jl")
 
-export imgen
-export vec_to_field
-export TortuositySimulation
-export compute_tortuosity_factor, compute_formation_factor
+# Submodules
+export Imaginator
 
-end
+# Structs
+export TortuositySimulation
+
+# Functions
+export vec_to_field
+export effective_diffusivity, formation_factor, tortuosity
+export phase_fraction
+
+end  # module Tortuosity

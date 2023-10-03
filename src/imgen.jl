@@ -1,4 +1,4 @@
-module imgen
+module Imaginator
 
 using Images
 using ImageFiltering
@@ -54,4 +54,4 @@ function blobs(;shape, porosity, blobiness, seed=nothing)
     to_binary(im, porosity)
 end
 
-end
+end  # module Imaginator
