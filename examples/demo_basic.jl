@@ -1,5 +1,4 @@
 # %% Imports
-using Revise
 using Tortuosity
 using CUDA
 using LinearSolve
