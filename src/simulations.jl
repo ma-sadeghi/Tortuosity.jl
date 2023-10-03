@@ -5,6 +5,17 @@ include("topotools.jl")
 include("pdetools.jl")
 
 
+function interpolate_edge_values(node_vals, conns)
+    nedges = size(conns, 1)
+    edge_vals = similar(node_vals, nedges)
+    for i in 1:nedges
+        m, n = conns[i, :]
+        edge_vals[i] = 1 / (1/node_vals[m] + 1/node_vals[n])
+    end
+    return edge_vals
+end
+
+
 struct TortuositySimulation
     img::AbstractArray{Bool}
     axis::Symbol
@@ -12,11 +23,14 @@ struct TortuositySimulation
 end
 
 
-function TortuositySimulation(img; axis, gpu=nothing)
+function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     nnodes = sum(img)
     conns = create_connectivity_list🚀(img)
-    # Voxel size = 1 => ℓ = A = 1, set D = 1 => diffusive conductance = 1
-    am = create_adjacency_matrix(conns, n=nnodes, weights=1.0)
+
+    # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
+    gd = D === nothing ? 1.0 : interpolate_edge_values(D, conns)
+
+    am = create_adjacency_matrix(conns, n=nnodes, weights=gd)
     # For diffusion, ∇² of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
     b = zeros(nnodes)
