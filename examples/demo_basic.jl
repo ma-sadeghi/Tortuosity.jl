@@ -21,8 +21,8 @@ sim = TortuositySimulation(img, axis=:x, gpu=true);
 
 # %% Compute the tortuosity factor and visualize the solution
 c = vec_to_field(sol.u, img)
-tau = compute_tortuosity_factor(c, :x)
-ff = compute_formation_factor(c, :x)
-eps = sum(img) / length(img)
-@info "τ: $(@sprintf("%.5f", tau)), ℱℱ: $(@sprintf("%.5f", ff)), ε = $(@sprintf("%.5f", eps))"
+tau = tortuosity(c, :x)
+ff = formation_factor(c, :x)
+ε = phase_fraction(img, 1)
+@info "τ: $(@sprintf("%.5f", tau)), ℱ: $(@sprintf("%.5f", ff)), ε = $(@sprintf("%.5f", ε))"
 display(heatmap(c[:, :, 1], aspect_ratio=:equal, clim=(0, 1)))
