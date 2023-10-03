@@ -9,6 +9,8 @@ using Test
     img_open = ones(Bool, (32, 32, 32))
     img_blobs = Imaginator.blobs(shape=(32, 32, 32), porosity=0.65, blobiness=0.5, seed=2)
     eps_blobs = sum(img_blobs) / length(img_blobs)
+    straight_channel = ones(Bool, (32, 32, 32))
+    straight_channel[:, :, 1:16] .= 0
     # Build diffusivity matrix
     D_blobs = fill(NaN, size(img_blobs))
     D_blobs[img_blobs] .= 1.0               # Fluid phase
@@ -48,6 +50,21 @@ using Test
         tau = tortuosity(c_grid, ax)
         # Open space has no tortuosity, i.e., τ = 1
         @test tau ≈ 1.0 atol=1e-4
+    end
+
+    @testset "Straight channel (half-open cube)" begin
+        sim = TortuositySimulation(straight_channel, axis=:x, gpu=false)
+        sol = solve(sim.prob, KrylovJL_CG(), reltol=1e-6)
+        c̄ = mean(sol.u)
+        # Open space has a perfectly linear concentration profile, i.e., c̄ = 0.5
+        @test c̄ ≈ 0.5 atol=1e-4
+        c_grid = vec_to_field(sol.u, straight_channel)
+        tau = tortuosity(c_grid, :x)
+        # Open space has no tortuosity, i.e., τ = 1
+        @test tau ≈ 1.0 atol=1e-4
+        # Formation factor though should be exactly 2 since it's half open
+        ff = formation_factor(c_grid, :x)
+        @test ff ≈ 2.0 atol=1e-4
     end
 
 end
