@@ -47,8 +47,8 @@ function formation_factor(c, axis; D=nothing)
 end
 
 
-function phase_fraction(img, label)
-    return sum(img .== label) / length(img)
+function phase_fraction(img, labels)
+    return sum(sum(img .== label) for label in labels) / length(img)
 end
 
 
