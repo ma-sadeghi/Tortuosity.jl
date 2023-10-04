@@ -30,3 +30,16 @@ function vec_to_field(u, im)
     c[im] = Array(u)
     return c
 end
+
+
+function find_true_indices(a::AbstractArray{Bool})
+    j = 0
+    indices = Vector{Int}(undef, count(a))
+    @inbounds for i in eachindex(a)
+        @inbounds if a[i]
+            j += 1
+            indices[j] = i
+        end
+    end
+    return indices
+end
