@@ -1,5 +1,7 @@
 using SparseArrays
 
+include("utils.jl")
+
 
 function laplacian(adjacency)
     degrees = vec(sum(adjacency, dims=2))
@@ -42,6 +44,11 @@ function create_connectivity_list🚀_L(im)
 end
 
 
+# NOTE: This function has two implementations. The first one is using a copy
+# of the image to store the indices of the nodes. The second one is using a
+# dictionary to store the indices of the nodes. The former is faster, but
+# memory inefficient, especially for low porosity images. The latter is slower,
+# but memory efficient.
 function create_connectivity_list🚀(im)
     im = ndims(im) == 2 ? reshape(im, size(im)..., 1) : im
     nx, ny, nz = size(im)
@@ -49,50 +56,43 @@ function create_connectivity_list🚀(im)
     idx = fill(-1, size(im))
     idx[im] .= 1:sum(im)
 
-    total_conns = (nx-1)*ny*nz + nx*(ny-1)*nz + nx*ny*(nz-1)
-    conns = Matrix{Int}(undef, total_conns, 2)
+    # Uncomment the following lines to use the dictionary implementation
+    # s2i = LinearIndices(im)
+    # n2c = reverse_lookup(im)
 
-    # Create connections
-    ptr = 1
+    total_conns = count(im) * 3
+    conns = Matrix{Int}(undef, total_conns, 2)
+    row = 0
 
     # x-connections
-    for k in 1:nz
-        for j in 1:ny
-            for i in 1:nx-1
-                if im[i, j, k] == 1 && im[i+1, j, k] == 1
-                    conns[ptr, :] .= idx[i, j, k], idx[i+1, j, k]
-                    ptr += 1
-                end
-            end
+    for k in 1:nz, j in 1:ny, i in 1:nx-1
+        if im[i, j, k] && im[i+1, j, k]
+            row += 1
+            conns[row, :] .= idx[i, j, k], idx[i+1, j, k]
+            # conns[row, :] .= n2c[s2i[i, j, k]], n2c[s2i[i+1, j, k]]
         end
     end
 
     # y-connections
-    for k in 1:nz
-        for j in 1:ny-1
-            for i in 1:nx
-                if im[i, j, k] == 1 && im[i, j+1, k] == 1
-                    conns[ptr, :] .= idx[i, j, k], idx[i, j+1, k]
-                    ptr += 1
-                end
-            end
+    for k in 1:nz, j in 1:ny-1, i in 1:nx
+        if im[i, j, k] && im[i, j+1, k]
+            row += 1
+            conns[row, :] .= idx[i, j, k], idx[i, j+1, k]
+            # conns[row, :] .= n2c[s2i[i, j, k]], n2c[s2i[i, j+1, k]]
         end
     end
 
     # z-connections
-    for k in 1:nz-1
-        for j in 1:ny
-            for i in 1:nx
-                if im[i, j, k] == 1 && im[i, j, k+1] == 1
-                    conns[ptr, :] .= idx[i, j, k], idx[i, j, k+1]
-                    ptr += 1
-                end
-            end
+    for k in 1:nz-1, j in 1:ny, i in 1:nx
+        if im[i, j, k] && im[i, j, k+1]
+            row += 1
+            conns[row, :] .= idx[i, j, k], idx[i, j, k+1]
+            # conns[row, :] .= n2c[s2i[i, j, k]], n2c[s2i[i, j, k+1]]
         end
     end
 
     # Resize the connections matrix
-    return conns[1:ptr-1, :]
+    return @view conns[1:row, :]
 end
 
 
