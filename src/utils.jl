@@ -43,3 +43,9 @@ function find_true_indices(a::AbstractArray{Bool})
     end
     return indices
 end
+
+
+function reverse_lookup(im::AbstractArray{Bool})
+    Dict(zip(find_true_indices(im), 1:count(im)))
+    # sparsevec(find_true_indices(im), 1:count(im))
+end
