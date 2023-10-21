@@ -1,9 +1,9 @@
 module Tortuosity
 
-include("dnstools.jl")
-include("imgen.jl")
-include("simulations.jl")
 include("utils.jl")
+include("imgen.jl")
+include("dnstools.jl")
+include("simulations.jl")
 
 # Submodules
 export Imaginator

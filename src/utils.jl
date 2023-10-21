@@ -52,3 +52,13 @@ function reverse_lookup(im::AbstractArray{Bool})
     Dict(zip(find_true_indices(im), 1:count(im)))
     # sparsevec(find_true_indices(im), 1:count(im))
 end
+
+
+"""
+    slice_at_dim(dim, index)
+
+Returns a tuple of `:`s and `index` at the specified dimension `dim`.
+"""
+function slice_at_dim(dim, index)
+    return ntuple(i -> i == dim ? index : :, 3)
+end
