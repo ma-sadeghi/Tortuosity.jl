@@ -8,8 +8,8 @@ using SpecialFunctions
 using Statistics
 
 
-function norm_to_uniform(im)
-    lb, ub = minimum(im), maximum(im)
+function norm_to_uniform(im; scale=(minimum(im), maximum(im)))
+    lb, ub = scale
     im = (im .- mean(im)) / std(im)
     im = 1/2 * erfc.(-im / sqrt(2))
     im = (im .- lb) / (ub - lb)
@@ -18,8 +18,10 @@ end
 
 
 function apply_gaussian_blur(im, sigma)
-    kernel = Kernel.gaussian(fill(sigma, ndims(im)))
-    imfilter(im, kernel)
+    r = size(im) .* 2 .- 1
+    sigma = tuple(fill(sigma, ndims(im))...)
+    kernel = Kernel.gaussian(sigma, r)
+    imfilter(im, kernel, "symmetric")
 end
 
 
@@ -47,10 +49,10 @@ end
 
 function blobs(;shape, porosity, blobiness, seed=nothing)
     Random.seed!(seed)
-    im = rand(Bool, shape...)
+    im = rand(shape...)
     sigma = mean(shape) / 40 / blobiness
     im = apply_gaussian_blur(im, sigma)
-    im = norm_to_uniform(im)
+    im = norm_to_uniform(im, scale=(0, 1))
     to_binary(im, porosity)
 end
 
