@@ -1,7 +1,5 @@
 using SparseArrays
 
-include("utils.jl")
-
 
 function laplacian(adjacency)
     degrees = vec(sum(adjacency, dims=2))
