@@ -57,7 +57,8 @@ end
 """
     slice_at_dim(dim, index)
 
-Returns a tuple of `:`s and `index` at the specified dimension `dim`.
+Returns a tuple of `:`s and `index` at the specified dimension `dim`. For example,
+`slice_at_dim(2, 3)` returns `(:, 3, :)`, i.e., the third slice along the y-axis.
 """
 function slice_at_dim(dim, index)
     return ntuple(i -> i == dim ? index : :, 3)
