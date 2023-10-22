@@ -32,23 +32,21 @@ Returns an array of tuples where each tuple represents
 the start and end indices of a chunk when dividing an
 array of length `n` into `divisions` number of chunks.
 """
-function get_chunks_bounds(n, divisions)
-    chunk_size = ceil(Int, n / divisions)
-    chunks = [(i, min(i + chunk_size - 1, n)) for i in 1:chunk_size:n]
+function find_chunk_bounds(;nelems, ndivs)
+    chunk_size = ceil(Int, nelems / ndivs)
+    chunks = [(i, min(i + chunk_size - 1, nelems)) for i in 1:chunk_size:nelems]
     return chunks
 end
 
 
 function overlap_indices🚀(a, b::Set)
-    n = length(a)
     num_threads = Threads.nthreads()
-
-    # Get chunks based on number of threads
-    bounds = get_chunks_bounds(n, num_threads)
+    # Chunk `a` into `num_threads` number of chunks (might be less)
+    bounds = find_chunk_bounds(nelems=length(a), ndivs=num_threads)
     # Preallocate a list to store each thread's indices
-    thread_indices = Vector{Vector{Int}}(undef, num_threads)
+    thread_indices = Vector{Vector{Int}}(undef, length(bounds))
 
-    Threads.@threads for tid in 1:num_threads
+    Threads.@threads for tid in eachindex(bounds)
         (start_idx, end_idx) = bounds[tid]
         local_indices = Int[]
 
