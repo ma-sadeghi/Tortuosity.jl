@@ -28,5 +28,8 @@ Manifest.toml
 *.npz
 *.gz
 
-# VS Code stuff
+# VS Code
 *.code-workspace
+
+# Julia
+.CondaPkg/
