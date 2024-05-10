@@ -63,3 +63,37 @@ Returns a tuple of `:`s and `index` at the specified dimension `dim`. For exampl
 function slice_at_dim(dim, index)
     return ntuple(i -> i == dim ? index : :, 3)
 end
+
+"""
+    get_taufactor_conc(tau_solver; fill_value=NaN) -> Array{Float64, 3}
+
+Extract the concentration field from a TauFactor solver object. The concentration field is
+normalized to the range [0, 1] and NaN-filled where the conducting phase is absent.
+
+# Arguments
+- `tau_solver::taufactor.Solver`: TauFactor solver object
+
+# Keywords
+- `fill_value::Real=NaN`: Value to fill non-conducting phase voxels
+
+# Returns
+- `c::Array{Float64, 3}`: Concentration field
+"""
+function get_taufactor_conc(tau_solver; fill_value=NaN, normalize=true)
+    # Get needed data from the solver object
+    c = tau_solver.conc
+    bcs = pyconvert(Array{Float64}, [tau_solver.bot_bc, tau_solver.top_bc])
+    c_low, c_high = min(bcs...), max(bcs...)
+    img = pyconvert(Array, tau_solver.cpu_img.squeeze())
+    # NOTE: TauFactor always solves along the x-axis
+    img_padded = pad(img, :replicate, (1, 0, 0))
+    c = isa(c, Py) ? pyconvert(Array, tausolver.conc.squeeze().numpy()) : c
+    # Hardcode BC values; taufactor doesn't update them
+    c[1, :, :] .= 0.5
+    c[end, :, :] .= -0.5
+    # Remove padded voxels (in-plane), and ensure non-conducting phase is NaN-filled
+    c = c[:, 2:(end - 1), 2:(end - 1)]
+    c[.!img] .= fill_value
+    c = normalize ? (c .- c_low) ./ (c_high - c_low) : c
+    return c
+end
