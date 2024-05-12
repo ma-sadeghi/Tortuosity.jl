@@ -157,15 +157,50 @@ function create_connectivity_list🚀🚀(im; inds=nothing)
 end
 
 
-function create_adjacency_matrix(conns; n, weights=1)
+function create_adjacency_matrix(conns; n, weights=1, gpu=false)
+    # TODO: Memory-inefficient implementation, remove the following code
+    # nedges = size(conns, 1)
+    # if length(weights) == 1
+    #     weights = fill(weights, nedges)
+    # elseif length(weights) == nedges
+    #     weights = vcat(weights, weights)
+    # end
+    # am = sparse(conns[:, 1], conns[:, 2], weights, n, n)
+    # return cu(am)
+
+    # Ensure conns describes bidirectional connections
     nedges = size(conns, 1)
-    conns = vcat(conns, conns[:, [2, 1]])
     if length(weights) == 1
-        weights = fill(weights, nedges*2)
-    elseif length(weights) == nedges
-        weights = vcat(weights, weights)
+        weights = fill(weights, nedges)
     end
-    sparse(conns[:, 1], conns[:, 2], weights, n, n)
+
+    # Build colPtr, rowVal, and nzVal
+    rowVal = conns[:, 1]
+    colPtr = Vector{Int}(undef, n+1)
+    j = 1  # colPtr index
+    for (i, col) in enumerate(@view conns[:, 2])
+        if i == 1
+            colPtr[j] = 1
+        end
+        if col != j
+            colPtr[j+1] = i
+            j += 1
+        end
+    end
+    colPtr[end] = nedges + 1
+
+    am = SparseMatrixCSC(n, n, colPtr, rowVal, weights)
+
+    # am = sparse(conns[:, 1], conns[:, 2], weights, n, n)
+
+    return gpu ? cu(am) : am
+
+    # TODO: cu(am) does the job, remove the following code
+    # colPtr = CuVector{Cint}(colPtr)
+    # rowVal = CuVector{Cint}(rowVal)
+    # nzVal = CuVector{Cfloat}(weights)
+    # dims = (n, n)
+    # CUSPARSE.CuSparseMatrixCSC(colPtr, rowVal, nzVal, dims)
 end
 
 
