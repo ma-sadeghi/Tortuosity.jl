@@ -1,6 +1,7 @@
 using LinearSolve
 using Test
 using Tortuosity
+using Statistics
 
 # Set up fixtures
 open_space = ones(Bool, (32, 32, 32))
