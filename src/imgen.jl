@@ -59,9 +59,10 @@ end
 
 function trim_nonpercolating_paths(img, axis)
     ps = pyimport("porespy")
+    shape = img isa Py ? img.shape : size(img)
     axis_idx = Dict(:x => 1, :y => 2, :z => 3)[axis]
-    inlet = ps.generators.faces(size(img); inlet=axis_idx - 1)  # Python 0-based indexing
-    outlet = ps.generators.faces(size(img); outlet=axis_idx - 1)  # Python 0-based indexing
+    inlet = ps.generators.faces(shape; inlet=axis_idx - 1)  # Python 0-based indexing
+    outlet = ps.generators.faces(shape; outlet=axis_idx - 1)  # Python 0-based indexing
     img = ps.filters.trim_nonpercolating_paths(img; inlets=inlet, outlets=outlet)
     return pyconvert(Array{Bool,3}, img)
 end
