@@ -106,11 +106,54 @@ function create_connectivity_list🚀(im; inds=nothing, sort=true, triu=false)
     conns = sort ? sortslices(conns, dims=1, by=x->(x[2], x[1])) : conns
 end
 
+
+function create_connectivity_list🚀🚀(im; inds=nothing)
+    im = ndims(im) == 2 ? reshape(im, size(im)..., 1) : im
+    nx, ny, nz = size(im)
+
+    if inds === nothing
+        idx = similar(im, Int)
+        idx[im] .= 1:sum(im)
+    else
+        idx = inds
+    end
+
+    total_conns = count(im) * 6
+    conns = Matrix{Int}(undef, total_conns, 2)
+    row = 0
+
+    for cid in CartesianIndices(im)
+        i, j, k = cid.I
+        if im[i, j, k]
+            if k > 1 && im[i, j, k-1]
+                row += 1
+                conns[row, :] .= idx[i, j, k-1], idx[i, j, k]
+            end
+            if j > 1 && im[i, j-1, k]
+                row += 1
+                conns[row, :] .= idx[i, j-1, k], idx[i, j, k]
+            end
+            if i > 1 && im[i-1, j, k]
+                row += 1
+                conns[row, :] .= idx[i-1, j, k], idx[i, j, k]
+            end
+            if i < nx && im[i+1, j, k]
+                row += 1
+                conns[row, :] .= idx[i+1, j, k], idx[i, j, k]
+            end
+            if j < ny && im[i, j+1, k]
+                row += 1
+                conns[row, :] .= idx[i, j+1, k], idx[i, j, k]
+            end
+            if k < nz && im[i, j, k+1]
+                row += 1
+                conns[row, :] .= idx[i, j, k+1], idx[i, j, k]
+            end
         end
     end
 
     # Resize the connections matrix
-    return @view conns[1:row, :]
+    return conns[1:row, :]
 end
 
 
