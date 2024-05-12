@@ -2,6 +2,7 @@ using JLD2
 using LinearSolve
 using Test
 using Tortuosity
+using Statistics
 
 # ---------------------------------------- #
 # Generate test data
