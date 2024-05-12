@@ -30,7 +30,7 @@ function create_connectivity_list_L(im)
 end
 
 
-function create_connectivity_list🚀_L(im)
+function create_connectivity_list🚀_L(im, sort=true, triu=false)
     im = ndims(im) == 2 ? reshape(im, size(im)..., 1) : im
     nx, ny, nz = size(im)
 
@@ -45,25 +45,28 @@ function create_connectivity_list🚀_L(im)
 
     # Filter connections
     mask = .!any(conns .== -1, dims=2)
-    return conns[mask[:,1], :]
+    conns = conns[mask[:,1], :]
+
+    # Return full or upper triangular connections
+    conns = triu ? conns : vcat(conns, conns[:, [2, 1]])
+
+    # Sort the connections (by the second column)
+    conns = sort ? sortslices(conns, dims=1, by=x->(x[2], x[1])) : conns
+
+    return conns
 end
 
 
-# NOTE: This function has two implementations. The first one is using a copy
-# of the image to store the indices of the nodes. The second one is using a
-# dictionary to store the indices of the nodes. The former is faster, but
-# memory inefficient, especially for low porosity images. The latter is slower,
-# but memory efficient.
-function create_connectivity_list🚀(im)
+function create_connectivity_list🚀(im; inds=nothing, sort=true, triu=false)
     im = ndims(im) == 2 ? reshape(im, size(im)..., 1) : im
     nx, ny, nz = size(im)
 
-    idx = fill(-1, size(im))
-    idx[im] .= 1:sum(im)
-
-    # Uncomment the following lines to use the dictionary implementation
-    # s2i = LinearIndices(im)
-    # n2c = reverse_lookup(im)
+    if inds === nothing
+        idx = similar(im, Int)
+        idx[im] .= 1:sum(im)
+    else
+        idx = inds
+    end
 
     total_conns = count(im) * 3
     conns = Matrix{Int}(undef, total_conns, 2)
@@ -74,7 +77,6 @@ function create_connectivity_list🚀(im)
         if im[i, j, k] && im[i+1, j, k]
             row += 1
             conns[row, :] .= idx[i, j, k], idx[i+1, j, k]
-            # conns[row, :] .= n2c[s2i[i, j, k]], n2c[s2i[i+1, j, k]]
         end
     end
 
@@ -83,7 +85,6 @@ function create_connectivity_list🚀(im)
         if im[i, j, k] && im[i, j+1, k]
             row += 1
             conns[row, :] .= idx[i, j, k], idx[i, j+1, k]
-            # conns[row, :] .= n2c[s2i[i, j, k]], n2c[s2i[i, j+1, k]]
         end
     end
 
@@ -92,7 +93,19 @@ function create_connectivity_list🚀(im)
         if im[i, j, k] && im[i, j, k+1]
             row += 1
             conns[row, :] .= idx[i, j, k], idx[i, j, k+1]
-            # conns[row, :] .= n2c[s2i[i, j, k]], n2c[s2i[i, j, k+1]]
+        end
+    end
+
+    # Resize the connections matrix
+    conns = conns[1:row, :]
+
+    # Return full or upper triangular connections
+    conns = triu ? conns : vcat(conns, conns[:, [2, 1]])
+
+    # Sort the connections (by the second column)
+    conns = sort ? sortslices(conns, dims=1, by=x->(x[2], x[1])) : conns
+end
+
         end
     end
 
