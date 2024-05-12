@@ -5,49 +5,45 @@
 # the rate from j to i, but with opposite sign. So when we sum the rates, the
 # lateral rates cancel out.
 
-function effective_diffusivity(scalar_field, axis; D=nothing)
-    Δc = 1.0
+function effective_diffusivity(
+    scalar_field, axis; slice=1, D=nothing, L=nothing, Δc=nothing
+)
     axis_idx = Dict(:x => 1, :y => 2, :z => 3)[axis]
-    L = size(scalar_field)[axis_idx]
-    A = prod(size(scalar_field)) / L
-
-    # Extract slices based on the specified axis
-    function slice_at_dim(dim, index)
-        return ntuple(i -> i == dim ? index : :, 3)
-    end
+    L = L === nothing ? size(scalar_field)[axis_idx] : L
+    # NOTE: If L is provided, don't use it to compute A since it might not be the actual L
+    A = prod(size(scalar_field)) / size(scalar_field, axis_idx)
+    c₁ = nanmean(selectdim(scalar_field, axis_idx, 1))
+    c₂ = nanmean(selectdim(scalar_field, axis_idx, size(scalar_field)[axis_idx]))
+    Δc = Δc === nothing ? c₁ - c₂ : Δc
 
     # Extract the conductance of first and second slices if D is provided
     # NOTE: voxel size = 1 => gd = D⋅A/ℓ = D
-    D1 = D === nothing ? 1.0 : D[slice_at_dim(axis_idx, 1)...]
-    D2 = D === nothing ? 1.0 : D[slice_at_dim(axis_idx, 2)...]
+    D1 = D === nothing ? 1.0 : selectdim(D, axis_idx, slice)
+    D2 = D === nothing ? 1.0 : selectdim(D, axis_idx, slice + 1)
     D12 = 1 ./ (0.5 ./ D1 + 0.5 ./ D2)
 
-    first_slice = scalar_field[slice_at_dim(axis_idx, 1)...]
-    second_slice = scalar_field[slice_at_dim(axis_idx, 2)...]
+    first_slice = selectdim(scalar_field, axis_idx, slice)
+    second_slice = selectdim(scalar_field, axis_idx, slice + 1)
     rate = nansum(D12 .* (first_slice - second_slice))
-    Deff = rate * (L-1) / A / Δc
+    Deff = rate * (L - 1) / A / Δc
     return Deff
 end
 
-
-function tortuosity(c, axis; D=nothing, eps=nothing)
-    # !: Assumes that c is NaN-filled outside the pore space
+function tortuosity(c, axis; slice=1, eps=nothing, D=nothing, L=nothing, Δc=nothing)
+    # NOTE: Assumes that c is NaN-filled outside the pore space
     ε = eps === nothing ? sum(isfinite.(c)) / prod(size(c)) : eps
-    Deff = effective_diffusivity(c, axis, D=D)
+    Deff = effective_diffusivity(c, axis; slice=slice, D=D, L=L, Δc=Δc)
     return ε / Deff
 end
 
-
-function formation_factor(c, axis; D=nothing)
-    Deff = effective_diffusivity(c, axis, D=D)
+function formation_factor(c, axis; slice=1, D=nothing, L=nothing, Δc=nothing)
+    Deff = effective_diffusivity(c, axis; slice=slice, D=D, L=L, Δc=Δc)
     return 1 / Deff
 end
-
 
 function phase_fraction(img, labels)
     return sum(sum(img .== label) for label in labels) / length(img)
 end
-
 
 function phase_fraction(img)
     labels = unique(img)
