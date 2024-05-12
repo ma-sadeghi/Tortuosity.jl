@@ -7,14 +7,12 @@ function args_to_dict(args)
     return pairs
 end
 
-
 function format_args_dict(args_dict)
     fpath = args_dict["fpath"]
     path_export = args_dict["path_export"]
     gpu_id = parse(Int, args_dict["gpu_id"])
     return fpath, path_export, gpu_id
 end
-
 
 function export_to_hdf5(fname; kwargs...)
     h5open(fname, "w") do fid
@@ -24,13 +22,11 @@ function export_to_hdf5(fname; kwargs...)
     end
 end
 
-
 function vec_to_field(u, im)
     c = fill(NaN, size(im))
     c[im] = Array(u)
     return c
 end
-
 
 function find_true_indices(a::AbstractArray{Bool})
     j = 0
@@ -44,9 +40,8 @@ function find_true_indices(a::AbstractArray{Bool})
     return indices
 end
 
-
 function reverse_lookup(im::AbstractArray{Bool})
-    Dict(zip(find_true_indices(im), 1:count(im)))
+    return Dict(zip(find_true_indices(im), 1:count(im)))
     # sparsevec(find_true_indices(im), 1:count(im))
 end
 
