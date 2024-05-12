@@ -27,9 +27,17 @@ Manifest.toml
 *.h5
 *.npz
 *.gz
+*.npy
 
 # VS Code
 *.code-workspace
 
 # Julia
 .CondaPkg/
+
+# Binaries
+*.so
+
+# Temporary files
+images/
+temp/
