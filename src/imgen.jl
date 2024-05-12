@@ -16,14 +16,14 @@ function norm_to_uniform(im; scale=(minimum(im), maximum(im)))
     im = im * (ub - lb) .+ lb
 end
 
-
-function apply_gaussian_blur(im, sigma)
-    r = size(im) .* 2 .- 1
-    sigma = tuple(fill(sigma, ndims(im))...)
-    kernel = Kernel.gaussian(sigma, r)
-    imfilter(im, kernel, "symmetric")
+function apply_gaussian_blur(img, sigma)
+    # sigma = tuple(fill(sigma, ndims(im))...)
+    # kernel = Kernel.gaussian(sigma)
+    # imfilter(im, kernel, "symmetric")
+    ndi = pyimport("scipy.ndimage")
+    im_f = ndi.gaussian_filter(img, sigma)
+    return pyconvert(Array, im_f)
 end
-
 
 function to_binary(im, threshold=0.5)
     map(x -> x < threshold ? true : false, im)
