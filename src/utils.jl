@@ -1,6 +1,3 @@
-using HDF5
-
-
 function args_to_dict(args)
     s = join(args, " ")
     # Parse command-line arguments in the form of "--key=value"

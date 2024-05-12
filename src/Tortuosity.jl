@@ -1,8 +1,16 @@
 module Tortuosity
 
+using CUDA
+using HDF5
+using LinearSolve
+using NaNStatistics
+using SparseArrays
+
 include("utils.jl")
 include("imgen.jl")
 include("dnstools.jl")
+include("topotools.jl")
+include("pdetools.jl")
 include("simulations.jl")
 
 # Submodules
