@@ -4,11 +4,10 @@ function interpolate_edge_values(node_vals, conns)
     edge_vals = similar(node_vals, nedges)
     for i in 1:nedges
         m, n = conns[i, :]
-        edge_vals[i] = 1 / (1/node_vals[m] + 1/node_vals[n])
+        edge_vals[i] = 1 / (1 / node_vals[m] + 1 / node_vals[n])
     end
     return edge_vals
 end
-
 
 struct TortuositySimulation
     img::AbstractArray{Bool}
@@ -16,6 +15,9 @@ struct TortuositySimulation
     prob::LinearProblem
 end
 
+function Base.show(io::IO, ts::TortuositySimulation)
+    return print(io, "TortuositySimulation($(size(ts.img)), $(ts.axis))")
+end
 
 function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     nnodes = sum(img)
@@ -24,15 +26,13 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
     gd = D === nothing ? 1.0 : interpolate_edge_values(D, conns)
 
-    am = create_adjacency_matrix(conns, n=nnodes, weights=gd, gpu=gpu)
+    am = create_adjacency_matrix(conns; n=nnodes, weights=gd, gpu=gpu)
     # For diffusion, ∇² of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
     b = zeros(nnodes)
 
     axis_to_boundaries = Dict(
-        :x => (:left, :right),
-        :y => (:front, :back),
-        :z => (:bottom, :top)
+        :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
     )
 
     inlet, outlet = axis_to_boundaries[axis]
@@ -42,7 +42,7 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     # Apply a fixed concentration drop of 1.0 between inlet and outlet
     bc_nodes = vcat(inlet, outlet)
     bc_vals = vcat(fill(1.0, length(inlet)), fill(0.0, length(outlet)))
-    apply_dirichlet_bc🚀!(A, b, nodes=bc_nodes, vals=bc_vals)
+    apply_dirichlet_bc🚀!(A, b; nodes=bc_nodes, vals=bc_vals)
     # TODO: Apply BCs at once is faster, remove the following code
     # apply_dirichlet_bc🚀!(A, b, nodes=inlet, vals=1.0)
     # apply_dirichlet_bc🚀!(A, b, nodes=outlet, vals=0.0)

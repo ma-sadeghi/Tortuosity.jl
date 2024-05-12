@@ -1,13 +1,8 @@
-using SparseArrays
-
-include("numpytools.jl")
-
-
 function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
     diag_inds = SparseArrays.diagind(A)[nodes]
     diag_vals = SparseArrays.diag(A)[nodes]
     # Add contribution from BCs to the RHS
-    x_bc = multihotvec(nodes, length(b), vals=vals)
+    x_bc = multihotvec(nodes, length(b); vals=vals)
     b .-= A * x_bc
     # Zero out rows and columns corresponding to BCs
     I, J, _ = findnz(A)
@@ -17,15 +12,14 @@ function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
     # Ensure Dirichlet BCs are satisfied
     A[diag_inds] .= diag_vals
     b[nodes] .= vals .* diag_vals
-    dropzeros!(A)
+    return dropzeros!(A)
 end
-
 
 function apply_dirichlet_bc🚀!(A::SparseMatrixCSC, b; nodes, vals)
     diag_inds = SparseArrays.diagind(A)[nodes]
     diag_vals = SparseArrays.diag(A)[nodes]
     # Add contribution from BCs to the RHS
-    x_bc = multihotvec(nodes, length(b), vals=vals)
+    x_bc = multihotvec(nodes, length(b); vals=vals)
     b .-= A * x_bc
     # Zero out rows and columns corresponding to BCs
     I, J, _ = findnz(A)
@@ -35,5 +29,5 @@ function apply_dirichlet_bc🚀!(A::SparseMatrixCSC, b; nodes, vals)
     # Ensure Dirichlet BCs are satisfied
     A[diag_inds] .= diag_vals
     b[nodes] .= vals .* diag_vals
-    dropzeros!(A)
+    return dropzeros!(A)
 end
