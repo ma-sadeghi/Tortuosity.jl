@@ -16,7 +16,10 @@ struct TortuositySimulation
 end
 
 function Base.show(io::IO, ts::TortuositySimulation)
-    return print(io, "TortuositySimulation($(size(ts.img)), $(ts.axis))")
+    gpu = ts.prob.b isa CuArray
+    return print(
+        io, "TortuositySimulation(shape=$(size(ts.img)), axis=$(ts.axis), gpu=$(gpu))"
+    )
 end
 
 function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
