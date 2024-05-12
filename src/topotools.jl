@@ -8,10 +8,10 @@ function spdiagm(v::CuArray)
 end
 
 
-function laplacian(adjacency)
-    degrees = vec(sum(adjacency, dims=2))
-    degree_matrix = SparseArrays.spdiagm(0 => degrees)
-    return degree_matrix - adjacency
+function laplacian(am)
+    degrees = vec(sum(am, dims=2))
+    degree_matrix = SparseArrays.spdiagm(degrees)
+    return degree_matrix - am
 end
 
 
