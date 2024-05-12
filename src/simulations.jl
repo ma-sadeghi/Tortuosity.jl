@@ -1,10 +1,3 @@
-using CUDA
-using LinearSolve
-
-include("topotools.jl")
-include("pdetools.jl")
-
-
 function interpolate_edge_values(node_vals, conns)
     nedges = size(conns, 1)
     edge_vals = similar(node_vals, nedges)

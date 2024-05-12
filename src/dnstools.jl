@@ -1,6 +1,3 @@
-using NaNStatistics
-
-
 # NOTE: Why do we only compute the rate along the specified axis? What about
 # the lateral rates (like what Transport.rate does in OpenPNM)? We can do
 # that, but it won't make a difference because the lateral rates get cancelled
