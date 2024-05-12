@@ -1,4 +1,5 @@
 function interpolate_edge_values(node_vals, conns)
+    @assert length(node_vals) == maximum(conns)
     nedges = size(conns, 1)
     edge_vals = similar(node_vals, nedges)
     for i in 1:nedges
