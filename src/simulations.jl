@@ -40,8 +40,12 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     outlet = find_boundary_nodes(img, outlet)
 
     # Apply a fixed concentration drop of 1.0 between inlet and outlet
-    apply_dirichlet_bc🚀!(A, b, nodes=inlet, vals=1.0)
-    apply_dirichlet_bc🚀!(A, b, nodes=outlet, vals=0.0)
+    bc_nodes = vcat(inlet, outlet)
+    bc_vals = vcat(fill(1.0, length(inlet)), fill(0.0, length(outlet)))
+    apply_dirichlet_bc🚀!(A, b, nodes=bc_nodes, vals=bc_vals)
+    # TODO: Apply BCs at once is faster, remove the following code
+    # apply_dirichlet_bc🚀!(A, b, nodes=inlet, vals=1.0)
+    # apply_dirichlet_bc🚀!(A, b, nodes=outlet, vals=0.0)
 
     # Offload to GPU if requested, otherwise default to GPU if nnodes >= 100_000
     gpu = gpu === nothing ? (nnodes >= 100_000 ? true : false) : gpu
