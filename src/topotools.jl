@@ -1,4 +1,11 @@
-using SparseArrays
+function spdiagm(v::CuArray)
+    nnz = length(v)
+    colPtr = cu(collect(1:nnz+1))
+    rowVal = cu(collect(1:nnz))
+    nzVal = v
+    dims = (nnz, nnz)
+    return CUSPARSE.CuSparseMatrixCSC(colPtr, rowVal, nzVal, dims)
+end
 
 
 function laplacian(adjacency)
