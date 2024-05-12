@@ -1,0 +1,8 @@
+[pip.deps]
+numpy = ""
+openpnm = ""
+porespy = ""
+scipy = ""
+taufactor = ""
+torch = ""
+torchvision = ""
