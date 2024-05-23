@@ -64,7 +64,7 @@ function trim_nonpercolating_paths(img, axis)
     inlet = ps.generators.faces(shape; inlet=axis_idx - 1)  # Python 0-based indexing
     outlet = ps.generators.faces(shape; outlet=axis_idx - 1)  # Python 0-based indexing
     img = ps.filters.trim_nonpercolating_paths(img; inlets=inlet, outlets=outlet)
-    return pyconvert(Array{Bool,3}, img)
+    return pyconvert(Array{Bool}, img)
 end
 
 end  # module Imaginator
