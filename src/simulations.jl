@@ -26,6 +26,9 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     nnodes = sum(img)
     conns = create_connectivity_list🚀🚀(img)
 
+    # Offload to GPU if requested, otherwise default to GPU if nnodes >= 100_000
+    gpu = gpu === nothing ? (nnodes >= 100_000 ? true : false) : gpu
+
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
     gd = D === nothing ? 1.0 : interpolate_edge_values(D, conns)
 
@@ -50,8 +53,6 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     # apply_dirichlet_bc🚀!(A, b, nodes=inlet, vals=1.0)
     # apply_dirichlet_bc🚀!(A, b, nodes=outlet, vals=0.0)
 
-    # Offload to GPU if requested, otherwise default to GPU if nnodes >= 100_000
-    gpu = gpu === nothing ? (nnodes >= 100_000 ? true : false) : gpu
     A, b = gpu ? (cu(A), cu(b)) : (A, b)
 
     return TortuositySimulation(img, axis, LinearProblem(A, b))
