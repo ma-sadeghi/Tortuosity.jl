@@ -181,3 +181,9 @@ function multihotvec(indices, n; vals=1.0)
     vec[indices] .= vals
     return vec
 end
+
+function multihotvec(indices::CuArray, n; vals=1.0)
+    vec = CUDA.zeros(n)
+    vec[indices] .= vals
+    return vec
+end
