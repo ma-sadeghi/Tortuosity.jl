@@ -1,6 +1,6 @@
 name = "Tortuosity"
 uuid = "80bb5c7f-3561-4bbc-a7c3-5e29a4cab6cc"
-authors = ["Amin Sadeghi <amin.sadeghi@live.com> and contributors"]
+authors = ["Amin Sadeghi <amin.sadeghi@live.com>"]
 version = "0.0.1-DEV"
 
 [deps]
@@ -8,6 +8,7 @@ AlgebraicMultigrid = "2169fc97-5a83-5252-b627-83903c6c433c"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Comonicon = "863f3e99-da2a-4334-8734-de3dacbe5542"
 CondaPkg = "992eb4ea-22a4-4c89-a5bb-47a3300528ab"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
 ImageFiltering = "6a3955dd-da59-5b1f-98d4-e7296123deb5"
 ImageMorphology = "787d08f9-d448-5407-9aad-5290dd7ab264"
