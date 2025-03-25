@@ -41,3 +41,6 @@ Manifest.toml
 # Temporary files
 images/
 temp/
+
+# System prompts
+.github/copilot-commit-message-instructions.md
