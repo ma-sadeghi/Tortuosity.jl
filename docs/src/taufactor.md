@@ -1,4 +1,4 @@
-# What's wrong with `taufactor`
+# Why not TauFactor?
 
 For the most part, [taufactor](https://github.com/tldr-group/taufactor) is a great package to compute the tortuosity factor of porous media. However, it has two main drawbacks, which are addressed by `Tortuosity.jl`:
 
