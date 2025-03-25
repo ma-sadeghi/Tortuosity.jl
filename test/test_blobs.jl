@@ -34,7 +34,8 @@ using Tortuosity: TortuositySimulation, tortuosity, vec_to_grid
 # ---------------------------------------- #
 
 # Set up fixtures
-test_data = load("blobs.jld2")
+fpath = joinpath(@__DIR__, "blobs.jld2")
+test_data = load(fpath)
 img = test_data["img"]
 tau_gt = test_data["tau"]
 c̄_gt = test_data["c̄"]
