@@ -1,12 +1,11 @@
 # %% Imports
-using Tortuosity
-using Tortuosity: TortuositySimulation, tortuosity, formation_factor, vec_to_grid
-
+using BenchmarkTools
 using CUDA
 using LinearSolve
 using Plots
 using Printf
-using BenchmarkTools
+using Tortuosity
+using Tortuosity: TortuositySimulation, formation_factor, tortuosity, vec_to_grid
 
 # %% Generate/load the image
 show_plots = false
