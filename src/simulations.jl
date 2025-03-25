@@ -34,7 +34,7 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
     gd = D === nothing ? 1.0 : interpolate_edge_values(D, conns)
 
-    am = create_adjacency_matrix(conns; n=nnodes, weights=gd, gpu=gpu)
+    am = create_adjacency_matrix(conns; n=nnodes, weights=gd, gpu=false)
     # For diffusion, ∇² of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
     b = zeros(nnodes)
