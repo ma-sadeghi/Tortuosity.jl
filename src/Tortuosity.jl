@@ -5,7 +5,6 @@ using HDF5
 using LinearSolve
 using NaNStatistics
 using SparseArrays
-using Plots
 
 include("utils.jl")
 include("imgen.jl")
