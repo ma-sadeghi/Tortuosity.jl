@@ -1,9 +1,9 @@
 # NOTE: Why do we only compute the rate along the specified axis? What about
-# the lateral rates (like what Transport.rate does in OpenPNM)? We can do
-# that, but it won't make a difference because the lateral rates get cancelled
-# out. Picture two adjacent pores i, j: The rate from i to j is the same as
-# the rate from j to i, but with opposite sign. So when we sum the rates, the
-# lateral rates cancel out.
+#  the lateral rates (like what Transport.rate does in OpenPNM)? We can do
+#  that, but it won't make a difference because the lateral rates get cancelled
+#  out. Picture two adjacent pores i, j: The rate from i to j is the same as
+#  the rate from j to i, but with opposite sign. So when we sum the rates, the
+#  lateral rates cancel out.
 
 function effective_diffusivity(
     scalar_field, axis; slice=1, D=nothing, L=nothing, Δc=nothing
