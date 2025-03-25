@@ -9,11 +9,12 @@ using Tortuosity: TortuositySimulation, formation_factor, tortuosity, vec_to_gri
 
 # %% Generate/load the image
 show_plots = false
+gpu = false
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2);
 show_plots && display(heatmap(img[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)));
 
 # %% Build Ax = b on CPU/GPU
-sim = TortuositySimulation(img; axis=:x, gpu=false);
+sim = TortuositySimulation(img; axis=:x, gpu=gpu);
 
 # %% Solve Ax = b using an iterative solver
 @time sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
