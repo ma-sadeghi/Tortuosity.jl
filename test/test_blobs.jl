@@ -1,8 +1,9 @@
 using JLD2
 using LinearSolve
+using Statistics
 using Test
 using Tortuosity
-using Statistics
+using Tortuosity: TortuositySimulation, tortuosity, vec_to_grid
 
 # ---------------------------------------- #
 # Generate test data
@@ -48,7 +49,7 @@ D[.!img] .= 1e-4            # Solid phase
     sol = solve(sim.prob, KrylovJL_CG(); reltol=1e-6)
     c̄ = mean(sol.u)
     @test c̄ ≈ c̄_gt[ax] atol = 1e-4
-    c_grid = vec_to_field(sol.u, img)
+    c_grid = vec_to_grid(sol.u, img)
     tau = tortuosity(c_grid, ax)
     @test tau ≈ tau_gt[ax] atol = 1e-4
 end
@@ -59,7 +60,7 @@ end
     sol = solve(sim.prob, KrylovJL_CG(); reltol=1e-6)
     c̄ = mean(sol.u[img[:]])
     @test c̄ ≈ c̄_gt[ax] atol = 1e-2
-    c_grid = vec_to_field(sol.u, domain)
+    c_grid = vec_to_grid(sol.u, domain)
     tau = tortuosity(c_grid, ax; eps=ε, D=D)
     @test tau ≈ tau_gt[ax] atol = 1e-2
 end
