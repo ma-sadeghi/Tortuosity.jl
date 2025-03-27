@@ -51,7 +51,7 @@ D[.!img] .= 1e-4            # Solid phase
     c̄ = mean(sol.u)
     @test c̄ ≈ c̄_gt[ax] atol = 1e-4
     c_grid = vec_to_grid(sol.u, img)
-    tau = tortuosity(c_grid, ax)
+    tau = tortuosity(c_grid, axis=ax)
     @test tau ≈ tau_gt[ax] atol = 1e-4
 end
 
@@ -62,6 +62,6 @@ end
     c̄ = mean(sol.u[img[:]])
     @test c̄ ≈ c̄_gt[ax] atol = 1e-2
     c_grid = vec_to_grid(sol.u, domain)
-    tau = tortuosity(c_grid, ax; eps=ε, D=D)
+    tau = tortuosity(c_grid, axis=ax; eps=ε, D=D)
     @test tau ≈ tau_gt[ax] atol = 1e-2
 end
