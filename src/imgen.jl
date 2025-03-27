@@ -64,7 +64,7 @@ function faces(shape; inlet=nothing, outlet=nothing)
     return img
 end
 
-function trim_nonpercolating_paths(img, axis)
+function trim_nonpercolating_paths(img; axis)
     shape = img isa Py ? img.shape : size(img)
     dim = Dict(:x => 1, :y => 2, :z => 3)[axis]
     inlet = faces(shape; inlet=dim)

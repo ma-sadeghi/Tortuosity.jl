@@ -16,7 +16,7 @@ straight_channel[:, :, 1:16] .= 0
     # Open space has a perfectly linear concentration profile, i.e., c̄ = 0.5
     @test c̄ ≈ 0.5 atol = 1e-4
     c_grid = vec_to_grid(sol.u, open_space)
-    tau = tortuosity(c_grid, ax)
+    tau = tortuosity(c_grid; axis=ax)
     # Open space has no tortuosity, i.e., τ = 1
     @test tau ≈ 1.0 atol = 1e-4
 end
@@ -28,10 +28,10 @@ end
     # Open space has a perfectly linear concentration profile, i.e., c̄ = 0.5
     @test c̄ ≈ 0.5 atol = 1e-4
     c_grid = vec_to_grid(sol.u, straight_channel)
-    tau = tortuosity(c_grid, :x)
+    tau = tortuosity(c_grid; axis=:x)
     # Open space has no tortuosity, i.e., τ = 1
     @test tau ≈ 1.0 atol = 1e-4
     # Formation factor though should be exactly 2 since it's half open
-    ff = formation_factor(c_grid, :x)
+    ff = formation_factor(c_grid, axis=:x)
     @test ff ≈ 2.0 atol = 1e-4
 end

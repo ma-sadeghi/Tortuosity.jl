@@ -6,7 +6,7 @@
 #  lateral rates cancel out.
 
 function effective_diffusivity(
-    scalar_field, axis; slice=1, D=nothing, L=nothing, Δc=nothing
+    scalar_field; axis, slice=1, D=nothing, L=nothing, Δc=nothing
 )
     axis_idx = Dict(:x => 1, :y => 2, :z => 3)[axis]
     L = L === nothing ? size(scalar_field)[axis_idx] : L
@@ -29,15 +29,15 @@ function effective_diffusivity(
     return Deff
 end
 
-function tortuosity(c, axis; slice=1, eps=nothing, D=nothing, L=nothing, Δc=nothing)
+function tortuosity(c; axis, slice=1, eps=nothing, D=nothing, L=nothing, Δc=nothing)
     # NOTE: Assumes that c is NaN-filled outside the pore space
     ε = eps === nothing ? sum(isfinite.(c)) / prod(size(c)) : eps
-    Deff = effective_diffusivity(c, axis; slice=slice, D=D, L=L, Δc=Δc)
+    Deff = effective_diffusivity(c; axis=axis, slice=slice, D=D, L=L, Δc=Δc)
     return ε / Deff
 end
 
-function formation_factor(c, axis; slice=1, D=nothing, L=nothing, Δc=nothing)
-    Deff = effective_diffusivity(c, axis; slice=slice, D=D, L=L, Δc=Δc)
+function formation_factor(c; axis, slice=1, D=nothing, L=nothing, Δc=nothing)
+    Deff = effective_diffusivity(c; axis=axis, slice=slice, D=D, L=L, Δc=Δc)
     return 1 / Deff
 end
 
