@@ -3,7 +3,6 @@ module Imaginator
 using ImageFiltering
 using ImageMorphology
 using Images
-using PythonCall
 using Random
 using SpecialFunctions
 using Statistics
