@@ -16,8 +16,12 @@ include("simulations.jl")
 
 # Submodules
 export Imaginator
+export KrylovJL_CG
 
 # Structs
 export TortuositySimulation
+
+# Functions
+export solve
 
 end  # module Tortuosity
