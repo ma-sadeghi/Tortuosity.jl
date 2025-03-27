@@ -17,12 +17,9 @@ function norm_to_uniform(img; scale=(minimum(img), maximum(img)))
 end
 
 function apply_gaussian_blur(img, sigma)
-    # sigma = tuple(fill(sigma, ndims(im))...)
-    # kernel = Kernel.gaussian(sigma)
-    # imfilter(im, kernel, "symmetric")
-    ndi = pyimport("scipy.ndimage")
-    im_f = ndi.gaussian_filter(img, sigma)
-    return pyconvert(Array, im_f)
+    sigma = tuple(fill(sigma, ndims(img))...)
+    kernel = Kernel.gaussian(sigma)
+    return imfilter(img, kernel, "symmetric")
 end
 
 function to_binary(img, threshold=0.5)
@@ -57,14 +54,26 @@ function blobs(; shape, porosity, blobiness, seed=nothing)
     return to_binary(im, porosity)
 end
 
+function faces(shape; inlet=nothing, outlet=nothing)
+    if isnothing(inlet) && isnothing(outlet)
+        error("Must provide at least one `inlet` or `outlet`")
+    end
+    img = zeros(Bool, shape)
+    !isnothing(inlet) ? selectdim(img, inlet, 1) .= true : nothing
+    !isnothing(outlet) ? selectdim(img, outlet, size(img)[outlet]) .= true : nothing
+    return img
+end
+
 function trim_nonpercolating_paths(img, axis)
-    ps = pyimport("porespy")
     shape = img isa Py ? img.shape : size(img)
-    axis_idx = Dict(:x => 1, :y => 2, :z => 3)[axis]
-    inlet = ps.generators.faces(shape; inlet=axis_idx - 1)  # Python 0-based indexing
-    outlet = ps.generators.faces(shape; outlet=axis_idx - 1)  # Python 0-based indexing
-    img = ps.filters.trim_nonpercolating_paths(img; inlets=inlet, outlets=outlet)
-    return pyconvert(Array{Bool}, img)
+    dim = Dict(:x => 1, :y => 2, :z => 3)[axis]
+    inlet = faces(shape; inlet=dim)
+    outlet = faces(shape; outlet=dim)
+    labels = label_components(img)
+    labels_percolating = intersect(labels[inlet], labels[outlet])
+    setdiff!(labels_percolating, 0)  # Remove background label
+    img_percolating = in.(labels, Ref(Set(labels_percolating)))
+    return img_percolating
 end
 
 end  # module Imaginator
