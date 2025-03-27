@@ -1,5 +1,0 @@
-[pip.deps]
-numpy = ""
-openpnm = ""
-porespy = ""
-scipy = ""
