@@ -21,14 +21,13 @@ Pkg.add("Tortuosity")
 ## Usage
 
 ```julia
-using CUDA
-using LinearSolve
 using Tortuosity
 using Tortuosity: TortuositySimulation, formation_factor, tortuosity, vec_to_grid
 
 # Generate a test image
 gpu = true
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2);
+img = Imaginator.trim_nonpercolating_paths(img, axis=:x)
 
 # Define the simulation
 sim = TortuositySimulation(img; axis=:x, gpu=gpu);
@@ -39,6 +38,6 @@ sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 # Convert the solution vector to an Nd grid
 c_grid = vec_to_grid(sol.u, img)  
 # Compute the tortuosity factor
-τ = tortuosity(c_grid, :x)
+τ = tortuosity(c_grid, axis=:x)
 println("τ = $τ")
 ```
