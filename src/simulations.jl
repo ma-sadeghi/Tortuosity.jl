@@ -29,7 +29,7 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     # NOTE: Offload to GPU if requested, otherwise default to GPU if nnodes >= 100_000
     #  and CUDA is available. This is a heuristic to avoid GPU overhead for small
     #  problems. The user can override this with the gpu argument.
-    gpu = gpu === nothing ? ((nnodes >= 100_000) && CUDA.functional() ? true : false) : gpu
+    gpu = gpu !== nothing ? gpu : (nnodes >= 100_000) && CUDA.functional()
 
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
     gd = D === nothing ? 1.0 : interpolate_edge_values(D, conns)
