@@ -64,14 +64,14 @@ function faces(shape; inlet=nothing, outlet=nothing)
 end
 
 function trim_nonpercolating_paths(img; axis)
-    shape = img isa Py ? img.shape : size(img)
+    shape = size(img)
     dim = Dict(:x => 1, :y => 2, :z => 3)[axis]
     inlet = faces(shape; inlet=dim)
     outlet = faces(shape; outlet=dim)
     labels = label_components(img)
     labels_percolating = intersect(labels[inlet], labels[outlet])
     setdiff!(labels_percolating, 0)  # Remove background label
-    img_percolating = in.(labels, Ref(Set(labels_percolating)))
+    img_percolating = in.(labels, Ref(Set(labels_percolating)))  # Ref to avoid broadcasting
     return img_percolating
 end
 
