@@ -1,9 +1,8 @@
 using JLD2
-using LinearSolve
 using Statistics
 using Test
 using Tortuosity
-using Tortuosity: TortuositySimulation, tortuosity, vec_to_grid
+using Tortuosity: tortuosity, vec_to_grid
 
 # ---------------------------------------- #
 # Generate test data

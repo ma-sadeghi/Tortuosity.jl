@@ -1,8 +1,7 @@
-using LinearSolve
 using Statistics
 using Test
 using Tortuosity
-using Tortuosity: TortuositySimulation, formation_factor, tortuosity, vec_to_grid
+using Tortuosity: formation_factor, tortuosity, vec_to_grid
 
 # Set up fixtures
 open_space = ones(Bool, (32, 32, 32))
