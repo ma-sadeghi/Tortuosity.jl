@@ -176,14 +176,9 @@ julia> multihotvec([1, 3, 4], 6, vals=[0.1, 0.3, 0.2])
  0.0
 ```
 """
-function multihotvec(indices, n; vals=1.0)
-    vec = zeros(n)
-    vec[indices] .= vals
-    return vec
-end
-
-function multihotvec(indices::CuArray, n; vals=1.0)
-    vec = CUDA.zeros(n)
+function multihotvec(indices, n; vals=1.0, gpu=false)
+    vals isa Array ? (gpu ? (@assert vals isa CuArray "vals must be a CuArray") : nothing) : nothing
+    vec = gpu ? CUDA.zeros(n) : zeros(n)
     vec[indices] .= vals
     return vec
 end
