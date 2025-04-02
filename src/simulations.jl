@@ -17,27 +17,25 @@ end
 
 function Base.show(io::IO, ts::TortuositySimulation)
     gpu = ts.prob.b isa CuArray
-    return print(
-        io, "TortuositySimulation(shape=$(size(ts.img)), axis=$(ts.axis), gpu=$(gpu))"
-    )
+    msg = "TortuositySimulation(shape=$(size(ts.img)), axis=$(ts.axis), gpu=$(gpu))"
+    return print(io, msg)
 end
 
 function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     nnodes = sum(img)
-    conns = create_connectivity_list🚀🚀(img)
 
-    # NOTE: Offload to GPU if requested, otherwise default to GPU if nnodes >= 100_000
-    #  and CUDA is available. This is a heuristic to avoid GPU overhead for small
-    #  problems. The user can override this with the gpu argument.
-    gpu = gpu !== nothing ? gpu : (nnodes >= 100_000) && CUDA.functional()
+    # If gpu is not specified, use GPU if the image is large enough
+    gpu = !isnothing(gpu) ? gpu : (nnodes >= 100_000) && CUDA.functional()
+    img = gpu ? cu(img) : img
+
+    conns = create_connectivity_list(img)
 
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
-    gd = D === nothing ? 1.0 : interpolate_edge_values(D, conns)
-
-    am = create_adjacency_matrix(conns; n=nnodes, weights=gd, gpu=false)
+    gd = D === nothing ? 1.0f0 : interpolate_edge_values(D, conns)
+    am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
     # For diffusion, ∇² of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
-    b = zeros(nnodes)
+    b = gpu ? CUDA.zeros(nnodes) : zeros(nnodes)
 
     axis_to_boundaries = Dict(
         :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
@@ -50,12 +48,10 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     # Apply a fixed concentration drop of 1.0 between inlet and outlet
     bc_nodes = vcat(inlet, outlet)
     bc_vals = vcat(fill(1.0, length(inlet)), fill(0.0, length(outlet)))
+    # Pre-process for GPU if needed
+    bc_nodes = gpu ? Int32.(bc_nodes) : bc_nodes
+    bc_vals = gpu ? cu(bc_vals) : bc_vals
     apply_dirichlet_bc🚀!(A, b; nodes=bc_nodes, vals=bc_vals)
-    # TODO: Apply BCs at once is faster, remove the following code
-    # apply_dirichlet_bc🚀!(A, b, nodes=inlet, vals=1.0)
-    # apply_dirichlet_bc🚀!(A, b, nodes=outlet, vals=0.0)
-
-    A, b = gpu ? (cu(A), cu(b)) : (A, b)
 
     return TortuositySimulation(img, axis, LinearProblem(A, b))
 end
