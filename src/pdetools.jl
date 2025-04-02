@@ -52,6 +52,5 @@ function apply_dirichlet_bc🚀!(A::CUDA.CUSPARSE.CuSparseMatrixCSC, b; nodes, v
     # Apply BCs x[i] = vals[i] via diag[i] * x[i] = diag[i] * vals[i]
     set_diag!(A, diag_vals)
     b[nodes] .= vals .* diag_vals[nodes]
-    println(typeof(A))
     dropzeros!(A)
 end
