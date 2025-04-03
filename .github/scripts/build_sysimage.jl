@@ -2,28 +2,20 @@ using PackageCompiler
 using Libdl # To get the correct file extension
 
 @info "Julia build script started."
-@info "Number of args: ", length(ARGS)
-for (i, arg) in enumerate(ARGS)
-    @info "Arg $i: $arg"
-end
-
-if length(ARGS) != 2
-    error("Usage: build_sysimage_script.jl <output_base_name> <cpu_target>")
-end
 
 # --- Configuration from Command Line Arguments ---
-output_base_name = ARGS[1]
-cpu_target_to_use = ARGS[2]
+output_name = "TortuositySysimage-$(Sys.MACHINE)"
+cpu_target = "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)"
 packages_to_compile = ["Tortuosity"] # Ensure this matches your package name/module
 precompile_script = ".github/scripts/precompile.jl" # Assumed to be in repo root relative to workflow execution dir
 
 # --- Print Configuration ---
 @info "--- Sysimage Build Configuration ---"
-@info "Packages: ", packages_to_compile
-@info "Output Base: ", output_base_name
-@info "Precompile Script: ", precompile_script
-@info "CPU Target: ", cpu_target_to_use
-@info "---------------------------------"
+@info "Packages: $packages_to_compile"
+@info "Output: $output_name"
+@info "Precompile Script: $precompile_script"
+@info "CPU Target: $cpu_target"
+@info "------------------------------------"
 
 # --- Validation ---
 if !isfile(precompile_script)
@@ -35,13 +27,13 @@ end
 
 # --- Build ---
 expected_extension = ".$(Libdl.dlext)"
-output_path = output_base_name * expected_extension
+output_path = output_name * expected_extension
 @info "Calling create_sysimage..."
 
 create_sysimage(
     packages_to_compile;
     sysimage_path=output_path,
-    cpu_target=cpu_target_to_use,
+    cpu_target=cpu_target,
     include_transitive_dependencies=true,
     precompile_args..., # Splat the NamedTuple containing precompile arg if applicable
 )
