@@ -28,11 +28,6 @@ jobs:
             fname: TortuositySysimage-windows-x86_64
             cpu_target: generic
           - os: macos-latest
-            arch: x86_64
-            target: macos-x86_64
-            fname: TortuositySysimage-macos-x86_64
-            cpu_target: generic
-          - os: macos-14
             arch: arm64
             target: macos-aarch64
             fname: TortuositySysimage-macos-aarch64
@@ -48,11 +43,14 @@ jobs:
           version: ${{ matrix.julia-version }}
           arch: ${{ matrix.arch }}
 
+      - uses: julia-actions/cache@v2
+
       - name: Instantiate project environment
         run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
       - name: Add PackageCompiler
         run: julia --project=. -e 'using Pkg; Pkg.add("PackageCompiler")'
+
       - name: Build the sysimage using external script
         run: |
           echo "Running Julia build script..."
