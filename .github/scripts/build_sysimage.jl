@@ -48,12 +48,16 @@ else
     @info "Successfully built sysimage: $output_path"
     # Set environment variables for subsequent GitHub Actions steps
     # This is the modern way using environment files
-    github_env_file = ENV["GITHUB_ENV"]
-    open(github_env_file, "a") do io
-        println(io, "SYSIMAGE_ARTIFACT_PATH=$output_path")
-        println(io, "SYSIMAGE_ARTIFACT_NAME=$output_path")
+    if "GITHUB_ENV" in keys(ENV)
+        github_env_file = ENV["GITHUB_ENV"]
+        open(github_env_file, "a") do io
+            println(io, "SYSIMAGE_ARTIFACT_PATH=$output_path")
+            println(io, "SYSIMAGE_ARTIFACT_NAME=$output_path")
+        end
+        @info "Wrote artifact path/name to GITHUB_ENV"
+    else
+        @warn "GITHUB_ENV not found in environment variables. Cannot set artifact path/name for subsequent steps."
     end
-    @info "Wrote artifact path/name to GITHUB_ENV"
 end
 
 @info "Julia build script finished successfully."
