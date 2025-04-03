@@ -1,0 +1,47 @@
+name: Test Sysimage
+on:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - "1"
+        os:
+          - ubuntu-latest
+        arch:
+          - x64
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+          arch: ${{ matrix.arch }}
+
+      - uses: julia-actions/cache@v2
+
+      - name: Download sysimage
+        run: |
+          RELEASE_URL="https://api.github.com/repos/ma-sadeghi/Tortuosity.jl/releases/latest"
+          ARTIFACT_NAME="TortuositySysimage-x86_64-linux-gnu.so"
+          curl -s $RELEASE_URL \
+            | jq -r --arg name "$ARTIFACT_NAME" '.assets[] | select(.name==$name) | .browser_download_url' \
+            | xargs curl -L -o $ARTIFACT_NAME
+
+      - name: Test sysimage
+        run: |
+          ARTIFACT_NAME="TortuositySysimage-x86_64-linux-gnu.so"
+          TEST_SCRIPT=".github/scripts/test_sysimage.jl"
+          julia --startup-file=no --project=. $TEST_SCRIPT
+          julia -J$ARTIFACT_NAME --startup-file=no $TEST_SCRIPT
