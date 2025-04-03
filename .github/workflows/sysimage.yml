@@ -1,0 +1,101 @@
+name: Build Julia Sysimages
+
+on:
+  workflow_dispatch:
+
+# Grant permissions to read repo contents and write to releases
+permissions:
+  contents: write # Needed for gh release upload
+
+jobs:
+  build:
+    name: Build Sysimage for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # Keep running other jobs even if one fails
+      matrix:
+        julia-version: ["1.11"] # Specify your desired Julia version
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            target: linux-x86_64
+            fname: TortuositySysimage-linux-x86_64
+            cpu_target: generic
+          - os: windows-latest
+            arch: x86_64
+            target: windows-x86_64
+            fname: TortuositySysimage-windows-x86_64
+            cpu_target: generic
+          - os: macos-latest
+            arch: x86_64
+            target: macos-x86_64
+            fname: TortuositySysimage-macos-x86_64
+            cpu_target: generic
+          - os: macos-14
+            arch: arm64
+            target: macos-aarch64
+            fname: TortuositySysimage-macos-aarch64
+            cpu_target: generic
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia-version }}
+          arch: ${{ matrix.arch }}
+
+      - name: Instantiate project environment
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Add PackageCompiler
+        run: julia --project=. -e 'using Pkg; Pkg.add("PackageCompiler")'
+      - name: Build the sysimage using external script
+        run: |
+          echo "Running Julia build script..."
+          julia \
+            --color=yes \
+            --startup-file=no \
+            --project=. \
+            .github/scripts/build_sysimage.jl "${{ matrix.fname }}" "${{ matrix.cpu_target }}"
+
+      - name: Get latest release tag
+        # Give this step an ID to reference its output (though we use env var now)
+        id: latest_release
+        run: |
+          echo "Fetching latest release tag..."
+          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || echo "")
+          if [[ -z "$TAG" ]]; then
+            echo "No releases found. Skipping upload to release."
+            # Set flag to skip upload step
+            echo "SKIP_UPLOAD=true" >> $GITHUB_ENV
+          else
+            echo "Latest release tag: $TAG"
+            echo "LATEST_TAG=$TAG" >> $GITHUB_ENV
+            echo "SKIP_UPLOAD=false" >> $GITHUB_ENV
+          fi
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Use GH_TOKEN instead of GITHUB_TOKEN for gh cli
+
+      - name: Upload artifact to latest release (if exists)
+        # Only run if a release tag was found in the previous step
+        if: env.SKIP_UPLOAD == 'false'
+        run: |
+          # SYSIMAGE_ARTIFACT_PATH and NAME are populated by the Julia script via GITHUB_ENV
+          echo "Attempting to upload ${{ env.SYSIMAGE_ARTIFACT_NAME }} to release ${{ env.LATEST_TAG }}..."
+          gh release upload ${{ env.LATEST_TAG }} ${{ env.SYSIMAGE_ARTIFACT_PATH }} --clobber
+          echo "Upload command executed."
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Use GH_TOKEN for gh cli
+
+      - name: Upload build artifact (for viewing results of manual runs)
+        # Always run this to store artifacts temporarily, regardless of release status
+        uses: actions/upload-artifact@v4
+        with:
+          name: sysimage-${{ matrix.target }} # Name of the artifact zip file
+          path: ${{ env.SYSIMAGE_ARTIFACT_PATH }} # Path from Julia script via GITHUB_ENV
+          if-no-files-found: error # Fail if the file wasn't created
