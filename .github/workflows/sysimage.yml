@@ -12,6 +12,10 @@ jobs:
   build:
     name: Build Sysimage for ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    defaults:
+        run:
+          shell: bash
+
     strategy:
       fail-fast: false # Keep running other jobs even if one fails
       matrix:
