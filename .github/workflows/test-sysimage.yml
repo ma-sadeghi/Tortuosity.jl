@@ -36,9 +36,7 @@ jobs:
           RELEASE_URL="https://api.github.com/repos/ma-sadeghi/Tortuosity.jl/releases/latest"
           ARTIFACT_NAME="TortuositySysimage-x86_64-linux-gnu.so"
           curl -s $RELEASE_URL \
-            | jq -r --arg name "$ARTIFACT_NAME" '.assets[] \
-            | select(.name==$ARTIFACT_NAME) \
-            | .browser_download_url' \
+            | jq -r --arg name "$ARTIFACT_NAME" '.assets[] | select(.name==$name) | .browser_download_url' \
             | xargs curl -L -o $ARTIFACT_NAME
 
       - name: Test sysimage
