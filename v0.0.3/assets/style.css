@@ -1,0 +1,12 @@
+a.docs-logo img {
+    rotate: 90deg;
+    border-radius: 5px;
+}
+
+#documenter .docs-sidebar .docs-logo>img {
+    max-height: 9rem;
+}
+
+pre {
+    border-radius: 5px;
+}
