@@ -40,12 +40,3 @@ function formation_factor(c; axis, slice=1, D=nothing, L=nothing, Δc=nothing)
     Deff = effective_diffusivity(c; axis=axis, slice=slice, D=D, L=L, Δc=Δc)
     return 1 / Deff
 end
-
-function phase_fraction(img, labels)
-    return sum(sum(img .== label) for label in labels) / length(img)
-end
-
-function phase_fraction(img)
-    labels = unique(img)
-    return Dict(label => phase_fraction(img, label) for label in labels)
-end

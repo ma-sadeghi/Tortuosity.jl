@@ -75,4 +75,13 @@ function trim_nonpercolating_paths(img; axis)
     return img_percolating
 end
 
+function phase_fraction(img, labels)
+    return sum(sum(img .== label) for label in labels) / length(img)
+end
+
+function phase_fraction(img)
+    labels = unique(img)
+    return Dict(label => phase_fraction(img, label) for label in labels)
+end
+
 end  # module Imaginator
