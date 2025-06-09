@@ -1,6 +1,6 @@
 using Test
 using Tortuosity
-using Tortuosity: phase_fraction
+using Tortuosity.Imaginator: phase_fraction
 
 # Set up fixtures
 img = ones(UInt8, (32, 32, 32))
