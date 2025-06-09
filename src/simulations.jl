@@ -38,9 +38,17 @@ end
 function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
-    D = D === nothing ? nothing : atleast_3d(D)
-    nnodes = sum(img)
+    @assert img isa AbstractArray{Bool} "Image must be a boolean array"
+    D = isnothing(D) ? nothing : atleast_3d(D)
 
+    # Deal with variable diffusivity
+    if D isa AbstractArray
+        @assert size(D) == size(img) "Diffusivity matrix D must match image size"
+        @assert count(D .> 0) == count(img) "Diffusivity matrix D must have the same \
+            number of non-zero elements as the image"
+    end
+
+    nnodes = sum(img)
     # If gpu is not specified, use GPU if the image is large enough
     gpu = !isnothing(gpu) ? gpu : (nnodes >= 100_000) && CUDA.functional()
 
@@ -55,7 +63,8 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     conns = create_connectivity_list(img)
 
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
-    gd = D === nothing ? D0 : interpolate_edge_values(D, conns)
+    # NOTE: D[img] since D might contain non-conducting values (e.g., when using a subdomain)
+    gd = isnothing(D) ? D0 : interpolate_edge_values(D[img], conns)
     am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
     # For diffusion, ∇² of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
