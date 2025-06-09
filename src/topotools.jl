@@ -17,7 +17,7 @@ function create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
     img = ndims(img) == 2 ? reshape(img, size(img)..., 1) : img
     nx, ny, nz = size(img)
 
-    if inds === nothing
+    if isnothing(inds)
         idx = similar(img, Int)
         idx[img] .= 1:sum(img)
     else
@@ -76,7 +76,7 @@ function create_connectivity_list(img::CuArray{Bool}; inds=nothing)
     num_true = 0
 
     # --- Determine num_true and create idx_gpu ---
-    if inds === nothing
+    if isnothing(inds)
         linear_indices_gpu = findall(img) # Potentially expensive?
         num_true = length(linear_indices_gpu)
         if num_true == 0
