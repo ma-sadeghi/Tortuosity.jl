@@ -1,11 +1,25 @@
+# function interpolate_edge_values(node_vals, conns)
+#     @assert length(node_vals) == maximum(conns)
+#     nedges = size(conns, 1)
+#     edge_vals = similar(node_vals, nedges)
+#     for i in 1:nedges
+#         m, n = conns[i, :]
+#         edge_vals[i] = 1 / (1 / node_vals[m] + 1 / node_vals[n])
+#     end
+#     return edge_vals
+# end
+
 function interpolate_edge_values(node_vals, conns)
+    # Ensure both arrays are on the same device (GPU if conns is on GPU)
     @assert length(node_vals) == maximum(conns)
-    nedges = size(conns, 1)
-    edge_vals = similar(node_vals, nedges)
-    for i in 1:nedges
-        m, n = conns[i, :]
-        edge_vals[i] = 1 / (1 / node_vals[m] + 1 / node_vals[n])
-    end
+
+    # Extract node indices for all edges at once
+    P1 = @view conns[:, 1]
+    P2 = @view conns[:, 2]
+
+    # Vectorized harmonic mean calculation
+    edge_vals = 1 ./ (1 ./ node_vals[P1] .+ 1 ./ node_vals[P2])
+
     return edge_vals
 end
 
@@ -21,22 +35,32 @@ function Base.show(io::IO, ts::TortuositySimulation)
     return print(io, msg)
 end
 
-function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
+function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
+    verbose && @info "Preprocessing image..."
+    img = atleast_3d(img)
+    D = D === nothing ? nothing : atleast_3d(D)
     nnodes = sum(img)
 
     # If gpu is not specified, use GPU if the image is large enough
     gpu = !isnothing(gpu) ? gpu : (nnodes >= 100_000) && CUDA.functional()
-    img = gpu ? cu(img) : img
 
+    # Move stuff to GPU if needed
+    verbose && gpu && @info "Using GPU..."
+    img = gpu ? cu(img) : img
+    D0 = gpu ? 1.0f0 : 1.0
+    D = isnothing(D) ? nothing : (gpu ? cu(D) : D)
+    b = gpu ? CUDA.zeros(nnodes) : zeros(nnodes)
+
+    verbose && @info "Creating connectivity list and adjacency matrices..."
     conns = create_connectivity_list(img)
 
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
-    gd = D === nothing ? 1.0f0 : interpolate_edge_values(D, conns)
+    gd = D === nothing ? D0 : interpolate_edge_values(D, conns)
     am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
     # For diffusion, ∇² of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
-    b = gpu ? CUDA.zeros(nnodes) : zeros(nnodes)
 
+    verbose && @info "Setting up boundary conditions..."
     axis_to_boundaries = Dict(
         :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
     )
