@@ -188,13 +188,13 @@ julia> multihotvec([1, 3, 4], 6, vals=[0.1, 0.3, 0.2])
  0.0
 ```
 """
-function multihotvec(indices, n; vals=1.0, gpu=false)
-    if vals isa Array
-        (gpu ? (@assert vals isa CuArray "vals must be a CuArray") : nothing)
-    else
-        nothing
+function multihotvec(indices::AbstractArray, n::Int; vals=1.0, gpu=false)
+    if vals isa AbstractArray
+        @assert length(indices) == length(vals) "indices and vals must have the same length"
+        vals = gpu ? cu(vals) : vals
     end
-    vec = gpu ? CUDA.zeros(n) : zeros(n)
+    @assert n >= maximum(indices) "n must be >= max(indices)"
+    vec = gpu ? CUDA.zeros(eltype(vals), n) : zeros(eltype(vals), n)
     vec[indices] .= vals
     return vec
 end
