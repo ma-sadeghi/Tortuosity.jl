@@ -22,9 +22,10 @@ function export_to_hdf5(fname; kwargs...)
     end
 end
 
-function vec_to_grid(u, im)
-    c = fill(NaN, size(im))
-    c[im] = Array(u)
+function vec_to_grid(u, img::AbstractArray{Bool})
+    @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
+    c = fill(NaN, size(img))
+    c[img] = Array(u)
     return c
 end
 
