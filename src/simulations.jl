@@ -35,8 +35,8 @@ function Base.show(io::IO, ts::TortuositySimulation)
     return print(io, msg)
 end
 
-function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
-    @info "Preprocessing image..."
+function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
+    verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
     D = D === nothing ? nothing : atleast_3d(D)
     nnodes = sum(img)
@@ -45,13 +45,13 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     gpu = !isnothing(gpu) ? gpu : (nnodes >= 100_000) && CUDA.functional()
 
     # Move stuff to GPU if needed
-    gpu && @info "Using GPU..."
+    verbose && gpu && @info "Using GPU..."
     img = gpu ? cu(img) : img
     D0 = gpu ? 1.0f0 : 1.0
     D = isnothing(D) ? nothing : (gpu ? cu(D) : D)
     b = gpu ? CUDA.zeros(nnodes) : zeros(nnodes)
 
-    @info "Creating connectivity list and adjacency matrices..."
+    verbose && @info "Creating connectivity list and adjacency matrices..."
     conns = create_connectivity_list(img)
 
     # Voxel size = 1 => gd = D⋅A/ℓ = D (since D is at nodes -> interpolate to edges)
@@ -60,7 +60,7 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing)
     # For diffusion, ∇² of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
 
-    @info "Setting up boundary conditions..."
+    verbose && @info "Setting up boundary conditions..."
     axis_to_boundaries = Dict(
         :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
     )
