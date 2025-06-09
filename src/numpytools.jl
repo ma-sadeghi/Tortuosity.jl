@@ -1,3 +1,15 @@
+function atleast_3d(x)
+    if ndims(x) == 0
+        reshape([x], 1, 1, 1)
+    elseif ndims(x) == 1
+        reshape(x, length(x), 1, 1)
+    elseif ndims(x) == 2
+        reshape(x, size(x)..., 1)
+    else
+        x  # Already 3D or higher
+    end
+end
+
 """
     isin👎(a::AbstractArray, b::AbstractArray)
 
@@ -177,7 +189,11 @@ julia> multihotvec([1, 3, 4], 6, vals=[0.1, 0.3, 0.2])
 ```
 """
 function multihotvec(indices, n; vals=1.0, gpu=false)
-    vals isa Array ? (gpu ? (@assert vals isa CuArray "vals must be a CuArray") : nothing) : nothing
+    if vals isa Array
+        (gpu ? (@assert vals isa CuArray "vals must be a CuArray") : nothing)
+    else
+        nothing
+    end
     vec = gpu ? CUDA.zeros(n) : zeros(n)
     vec[indices] .= vals
     return vec
