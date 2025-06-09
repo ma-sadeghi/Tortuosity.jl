@@ -1,6 +1,6 @@
 # Tortuosity.jl
 
-`Tortuosity.jl` is a GPU-accelerated solver to compute the tortuosity factor ($\tau$) of voxel images of porous media. You can think of `Tortuosity.jl` as the equivalent of [TauFactor](https://www.mathworks.com/matlabcentral/fileexchange/57956-taufactor) toolbox in MATLAB, or [taufactor](https://github.com/tldr-group/taufactor) in Python, but faster.
+`Tortuosity.jl` is a GPU-accelerated solver to compute the tortuosity factor ($\tau$) of voxel images of porous media. You can think of `Tortuosity.jl` as the equivalent of [TauFactor](https://www.mathworks.com/matlabcentral/fileexchange/57956-taufactor) toolbox in MATLAB, or [taufactor](https://github.com/tldr-group/taufactor) in Python, but a bit faster.
 
 ## Installation
 
@@ -17,17 +17,23 @@ To compute the tortuosity factor of a voxel image, you can use the following wor
 
 ```julia
 using Tortuosity
-using Tortuosity: TortuositySimulation, tortuosity, vec_to_grid
-using Tortuosity: Imaginator
+using Tortuosity: tortuosity, vec_to_grid
 
-# Create a random 3D voxel image using Gaussian noise
-img = Imaginator.blobs(shape=(100, 100, 100), porosity=0.4, blobiness=1.5)
+USE_GPU = true
+
+# Generate a test image
+img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2);
 img = Imaginator.trim_nonpercolating_paths(img, axis=:x)
 
-# Compute the tortuosity factor
-sim = TortuositySimulation(img; axis=:x, gpu=true);
+# Define the simulation
+sim = TortuositySimulation(img; axis=:x, gpu=USE_GPU);
+
+# Solve the system of equations
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
-c_grid = vec_to_grid(sol.u, img)  # Convert the solution vector to a grid
-τ = tortuosity(c_grid, axis=:x)
-@info "Tortuosity factor: $τ"
+
+# Convert the solution vector to an Nd grid
+c = vec_to_grid(sol.u, img)
+# Compute the tortuosity factor
+τ = tortuosity(c; axis=:x)
+println("τ = $τ")
 ```

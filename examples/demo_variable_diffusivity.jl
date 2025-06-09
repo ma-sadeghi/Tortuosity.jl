@@ -17,7 +17,6 @@ USE_GPU = true
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 
 PLOT && display(heatmap(img[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)))
-ε = sum(img) / length(img)
 
 # Example 1: Use entire image as domain
 # D = zeros(size(img))
@@ -45,7 +44,7 @@ sol = solve(sim.prob, KrylovJL_CG())
 
 c = vec_to_grid(sol.u, domain)
 PLOT && display(heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)))
-tau = tortuosity(c; axis=:x, eps=ε, D=D)
+tau = tortuosity(c; axis=:x, D=D)
 @info "τ (variable diffusivity): $(@sprintf("%.5f", tau))"
 
 # %% ------------------------------------------------------
