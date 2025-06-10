@@ -48,9 +48,9 @@ savefig("c-readme.svg"); nothing # hide
 ```
 
 ```@example
-HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-readme.svg"))><figcaption>Original binary image</figcaption></figure>""") # hide
+HTML("""<figure><img src="img-readme.svg"><figcaption>Original binary image</figcaption></figure>""") # hide
 ```
 
 ```@example
-HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-readme.svg"))><figcaption>Concentration field</figcaption></figure>""") # hide
+HTML("""<figure><img src="c-readme.svg"><figcaption>Concentration field</figcaption></figure>""") # hide
 ```
