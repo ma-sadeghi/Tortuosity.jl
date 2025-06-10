@@ -15,7 +15,7 @@ Pkg.add("Tortuosity")
 
 To compute the tortuosity factor of a voxel image, you can use the following workflow:
 
-```julia
+```@example
 using Plots
 using Tortuosity
 using Tortuosity: tortuosity, vec_to_grid
