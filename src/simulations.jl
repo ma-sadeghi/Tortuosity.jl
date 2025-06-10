@@ -18,7 +18,7 @@ function interpolate_edge_values(node_vals, conns)
     P2 = @view conns[:, 2]
 
     # Vectorized harmonic mean calculation
-    edge_vals = 1 ./ (1 ./ node_vals[P1] .+ 1 ./ node_vals[P2])
+    edge_vals = 1 ./ (1 ./ node_vals[P1] / 2 .+ 1 ./ node_vals[P2] / 2)
 
     return edge_vals
 end
