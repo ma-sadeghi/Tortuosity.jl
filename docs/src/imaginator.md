@@ -26,15 +26,10 @@ heatmap(img[:, :, 1]; aspect_ratio=:equal, clim=(0, 1))
 savefig("blobs-trimmed.svg"); nothing # hide
 ```
 
-```@raw html
-<figure>
-    <img src="./blobs-init.svg"
-         alt="Initial blobs image">
-    <figcaption>Initial blobs image</figcaption>
-</figure>
-<figure>
-    <img src="./blobs-trimmed.svg"
-         alt="Trimmed blobs image">
-    <figcaption>Blobs image after trimming non-percolating paths</figcaption>
-</figure>
+```@example
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"blobs-init.svg"))><figcaption>Initial blobs image</figcaption></figure>""") # hide
+```
+
+```@example
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"blobs-trimmed.svg"))><figcaption>Blobs image after trimming non-percolating paths</figcaption></figure>""") # hide
 ```

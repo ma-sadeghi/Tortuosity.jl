@@ -43,18 +43,12 @@ heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1))
 savefig("c-plot.svg"); nothing # hide
 ```
 
-```@raw html
-<figure>
-    <img src="./img-plot.svg"
-         alt="Original binary">
-    <figcaption>Original binary image used to assign diffusivity</figcaption>
-</figure>
+```@example
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-plot.svg"))><figcaption>Original binary image used to assign diffusivity</figcaption></figure>""") # hide
+```
 
-<figure>
-    <img src="./c-plot.svg"
-         alt="Concentration field">
-    <figcaption>Concentration field for the entire domain</figcaption>
-</figure>
+```@example
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-plot.svg"))><figcaption>Concentration field for the entire domain</figcaption></figure>""") # hide
 ```
 
 Note that we passed `domain` and not `img` to the `TortuositySimulation` constructor, since we are using the entire image (both true and false voxels) as the domain, and we only use the `img` to generate the diffusivity field.
@@ -97,17 +91,12 @@ heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1))
 savefig("c-plot-partial-domain.svg"); nothing # hide
 ```
 
-```@raw html
-<figure>
-    <img src="./img-plot-partial-domain.svg"
-         alt="Binary image">
-    <figcaption>Original binary image used to assign diffusivity</figcaption>
-</figure>
-<figure>
-    <img src="./c-plot-partial-domain.svg"
-         alt="Concentration field for the subdomain">
-    <figcaption>Concentration field</figcaption>
-</figure>
+```@example
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-plot-partial-domain.svg"))><figcaption>Original binary image used to assign diffusivity</figcaption></figure>""") # hide
+```
+
+```@example
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-plot-partial-domain.svg"))><figcaption>Concentration field</figcaption></figure>""") # hide
 ```
 
 Note that in this case, `domain` is essentially the same as `img`, but we still define it separately to demonstrate how to use a variable diffusivity field. The diffusivity field `D` is defined only for the conducting voxels, and the non-conducting voxels are set to zero.
