@@ -2,6 +2,7 @@ using Documenter
 using Tortuosity
 
 ENV["GKSwstype"] = "100"
+const buildpath = haskey(ENV, "CI") ? ".." : ""
 
 format = Documenter.HTML(;
     edit_link="main",
