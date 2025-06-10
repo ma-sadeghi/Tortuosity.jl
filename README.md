@@ -24,7 +24,7 @@ Pkg.add("Tortuosity")
 using Tortuosity
 using Tortuosity: tortuosity, vec_to_grid
 
-USE_GPU = true
+USE_GPU = false
 
 # Generate a test image
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2);
