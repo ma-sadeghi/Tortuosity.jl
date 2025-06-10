@@ -12,7 +12,7 @@ Assume you have a binary image where the true voxels are 5x more conductive than
 using Tortuosity
 using Tortuosity: tortuosity, vec_to_grid
 
-USE_GPU = true
+USE_GPU = false
 
 # Generate a test image
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
@@ -67,7 +67,7 @@ This example is similar to the first one, but we only consider a subdomain of th
 using Tortuosity
 using Tortuosity: tortuosity, vec_to_grid
 
-USE_GPU = true
+USE_GPU = false
 
 # Generate a test image
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
