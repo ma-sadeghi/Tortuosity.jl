@@ -1,7 +1,7 @@
 name = "Tortuosity"
 uuid = "80bb5c7f-3561-4bbc-a7c3-5e29a4cab6cc"
 authors = ["Amin Sadeghi <amin.sadeghi@live.com>"]
-version = "0.0.4"
+version = "0.0.5"
 
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
