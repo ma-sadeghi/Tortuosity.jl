@@ -33,4 +33,10 @@ img[:, :, 21:32] .= 5
         @test phase_fraction(img, [0, 1, 5]) ≈ ε0 + ε1 + ε5 atol=1e-4
     end
 
+    @testset "Scalar and array inputs match" begin
+        @test phase_fraction(img, [0]) ≈ phase_fraction(img, 0) atol=1e-4
+        @test phase_fraction(img, [1]) ≈ phase_fraction(img, 1) atol=1e-4
+        @test phase_fraction(img, [5]) ≈ phase_fraction(img, 5) atol=1e-4
+    end
+
 end
