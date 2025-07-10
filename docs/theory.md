@@ -8,7 +8,7 @@ A voxel image is basically a 2D/3D array of 0s and 1s denoting solid and void, r
 
 The tortuosity factor is a geometric property of the medium loosely defined as the extra length molecules need to traverse on average (via diffusion) to travel between opposing faces, e.g., $x=0$ and $x=\ell_x$, normalized by the direct length (e.g., $\ell_x$). Clearly, the tortuosity factor is direction-dependent and can be computed along each of the main principal axes of the image.
 
-With this definition, open space has a torutosity factor of 1, while a maze has a tortuosity factor equal to the length of the maze divided by the direct length.
+With this definition, open space has a tortuosity factor of 1, while a maze has a tortuosity factor equal to the length of the maze divided by the direct length.
 
 ## Computing tortuosity
 
