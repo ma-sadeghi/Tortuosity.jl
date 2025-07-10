@@ -5,7 +5,7 @@
 > [!WARNING]  
 > We've just released `Tortuosity.jl` on the official Julia package registry. However, it is still under active development, and the API might change.
 
-`Tortuosity.jl` is a Julia package for calculating the tortuosity factor of volumetric images. It is designed to be fast and efficient, leveraging the power of Julia's multiple dispatch to support GPU acceleration right out of the box. You can consider it as a Julia version of the well-known [TauFactor](https://github.com/tldr-group/taufactor), but more efficient and robust (read the [comparison](https://ma-sadeghi.github.com/Tortuosity.jl/taufactor) for more details).
+`Tortuosity.jl` is a Julia package for calculating the tortuosity factor of volumetric images. It is designed to be fast and efficient, leveraging the power of Julia's multiple dispatch to support GPU acceleration right out of the box. You can consider it as a Julia version of the well-known [TauFactor](https://github.com/tldr-group/taufactor), but more efficient and robust (read the [comparison](https://ma-sadeghi.github.io/Tortuosity.jl/taufactor) for more details).
 
 `Tortuosity.jl` is designed to be granular, allowing users to see what's happening under the hood, and potentially modify the steps to suit their needs, e.g., using a different matrix solver, etc.
 
