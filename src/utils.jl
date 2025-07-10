@@ -69,7 +69,7 @@ function get_taufactor_conc(tau_solver; fill_value=NaN, normalize=true)
     img = pyconvert(Array, tau_solver.cpu_img.squeeze())
     # NOTE: TauFactor always solves along the x-axis
     img_padded = pad(img, :replicate, (1, 0, 0))
-    c = isa(c, Py) ? pyconvert(Array, tausolver.conc.squeeze().numpy()) : c
+    c = isa(c, Py) ? pyconvert(Array, tau_solver.conc.squeeze().numpy()) : c
     # Hardcode BC values; taufactor doesn't update them
     c[1, :, :] .= 0.5
     c[end, :, :] .= -0.5
