@@ -40,3 +40,19 @@ img[:, :, 21:32] .= 5
     end
 
 end
+
+@testset "Boolean index helpers" begin
+    mat = Bool[
+        true  false;
+        false true;
+        true  true
+    ]
+    expected = LinearIndices(mat)[findall(mat)]
+
+    @test find_true_indices(mat) == expected
+
+    lookup = reverse_lookup(mat)
+    for (i, idx) in enumerate(expected)
+        @test lookup[idx] == i
+    end
+end
