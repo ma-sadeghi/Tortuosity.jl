@@ -75,8 +75,12 @@ function trim_nonpercolating_paths(img; axis)
     return img_percolating
 end
 
-function phase_fraction(img, labels)
-    return sum(sum(img .== label) for label in labels) / length(img)
+function phase_fraction(img, label)
+    return count(img .== label) / length(img)
+end
+
+function phase_fraction(img, labels::AbstractArray)
+    return sum(phase_fraction(img, label) for label in labels)
 end
 
 function phase_fraction(img)
