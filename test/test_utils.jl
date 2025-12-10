@@ -1,6 +1,7 @@
 using Test
 using Tortuosity
 using Tortuosity.Imaginator: phase_fraction
+import Tortuosity: find_true_indices, reverse_lookup
 
 # Set up fixtures
 img = ones(UInt8, (32, 32, 32))
