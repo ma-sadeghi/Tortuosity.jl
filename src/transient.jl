@@ -1,4 +1,5 @@
 # Written by Sawyer Hossfeld
+# Supervised by Prof. Jeff Gostick
 # Winter Term, 2026
 # Transient diffusion solver for cubic array representation of
 # 3D porous material and related analysis tools
@@ -20,6 +21,7 @@ const AXIS_DEFINITION = Dict(
     :z => 3
 )
 
+#used for kwargs in functions to act on dims other than primary dim
 const AXIS_COMPLEMENT = Dict(
     1 => (2,3),
     2 => (1,3),
@@ -51,7 +53,7 @@ struct DiffusionProblem{T}
 end
 
 #stores integrator and datapoints
-#the reason this struct exists instead of just using ODE integrator contained in it, which could store t and C history in itself
+#the reason this struct exists instead of just using ODE integrator (the type that 'integrator' is), which could store t and C history in itself
 # is that 'integrator.u' or C, would be stored on the same device as is being used
 # for the GPU case this would be mean huge GPU memory usage and seriously limit the size that can be run
 struct DiffusionState{T}
@@ -290,64 +292,6 @@ function build_operator(mask, D_free, dx, axis, bound_mode, dtype)
     return (D_free/dx^2) * dtype.(A)
 end
 
-# an alternative version for finding steady-state, rows that would be zero for transient operator are identity instead
-#actually using a matrix is probably not the right approach for solving steady state, needs more consideration
-#also it doesn't work at all...
-"""
-returns a sparse matrix for use in finding steady state distribution by solving:
-    A*C_inf = b
-"""
-function build_operator_steady_state(mask, bound_types, dtype)
-    Nx, Ny, Nz = size(mask)
-    Nxyz = Nx*Ny*Nz
-
-    # Dirichlet mask: true where boundary type is not NaN
-    is_dirichlet = falses(Nx, Ny, Nz)
-
-    if !isnan(bound_types[1][1]) is_dirichlet[:, :, 1]  .= true   end
-    if !isnan(bound_types[1][2]) is_dirichlet[:, :, Nz] .= true   end
-    if !isnan(bound_types[2][1]) is_dirichlet[1, :, :]  .= true   end
-    if !isnan(bound_types[2][2]) is_dirichlet[Nx, :, :] .= true   end
-    if !isnan(bound_types[3][1]) is_dirichlet[:, 1, :]  .= true   end
-    if !isnan(bound_types[3][2]) is_dirichlet[:, Ny, :] .= true   end
-
-
-    rows = Int[]
-    cols = Int[]
-    vals = Int8[] # values only need to range from -4 to 1
-
-    # helper to push entries
-    function add(i,j,v)
-        push!(rows, i)
-        push!(cols, j)
-        push!(vals, v)
-    end
-
-    # loop over all voxels
-    @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx 
-        idx = i + (j-1)*Nx + (k-1)*Nx*Ny #find flattened index of voxel
-        if mask[i,j,k] == 0 || is_dirichlet[i,j,k] #mask and dirichlet rows are 0 -> constant concentration
-            add(idx, idx, 1) #row is identity for steady state for A*C_inf = b setup
-            continue
-        end
-
-        diag = 0
-        # neighbors
-        for (di,dj,dk) in ((1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1))
-            ii = i+di; jj = j+dj; kk = k+dk
-            if 1 ≤ ii ≤ Nx && 1 ≤ jj ≤ Ny && 1 ≤ kk ≤ Nz && mask[ii,jj,kk] == 1
-                jdx = ii + (jj-1)*Nx + (kk-1)*Nx*Ny
-                add(idx, jdx, 1)
-                diag -= 1
-            end
-        end
-
-        add(idx, idx, diag)
-    end
-
-    A = sparse(rows, cols, vals, Nxyz, Nxyz)
-    return dtype.(A)
-end
 
 """
 apply_boundaries!(C0, bound_types)
@@ -411,146 +355,4 @@ end
 stop_at_delta_flux(delta, problem::DiffusionProblem) = stop_at_delta_flux(delta, problem.D_free, problem.dx, problem.porosity_mask, problem.axis)
 
 
-##--- functions for extracting datapoints of interest ---
 
-#might as well have a function for this...
-function porosity(porosity_mask)
-    sum(porosity_mask)/length(porosity_mask) #assumes pores are represented by 1, not very standard but that is the definition here
-end
-porosity(problem::DiffusionProblem) = porosity(problem.porosity_mask)
-
-
-
-function slice_conc_dist(C, mask, axis)
-
-    collapse = AXIS_COMPLEMENT[axis]
-
-    return dropdims(sum(C, dims = collapse)./sum(mask, dims=collapse), dims = collapse)
-end
-slice_conc_dist(C, prob::DiffusionProblem) = slice_conc_dist(C, prob.porosity_mask, prob.axis)
-
-
-"""
-returns average concentration of pores in slices perpendicular to axis at index(es) ind
-
-"""
-function get_slice_conc(C, mask, axis, ind)
-    ax = AXIS_DEFINITION[axis]
-
-    C_slice = selectdim(C, ax, ind)
-    mask_slice = selectdim(mask, ax, ind)
-
-    return sum(C_slice)/sum(mask_slice)
-end
-get_slice_conc(C, prob::DiffusionProblem, ind) = get_slice_conc(C, prob.porosity_mask, prob.axis, ind)
-
-
-#assumption about which axis to be fixed for get_flux
-"""
-flux_dist(C, prob)
-input the C distribution for a timestep
-
-input C, and either dx or the associated DiffusionProblem
-returns a vector of the flux between each 2d slice of voxels along direction of axis or problem.axis
-    or just between ind and ind+1 for entries to inds
-"""
-function flux_dist(C, D, dx, mask, axis; inds = nothing)
-    ax = AXIS_DEFINITION[axis]      # 1, 2, or 3
-    N  = size(C, ax)
-
-    # all slice pairs (1,2), (2,3), ..., (N-1,N)
-    isnothing(inds) && (inds = 1:(N-1)) #default to entire distribution
-
-    # accumulate flux contributions for each slice pair
-    fluxes = similar(inds, Float64)
-
-    for (k, i) in enumerate(inds)
-        C1 = selectdim(C, ax, i)
-        C2 = selectdim(C, ax, i+1)
-
-        m1 = selectdim(mask, ax, i)
-        m2 = selectdim(mask, ax, i+1)
-
-        
-        ΔC = C1 .* (m2 .!= 0) .- C2 .* (m1 .!= 0)
-        
-        # sum over the perpendicular axes
-        fluxes[k] = sum(ΔC) .* (D * dx) # D/dx *dx^2 = D/dx * A/voxel
-    end
-
-    return fluxes
-end
-flux_dist(C, prob::DiffusionProblem; inds = nothing)=  flux_dist(C, prob.D_free, prob.dx, prob.porosity_mask, prob.axis; inds = inds)
-
-#it could be nice if ind could be a list of indexes to get the flux at
-"""
-returns flux between slice of C at ind and ind+1
-"""
-function get_flux(C::Array, D, dx, mask, axis; ind=:end)
-    ax = AXIS_DEFINITION[axis]          # 1, 2, or 3
-    N  = size(C, ax)
-
-    ind === :end && (ind = N - 1) #end symbol for flux between second last and last slice
-
-    # slices along the chosen axis
-    C1 = selectdim(C, ax, ind)
-    C2 = selectdim(C, ax, ind + 1)
-
-    m1 = selectdim(mask, ax, ind)
-    m2 = selectdim(mask, ax, ind + 1)
-
-    # flux only through pore voxels
-    ΔC = C1 .* (m2 .!= 0) .- C2 .* (m1 .!= 0)
-
-    # sum over the two perpendicular axes
-    flux = sum(ΔC) #, dims = AXIS_COMPLEMENT[ax])
-
-    return flux * (D * dx) #D/dx *dx^2
-end
-get_flux(C, prob::DiffusionProblem; ind=:end)=  get_flux(C, prob.D_free, prob.dx, prob.porosity_mask, prob.axis; ind=ind)
-
-#it would be nice to have a faster way to get C_eq without running the transient solver for ages
-#not in working order! much confusion!
-function solve_steady_state(prob::DiffusionProblem)
-    N = length(prob.porosity_mask)
-
-    #apply boundary conditions to b vector
-    b = zeros(prob.eltype, size(prob.porosity_mask))
-    apply_boundaries!(b, prob.bound_types)
-    b .*= prob.porosity_mask #give b a zero concentration at 'obstacle' voxels
-    b = vec(b)
-    A = build_operator_steady_state(prob.porosity_mask,prob.bound_types, prob.eltype)
-
-    if prob.gpu 
-        b = cu(b) 
-        A = cu(A)
-    end
-
-    linear_prob = LinearProblem(A, b)
-
-    #I have no idea...
-    sol = solve(linear_prob, KrylovJL_CG())
-    C_eq = Array(sol.u) 
-
-    return reshape(C_eq, prob.Nx, prob.Ny, prob.Nz)
-end
-
-
-"""
-mass_intake(state; eql_intake = nothing)
-
-return the total mass intake since initial-conditions curve, normalized to the dimensionless range (0,1)
-
-#Arguments
-    state: a DiffusionState holding the solved datapoints
-    eql_intake: the mass_intake at steady state, defaults to the mass intake at the last step in C_history
-        *if eql_intake not inputted and the last step in C_history is not at steady state, the output is not useable
-"""
-function normalized_mass_intake(state; eql_intake = nothing)
-
-    if eql_intake === nothing
-        eql_intake = sum(state.C[end])-sum(state.C[1])
-    end
-    mass_intake = A -> (sum(A)-sum(state.C[1]))/eql_intake
-    return map(mass_intake, state.C)
-end
