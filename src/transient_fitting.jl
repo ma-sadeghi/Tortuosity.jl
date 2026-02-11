@@ -3,9 +3,7 @@
 #and related utilities
 
 
-##---------- Curve Fitting Abstraction ---------
-
-using LsqFit
+##---------- Curve Fitting Utility ---------
 
 """
 Fits an analytical diffusion model to simulation data.
@@ -25,37 +23,78 @@ Returns:
  σ: standard error of the fit
  fit: the full LsqFit result
 """
-function D_eff_from_fit(model, t, y; t_span= (0,maximum(t)), D0=[1.0])
-    size(D0) == () && (D0 = [D0]) #parameters passed as vector
+function effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0)
     
-    # restrict to fitting window
-    idx_min = argmin(abs.(t .- t_span[1]))
-    idx_max = argmin(abs.(t .- t_span[2]))
+    #D0 (initial guess) will get passed to model as parameter vector
+    D0 = Float64.(D0) #avoid annoying issue if passing in int 
+    size(D0) == () && (D0 = [D0]) 
 
-    xdata = t[idx_min:idx_max]
-    ydata = y[idx_min:idx_max]
+    # get indexes for fitting window
+    idx_min = argmin(abs.(sim.t .- t_fit[1]))
+    idx_max = argmin(abs.(sim.t .- t_fit[2]))
 
+    #index corresponding to normalized depth
+    N = prob.dims[AXIS_DEFINITION[prob.axis]]
+    depth_idx = round(Int, N*depth)
 
+    #initialize fitting data
+    xdata = sim.t[idx_min:idx_max]
+    ydata = zeros(size(xdata))
+
+    model = nothing #depends on method
+
+    
+    #insulated bound distribution is equivalent to half of symmetrical 2 dirichlet bounds distribution
+    C1 = 1; C2 = 0; L=1
+    if prob.bound_mode[1] == 1 && prob.bound_mode[1] == 0
+        nothing
+    elseif prob.bound_mode[1] == 1 && isnan(prob.bound_mode[2])
+        C2 = 1; L=2
+    else throw("Built-in diffusivity fitting only supports bound modes (1,0) and (1,NaN).") end
+
+    #make assignments based on boundary mode and which observable is being fit to
+    if method == :conc
+        observable = A -> get_slice_conc(A, prob, depth_idx) #conc over time at that depth
+        ydata = map(observable, sim.C[idx_min:idx_max])
+        model = (t, p) -> analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
+
+    elseif method == :mass
+        ydata = (normalized_mass_intake(sim))[idx_min:idx_max]
+        model = (t, p) -> analytic_mass(p[1], t; C1=C1, C2=C2, L=L, terms = terms)
+
+    elseif method == :flux
+        throw(":flux not implemented")
+
+    else throw("Built-in diffusivity fitting only supports method ':conc', ':mass', and ':flux'.") end
+            
+
+    #preform fit
     fit = curve_fit(model, xdata, ydata, D0)
     σ = stderror(fit)[1]
     D_eff = fit.param[1]
 
-    return D_eff, σ, fit
+    #optional extra info in returns
+    return D_eff, σ, fit, xdata, ydata
 end
 
+
+function tortuosity()
+
+nothing
+end
 ##---------- Analytical Solutions ----------------
 # for homogenous versions of transient diffusion problems of interest
 # firstly for two opposite dirichlet bounds
 
 """
-two_bounds_homog_C(D,x,t; terms=100, C1=1, C2=0, C0=0, L=1)
+analytic_conc(D,x,t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 The Mathematics of Diffusion, Second Edition, Crank, pg. 50
 analytical solution for diffusion in a slab of length L with constant diffusivity
 returns Array of concentrations at positions x and times t
 # Arguments
 D: diffusion coefficient
-x: position or array of positions along slab length (0 to L)
+x: position along slab length (0 to L)
 t: time or array of times
 # Keyword Arguments
 terms: number of terms to include of the infinite series, default 50
@@ -64,30 +103,28 @@ C2: concentration at x=L boundary, default 0
 C0: initial concentration throughout slab, default 0
 L: length of the slab, default 1
 """
-function two_bounds_homog_C(D,x,t; terms=100, C1=1, C2=0, C0=0, L=1)
+function analytic_conc(D,x,t; terms=100, C1=1, C2=0, C0=0, L=1)
     
     #every array is along a different dimension, only sum along the series
-    n = reshape(1:terms, 1,1, terms)
+    n = reshape(1:terms, 1, terms)
     m = 2 .*n .-1
 
     if length(t)>1
         t = reshape(t, length(t))
     end
-    if length(x)>1
-        x = reshape(x, 1, length(x))
-    end
+
 
     return dropdims(
         C1 .+ (C2-C1).*x./L .+
-        2 ./π.*sum( (C2.*cos.(π .* n).-C1)./(n).* sin.(n.*π.*x./L ).*exp.(-D.*(n).^2 .*π^2 .*t/L^2)  ,dims = 3) .+ 
-        4 .*C0./π .* sum(1 ./m.*sin.((2 .*n.-1).*(π.*x./L)).*exp.(-D.*m .^2 .*π^2 .*t ./L^2)   ,dims =3),
-        dims = 3
+        2 ./π.*sum( (C2.*cos.(π .* n).-C1)./(n).* sin.(n.*π.*x./L ).*exp.(-D.*(n).^2 .*π^2 .*t/L^2)  ,dims = 2) .+ 
+        4 .*C0./π .* sum(1 ./m.*sin.((2 .*n.-1).*(π.*x./L)).*exp.(-D.*m .^2 .*π^2 .*t ./L^2)   ,dims =2),
+        dims = 2
     )
 
 end
 
 """
-two_bounds_homog_M(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+analytic_mass(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 The Mathematics of Diffusion, Second Edition, Crank, pg. 50
 analytical solution for normalized mass uptake in period (0,t) in a slab of length L with constant diffusivity
@@ -104,7 +141,7 @@ C2: concentration at x=L boundary, default 0
 C0: initial concentration throughout slab, default 0
 L: length of the slab, default 1
 """
-function two_bounds_homog_M(D, t; terms=100, C1=1, C2=0, C0=0, L=1) #the concentration values are irrelevant if it's normalized
+function analytic_mass(D, t; terms=100, C1=1, C2=0, C0=0, L=1) #the concentration values are irrelevant if it's normalized
     
     #t array is along a different dimension, only sum along the series
     n = (2 .*reshape(1:terms, 1, terms).-1).^2
@@ -118,7 +155,7 @@ end
 
 
 """
-two_bounds_homog_Q(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+analytic_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 The Mathematics of Diffusion, Second Edition, Crank, pg. 51
 total amount of diffusing substance which has passed through the membrane in time (0,t)
@@ -134,7 +171,7 @@ C2: concentration at x=L boundary, default 0
 C0: initial concentration throughout slab, default 0
 L: length of the slab, default 1
 """
-function two_bounds_homog_Q(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function analytic_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
     
     #every array is along a different dimension, only sum along the series
     n = reshape(1:terms, 1, terms)
@@ -153,19 +190,7 @@ function two_bounds_homog_Q(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 end
 
-# one dirichlet bounds, others insulated analytical homogenous solutions
 
-#insulated bound distribution is equivalent to half of symmetrical 2 dirichlet bounds distribution
-function one_bound_homog_C(D,x,t; terms=100, C1=1, C0=0, L=1)
-
-    two_bounds_homog_C(D,x,t; terms = terms, C1=C1, C2=C1, C0 = C0, L= 2*L ) 
-end
-
-
-#insulated bound distribution is equivalent to half of symmetrical 2 dirichlet bounds distribution
-function one_bound_homog_M(D, t; terms=100, C1=1, C0=0, L=1) #the concentration values are irrelevant if it's normalized
-    two_bounds_homog_M(D, t; terms = terms, C1=1, C2=C1, L=2*L) 
-end
 
 ##--- abstraction of curve fitting --- TO DO
 
