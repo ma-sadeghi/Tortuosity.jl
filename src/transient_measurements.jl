@@ -16,7 +16,7 @@ slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.a
 
 
 """
-returns average concentration of pores in slices perpendicular to axis at index(es) ind
+returns average concentration of pores in slices perpendicular to axis at index ind
 
 """
 function get_slice_conc(C, mask, axis, ind)
