@@ -7,6 +7,8 @@ using LinearAlgebra
 using LinearSolve
 using NaNStatistics
 using SparseArrays
+using DifferentialEquations
+using LsqFit
 
 include("utils.jl")
 include("imgen.jl")
@@ -17,6 +19,9 @@ include("topotools.jl")
 include("numpytools.jl")
 include("pdetools.jl")
 include("simulations.jl")
+include("transient.jl")
+include("transient_fitting.jl")
+include("transient_measurements.jl")
 
 # Submodules
 export Imaginator
@@ -24,8 +29,11 @@ export KrylovJL_CG
 
 # Structs
 export TortuositySimulation
+export TransientProblem
+export TransientState
 
 # Functions
 export solve
+export solve!
 
 end  # module Tortuosity

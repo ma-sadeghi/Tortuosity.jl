@@ -1,9 +1,9 @@
 ##--- functions for extracting datapoints of interest from concentration distributions or problem---
 
-function porosity(porosity_mask)
-    sum(porosity_mask)/length(porosity_mask) #assumes pores are represented by 1, not very standard but that is the definition here
+function porosity(img)
+    sum(img)/length(img) #assumes pores are represented by 1, not very standard but that is the definition here
 end
-porosity(problem::DiffusionProblem) = porosity(problem.porosity_mask)
+porosity(problem::TransientProblem) = porosity(problem.img)
 
 
 function slice_conc_dist(C, mask, axis)
@@ -12,7 +12,7 @@ function slice_conc_dist(C, mask, axis)
 
     return dropdims(sum(C, dims = collapse)./sum(mask, dims=collapse), dims = collapse)
 end
-slice_conc_dist(C, prob::DiffusionProblem) = slice_conc_dist(C, prob.porosity_mask, prob.axis)
+slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.axis)
 
 
 """
@@ -27,7 +27,7 @@ function get_slice_conc(C, mask, axis, ind)
 
     return sum(C_slice)/sum(mask_slice)
 end
-get_slice_conc(C, prob::DiffusionProblem, ind) = get_slice_conc(C, prob.porosity_mask, prob.axis, ind)
+get_slice_conc(C, prob::TransientProblem, ind) = get_slice_conc(C, prob.img, prob.axis, ind)
 
 
 
@@ -35,7 +35,7 @@ get_slice_conc(C, prob::DiffusionProblem, ind) = get_slice_conc(C, prob.porosity
 flux_dist(C, prob)
 input the C distribution for a timestep
 
-input C, and either dx or the associated DiffusionProblem
+input C, and either dx or the associated TransientProblem
 returns a vector of the flux between each 2d slice of voxels along direction of axis or problem.axis
     or just between ind and ind+1 for entries to inds
 """
@@ -65,7 +65,7 @@ function flux_dist(C, D, dx, mask, axis; inds = nothing)
 
     return fluxes
 end
-flux_dist(C, prob::DiffusionProblem; inds = nothing)=  flux_dist(C, prob.D_free, prob.dx, prob.porosity_mask, prob.axis; inds = inds)
+flux_dist(C, prob::TransientProblem; inds = nothing)=  flux_dist(C, prob.D_free, prob.dx, prob.img, prob.axis; inds = inds)
 
 
 """
@@ -92,7 +92,7 @@ function get_flux(C::Array, D, dx, mask, axis; ind=:end)
 
     return flux * (D * dx) #D/dx *dx^2
 end
-get_flux(C, prob::DiffusionProblem; ind=:end)=  get_flux(C, prob.D_free, prob.dx, prob.porosity_mask, prob.axis; ind=ind)
+get_flux(C, prob::TransientProblem; ind=:end)=  get_flux(C, prob.D_free, prob.dx, prob.img, prob.axis; ind=ind)
 
 """
 normalized_mass_intake(state; eql_intake = nothing)

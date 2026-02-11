@@ -5,14 +5,6 @@
 # 3D porous material and related analysis tools
 
 
-using CUDA
-using SparseArrays
-using LinearAlgebra  #.mul!
-using DifferentialEquations
-using LinearSolve # for steady state solver
-using CUDSS
-
-
 ## definition of axis symbols and related shorthand
 
 const AXIS_DEFINITION = Dict(
@@ -35,13 +27,12 @@ const AXIS_COMPLEMENT = Dict(
 ##------ define structs for convenience of only passing all parameters once ------
 
 #struct for problem definition, not solution 
-struct DiffusionProblem{T}
+struct TransientProblem{T}
     dims::NTuple{3, Int}
     dx::Float64
     dt::Float64
     D_free::T
-    porosity_mask::BitArray{3}
-    #D::Union{BitArray{3},Array{T, 3}} #TO DO: replace D_free and porosity_mask with diffusion constant scalar field
+    img::BitArray{3}
     axis::Symbol
     bound_mode::NTuple{2,T}
     A::Union{
@@ -56,7 +47,7 @@ end
 #the reason this struct exists instead of just using ODE integrator (the type that 'integrator' is), which could store t and C history in itself
 # is that 'integrator.u' or C, would be stored on the same device as is being used
 # for the GPU case this would be mean huge GPU memory usage and seriously limit the size that can be run
-struct DiffusionState{T}
+struct TransientState{T}
     integrator          
     t::Vector{Float64}
     C::Vector{Array{T,3}}
@@ -64,9 +55,9 @@ end
 
 ##----- define constructors for structs ------
 @doc """
-DiffusionProblem(porosity_mask, D_free, dx, dt)
+TransientProblem(img, D_free, dx, dt)
 
-Constructs a DiffusionProblem for solving transient diffusion through a N^3 array representing a porous material
+Constructs a TransientProblem for solving transient diffusion through a N^3 array representing a porous material
 
 # Arguments
 D: a NxbyNybyNz array of positive scalars representing the diffusion constant in each voxel of the problem
@@ -84,13 +75,13 @@ bound_mode: Tuple{Number, Number}
 dtype: the data type of numbers used for the solution, ex. Float32, Float64
 gpu: a bool for whether the solver is run on the GPU. defaults to true
 """
-function DiffusionProblem(porosity_mask, D_free, dx, dt; 
+function TransientProblem(img, D_free, dx, dt; 
     axis::Symbol = :z, bound_mode::NTuple=(1,0),
     dtype=Float32, gpu=true
 )
 
     #make sure the types are as expected
-    mask = BitArray(porosity_mask .!= 0)
+    mask = BitArray(img .!= 0)
     D_free = dtype(D_free)
     bound_mode = dtype.(bound_mode)
 
@@ -101,17 +92,17 @@ function DiffusionProblem(porosity_mask, D_free, dx, dt;
         A = cu(A)
     end
 
-    return DiffusionProblem(size(porosity_mask),dx,dt,D_free, mask, axis, bound_mode,A,gpu,dtype)
+    return TransientProblem(size(img),dx,dt,D_free, mask, axis, bound_mode,A,gpu,dtype)
 end
 
 
 """
-init_state(prob::DiffusionProblem)
+init_state(prob::TransientProblem)
 
-returns a DiffusionState for the given DiffusionProblem
+returns a TransientState for the given TransientProblem
 
 # Arguments
-prob: A DiffusionProblem defining the problem
+prob: A TransientProblem defining the problem
 
 #kwargs
 C0: an array with dimensions of porosity mask representing initial concentration distribution.
@@ -120,14 +111,14 @@ alg: the differential equation numerical algorithm, defaults to ROCK2, currently
 reltol: relative tolerance for the differential equation solver, default 1e-3 *to improve accuracy, prioritize solver choice
 abstol: absolute tolerance for the differential equation solver, default 1e-6
 """
-function init_state(prob::DiffusionProblem; C0=nothing, alg=ROCK2(), reltol=1e-3, abstol=1e-6)
+function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3, abstol=1e-6)
 
     if C0 === nothing
         C0 = zeros(prob.eltype, prob.dims)
     end
 
     apply_boundaries!(C0, prob)
-    C0 .*= prob.porosity_mask #give C a zero concentration at 'obstacle' voxels
+    C0 .*= prob.img #give C a zero concentration at 'obstacle' voxels
     C0 = vec(C0)
 
     if prob.gpu
@@ -147,20 +138,20 @@ function init_state(prob::DiffusionProblem; C0=nothing, alg=ROCK2(), reltol=1e-3
     push!(t_hist, 0.0)  #push the initial conditions to the data arrays
     push!(C_hist, reshape(C0, prob.dims))
 
-    return DiffusionState(integrator, t_hist,C_hist)
+    return TransientState(integrator, t_hist,C_hist)
 end
 
 
 ##----- function for running the solver on the structs ------
 """
-solve!(state::DiffusionState, prob::DiffusionProblem, stop_condition)
+solve!(state::TransientState, prob::TransientProblem, stop_condition)
 
 steps the state forward by steps of prob.dt until stop_condition(t, C) returns true, storing C distribution
 at every dt step, on CPU regardless of whether running on GPU
 
 #Arguments
-    state: a DiffusionState
-    prob: a DiffusionProblem matching the DiffusionState
+    state: a TransientState
+    prob: a TransientProblem matching the TransientState
     stop_condition: function, (t, C) -> bool. Based on the time and distribution vector up to a certain timestep
         returns true if condition for stopping integration and returning results is met.
         short hands include stop_at_time(time), stop_at_avg_concentration(conc, problem), stop_at_delta_flux(delta_flux, problem)
@@ -168,7 +159,7 @@ at every dt step, on CPU regardless of whether running on GPU
 kwargs: 
     max_iter: integer, steps of length prob.dt after which to stop integration if stop condition still unmet
 """
-function solve!(state::DiffusionState, prob::DiffusionProblem, stop_condition; max_iter=500, verbose = false)
+function solve!(state::TransientState, prob::TransientProblem, stop_condition; max_iter=500, verbose = false)
 
     for _ in 1:max_iter
         step!(state.integrator, prob.dt, true) #false means don't force timesteps to land at exactly t+dt, true means precisely t+dt
@@ -188,9 +179,9 @@ end
 
 #= pre chatGPT feedback speed-up constructor, kept around incase I need something from it for now
 # this also could have been improved by using bool arrays for indexing maybe
-function build_operator(porosity_mask, D_free, dx, bound_types, dtype)
+function build_operator(img, D_free, dx, bound_types, dtype)
     
-    (Nx,Ny,Nz) = size(porosity_mask)
+    (Nx,Ny,Nz) = size(img)
     Nxy = Nx*Ny
     Nxyz = Nx*Ny*Nz
     
@@ -206,7 +197,7 @@ function build_operator(porosity_mask, D_free, dx, bound_types, dtype)
     ));
 
     #zero the columns and rows containing 'obstacle' for no interaction
-    mask = spdiagm(porosity_mask[:])
+    mask = spdiagm(img[:])
     A = mask * A
     A = A * mask #also zero columns
 
@@ -321,25 +312,25 @@ function stop_at_time(t_final)
 end
 
 """
-stop_at_avg_concentration(C_final, porosity_mask::Array)
-stop_at_avg_concentration(C_final, problem::DiffusionProblem)
+stop_at_avg_concentration(C_final, img::Array)
+stop_at_avg_concentration(C_final, problem::TransientProblem)
 
 creates a stop_condition for the average concentration across all non-obstacle voxels reaching a given concentration
 
-requires porosity_mask to average only non-obstacle voxels
+requires img to average only non-obstacle voxels
 assumes obstacle_voxels remain at 0
 """
-function stop_at_avg_concentration(C_final, porosity_mask)
-    num_active = sum(porosity_mask)
+function stop_at_avg_concentration(C_final, img)
+    num_active = sum(img)
     return (t_hist, C_hist) -> sum(C_hist[end])/num_active >= C_final
 end
-stop_at_avg_concentration(C_final, problem::DiffusionProblem) = stop_at_avg_concentration(C_final, problem.porosity_mask)
+stop_at_avg_concentration(C_final, problem::TransientProblem) = stop_at_avg_concentration(C_final, problem.img)
 
 #assumes intake and outake is along axis corresponding to bound_types[1]
 #this should be communicated better or made more general. similar problems exist elsewhere
 """
 stop_at_delta_flux(delta, D, dx, mask, axis)
-stop_at_delta_flux(delta, problem::DiffusionProblem)
+stop_at_delta_flux(delta, problem::TransientProblem)
 
 creates a function to evaluate if the incoming flux and outgoing flux have a difference at or below delta
 The flux at the two faces on 'prob.axis' should approach 0 as the distribution goes to equilibrium
@@ -347,12 +338,12 @@ put a smaller delta value to go closer to equilibrium before stopping run
 
 #Arguments
     delta: the scalar for which function will return true when the flux difference is at or below it
-    problem: relevant DiffusionProblem
+    problem: relevant TransientProblem
 """
 function stop_at_delta_flux(delta, D, dx, mask, axis)
     return (t_hist, C_hist) -> abs(get_flux(C_hist[end], D,dx,mask, axis; ind = :end)-get_flux(C_hist[end], D,dx,mask, axis; ind=1)) <= delta
 end
-stop_at_delta_flux(delta, problem::DiffusionProblem) = stop_at_delta_flux(delta, problem.D_free, problem.dx, problem.porosity_mask, problem.axis)
+stop_at_delta_flux(delta, problem::TransientProblem) = stop_at_delta_flux(delta, problem.D_free, problem.dx, problem.img, problem.axis)
 
 
 
