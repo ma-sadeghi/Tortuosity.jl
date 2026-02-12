@@ -6,22 +6,26 @@
 ##---------- Curve Fitting Utility ---------
 
 """
-Fits an analytical diffusion model to simulation data.
+    effective_diffusivity(sim, prob, method; depth=0.5, t_fit=(0, sim.t[end]), terms=100, D0=1.0)
 
-Arguments:
- model: function (t, p) → y
- t: vector of simulation times
- p: vector of parameters i.e. [D_eff]
- y: vector of observable values (same length as t)
+Fit an analytical transient‑diffusion solution to simulation data and return the
+effective diffusivity.
 
-Keyword arguments:
- t_span: tuple (tmin, tmax) time window to fit over
- p0: initial parameter guess
+Supported observables:
+- `:conc` — concentration at a normalized depth.
+- `:mass` — normalized mass uptake over full volume. independent of 'depth' kwarg
+- `:flux` — not implemented.
 
-Returns:
- D_eff: fitted diffusion coefficient
- σ: standard error of the fit
- fit: the full LsqFit result
+Boundary modes must be `(1, 0)` or `(1, NaN)`.
+
+# Keyword arguments
+- `depth` — normalized depth for `:conc` fits.
+- `t_fit` — time window `(tmin, tmax)` for fitting.
+- `terms` — number of series terms in the analytical solution.
+- `D0` — initial diffusivity guess (scalar or 1‑element vector).
+
+# Returns
+`D_eff, σ, fit, xdata, ydata`
 """
 function effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0)
     
@@ -39,17 +43,16 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
 
     #initialize fitting data
     xdata = sim.t[idx_min:idx_max]
-    ydata = zeros(size(xdata))
+    ydata = nothing
 
     model = nothing #depends on method
-
     
     #insulated bound distribution is equivalent to half of symmetrical 2 dirichlet bounds distribution
     C1 = 1; C2 = 0; L=1
-    if prob.bound_mode[1] == 1 && prob.bound_mode[1] == 0
-        nothing
+    if prob.bound_mode[1] == 1 && prob.bound_mode[2] == 0
+        nothing #this fits with assignments outside of if statement
     elseif prob.bound_mode[1] == 1 && isnan(prob.bound_mode[2])
-        C2 = 1; L=2
+        C2 = 1; L=2 #effectively insulated bound
     else throw("Built-in diffusivity fitting only supports bound modes (1,0) and (1,NaN).") end
 
     #make assignments based on boundary mode and which observable is being fit to
@@ -59,7 +62,7 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
         model = (t, p) -> analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
 
     elseif method == :mass
-        ydata = (normalized_mass_intake(sim))[idx_min:idx_max]
+        ydata = (normalized_mass_intake(sim))[idx_min:idx_max] #this needs work
         model = (t, p) -> analytic_mass(p[1], t; C1=C1, C2=C2, L=L, terms = terms)
 
     elseif method == :flux
@@ -71,7 +74,7 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
     #preform fit
     fit = curve_fit(model, xdata, ydata, D0)
     σ = stderror(fit)[1]
-    D_eff = fit.param[1]
+    D_eff = fit.param[1] #need to consider whether this is D_eff of full volume or of pores and update accordingly, depends on method
 
     #optional extra info in returns
     return D_eff, σ, fit, xdata, ydata
@@ -187,17 +190,5 @@ function analytic_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
         (4*C0*L/π^2) .* sum(1 ./m.* (1 .-exp.(-D.*m .*π^2 .*t ./L^2))   ,dims =2),
         dims = 2
     )
-
-end
-
-
-
-##--- abstraction of curve fitting --- TO DO
-
-function D_eff_equilibrium()
-    nothing
-end
-
-function D_eff_from_fit(model, xdata, ydata, t_span)
 
 end

@@ -50,7 +50,7 @@ end
 struct TransientState{T}
     integrator          
     t::Vector{Float64}
-    C::Vector{Array{T,3}}
+    C::Vector{Vector{T}}
 end
 
 ##----- define constructors for structs ------
@@ -105,7 +105,7 @@ returns a TransientState for the given TransientProblem
 prob: A TransientProblem defining the problem
 
 #kwargs
-C0: an array with dimensions of porosity mask representing initial concentration distribution.
+C0: an array with dimensions of the problem image representing initial concentration distribution.
     represents the initial concentration profile, defaults to zero
 alg: the differential equation numerical algorithm, defaults to ROCK2, currently only supports explicit methods
 reltol: relative tolerance for the differential equation solver, default 1e-3 *to improve accuracy, prioritize solver choice
@@ -113,19 +113,19 @@ abstol: absolute tolerance for the differential equation solver, default 1e-6
 """
 function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3, abstol=1e-6)
 
-    if C0 === nothing
+    if C0 === nothing 
         C0 = zeros(prob.eltype, prob.dims)
+    else @assert size(C0) == size(prob.img) "C0 dims must match img"
     end
-
+    
     apply_boundaries!(C0, prob)
-    C0 .*= prob.img #give C a zero concentration at 'obstacle' voxels
-    C0 = vec(C0)
+    C0 = C0[prob.img] #compress C0 to vector of pore voxels
 
     if prob.gpu
         C0 = cu(C0)
     end
 
-    function dC!(dC, C, p, t)
+    function dC!(dC, C, p, t) #trying to pass in A to dC! as a parameter through ODEProblem seems to try to truncate #elements of A (or #pore voxels^2) to Int32, causing an error. very confused, sticking to this approach for now
         mul!(dC, prob.A, C)
     end
 
@@ -133,10 +133,10 @@ function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3
     integrator = init(prob_ode, alg; save_everystep=false, reltol=reltol, abstol=abstol) #in terms of tolerance, polynomial terms of ROCK alg play a roll?
 
     #create history and input initial values
-    C_hist = Vector{Array{prob.eltype,3}}() #stored in 3D shape
+    C_hist = Vector{Vector{prob.eltype}}() #stored as vector of pore voxels
     t_hist = Float64[]
     push!(t_hist, 0.0)  #push the initial conditions to the data arrays
-    push!(C_hist, reshape(C0, prob.dims))
+    push!(C_hist, Array(C0))
 
     return TransientState(integrator, t_hist,C_hist)
 end
@@ -152,9 +152,10 @@ at every dt step, on CPU regardless of whether running on GPU
 #Arguments
     state: a TransientState
     prob: a TransientProblem matching the TransientState
-    stop_condition: function, (t, C) -> bool. Based on the time and distribution vector up to a certain timestep
+    stop_condition: function, (t_hist, C_hist) -> bool. Based on the time and distribution vector up to a certain timestep
         returns true if condition for stopping integration and returning results is met.
         short hands include stop_at_time(time), stop_at_avg_concentration(conc, problem), stop_at_delta_flux(delta_flux, problem)
+        if writing custom stop_condition, note that C_hist is in 1D pore voxel only form
 
 kwargs: 
     max_iter: integer, steps of length prob.dt after which to stop integration if stop condition still unmet
@@ -164,7 +165,7 @@ function solve!(state::TransientState, prob::TransientProblem, stop_condition; m
     for _ in 1:max_iter
         step!(state.integrator, prob.dt, true) #false means don't force timesteps to land at exactly t+dt, true means precisely t+dt
         push!(state.t, state.integrator.t)
-        push!(state.C, reshape(Array(state.integrator.u), prob.dims))
+        push!(state.C, Array(state.integrator.u)) #move from wherever u is to CPU memory
 
         verbose && @info "reached simulation time $(state.t[end])"
 
@@ -176,49 +177,6 @@ end
 
 
 ##--- functions for local use in construction of problem---
-
-#= pre chatGPT feedback speed-up constructor, kept around incase I need something from it for now
-# this also could have been improved by using bool arrays for indexing maybe
-function build_operator(img, D_free, dx, bound_types, dtype)
-    
-    (Nx,Ny,Nz) = size(img)
-    Nxy = Nx*Ny
-    Nxyz = Nx*Ny*Nz
-    
-    #RHS matrix construction starting with off-diagonals
-    #note multiplication by mask which prevents end of row/column from interaction with the start of the next row/column
-    A = Int8.(spdiagm(
-        1=>ones(Nxyz-1).*((1:Nxyz-1).%Nx .!= 0),
-        -1=>ones(Nxyz-1).*((1:Nxyz-1).%Nx .!= 0),
-        Nx=>ones(Nxyz-Nx).*((0:Nxyz-Nx-1).%Nxy .< Nxy-Nx),
-        -Nx=>ones(Nxyz-Nx).*((0:Nxyz-Nx-1).%Nxy .< Nxy-Nx),
-        Nxy => ones(Nxyz-Nxy),
-        -Nxy=> ones(Nxyz-Nxy)
-    ));
-
-    #zero the columns and rows containing 'obstacle' for no interaction
-    mask = spdiagm(img[:])
-    A = mask * A
-    A = A * mask #also zero columns
-
-    # center diagonal for generic nodes equals -sum of off-diagonals
-    A .-= spdiagm(0=> sum(A,dims=2)[:])
-
-    #mask for zeroing dirichlet/constant boundary faces, a bit harder to read because its flattened to 1D
-    mask =spdiagm( 1 .-( 
-                ((1:Nxyz).<=(Nxy))          .&&!isnan(bound_types[1][1])
-            .||((1:Nxyz).>(Nxyz-Nxy))       .&&!isnan(bound_types[1][2])
-            .||((1:Nxyz).%Nx.==1)           .&&!isnan(bound_types[2][1])
-            .||((1:Nxyz).%Nx.==0)           .&&!isnan(bound_types[2][2])
-            .||((0:Nxyz-1).%Nxy.<=Nxy-Nx)   .&&!isnan(bound_types[3][1])
-            .||((0:Nxyz-1).%Nxy.<=Nxy-Nx)   .&&!isnan(bound_types[3][2])
-    ))
-    A = mask * A
-    dropzeros!(A) #there is now a lot of 'stored' zeros in the sparse matrix, get rid of them for the loop, probably worth it
-    
-    return D_free/dx^2 * dtype.(A)
-end
-=#
 
 """
 returns a sparse matrix for finding the finite-difference based time derivative operator (Laplacian) of a voxel based
@@ -234,10 +192,13 @@ returns a sparse matrix for finding the finite-difference based time derivative 
         a NaN value corresponds to an insulated boundary ex. (1,NaN) 
     dtype: datatype of output operator, to match datatype of problem
 """
-function build_operator(mask, D_free, dx, axis, bound_mode, dtype)
+function build_operator(img, D_free, dx, axis, bound_mode, dtype)
     ax= AXIS_DEFINITION[axis] #from symbol to int
-    Nx, Ny, Nz = size(mask)
-    Nxyz = Nx*Ny*Nz
+    Nx, Ny, Nz = size(img)
+    pore_count = sum(img)
+
+    grid_to_vec = zeros(Int,Nx,Ny,Nz)
+    grid_to_vec[img] = 1:pore_count #get compressed vector index from 3D index, error if you try to access index of solid voxel
 
     # Dirichlet mask: true for each face corresponding to non NaN boundary type
     is_dirichlet = falses(Nx, Ny, Nz)
@@ -248,7 +209,7 @@ function build_operator(mask, D_free, dx, axis, bound_mode, dtype)
 
     rows = Int[]
     cols = Int[]
-    vals = Int8[] # values only need to range from -4 to 1 before scaling with D/dx^2
+    vals = dtype[] # values only need to range from -4 to 1 before scaling with D/dx^2
 
     # helper to push entries
     function add(i,j,v)
@@ -259,18 +220,20 @@ function build_operator(mask, D_free, dx, axis, bound_mode, dtype)
 
     # loop over all voxels
     @inbounds for j in 1:Ny, i in 1:Nx , k in 1:Nz
-        if mask[i,j,k] == 0 || is_dirichlet[i,j,k] #mask and dirichlet rows are 0 -> constant concentration
+        if img[i,j,k] == 0 || is_dirichlet[i,j,k] #ignore non-pores and dirichlet rows are 0 -> constant concentration
             continue
         end
 
-        idx = i + (j-1)*Nx + (k-1)*Nx*Ny #find flattened index of node
+        #idx = i + (j-1)*Nx + (k-1)*Nx*Ny #find flattened index of node
+        idx = grid_to_vec[i,j,k]
 
         diag = 0
         
         for (di,dj,dk) in ((1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1))# neighbors
-            ii = i+di; jj = j+dj; kk = k+dk #flattened index of neighbor node
-            if 1 ≤ ii ≤ Nx && 1 ≤ jj ≤ Ny && 1 ≤ kk ≤ Nz && mask[ii,jj,kk] == 1
-                jdx = ii + (jj-1)*Nx + (kk-1)*Nx*Ny
+            ii = i+di; jj = j+dj; kk = k+dk #3D index of neighbor
+            if 1 ≤ ii ≤ Nx && 1 ≤ jj ≤ Ny && 1 ≤ kk ≤ Nz && img[ii, jj, kk] != 0 #bounds check and ignore solid neighbors
+                #jdx = ii + (jj-1)*Nx + (kk-1)*Nx*Ny
+                jdx = grid_to_vec[ii, jj, kk]
                 add(idx, jdx, 1)
                 diag -= 1   #for flux balance, diagonal is negative sum of rest of row
             end
@@ -279,8 +242,9 @@ function build_operator(mask, D_free, dx, axis, bound_mode, dtype)
         add(idx, idx, diag)
     end
 
-    A = sparse(rows, cols, vals, Nxyz, Nxyz)
-    return (D_free/dx^2) * dtype.(A)
+    vals .*= D_free/dx^2
+    sparse(rows, cols, vals, pore_count, pore_count)
+
 end
 
 
