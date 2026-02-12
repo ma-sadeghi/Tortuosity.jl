@@ -6,11 +6,14 @@ end
 porosity(problem::TransientProblem) = porosity(problem.img)
 
 
-function slice_conc_dist(C, mask, axis)
+function slice_conc_dist(C, img, axis)
 
-    collapse = AXIS_COMPLEMENT[axis]
+    #accept pore-voxel vector form as well as full 3D distribution
+    C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
 
-    return dropdims(sum(C, dims = collapse)./sum(mask, dims=collapse), dims = collapse)
+    collapse = AXIS_COMPLEMENT[axis] #dims to sum over
+
+    return dropdims(nansum(C, dims = collapse)./sum(img, dims=collapse), dims = collapse)
 end
 slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.axis)
 
@@ -19,13 +22,16 @@ slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.a
 returns average concentration of pores in slices perpendicular to axis at index ind
 
 """
-function get_slice_conc(C, mask, axis, ind)
+function get_slice_conc(C, img, axis, ind)
+    #accept pore-voxel vector form as well as full 3D distribution
+    C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
+
     ax = AXIS_DEFINITION[axis]
 
     C_slice = selectdim(C, ax, ind)
-    mask_slice = selectdim(mask, ax, ind)
+    img_slice = selectdim(img, ax, ind)
 
-    return sum(C_slice)/sum(mask_slice)
+    return nansum(C_slice)/sum(img_slice)
 end
 get_slice_conc(C, prob::TransientProblem, ind) = get_slice_conc(C, prob.img, prob.axis, ind)
 
@@ -37,9 +43,13 @@ input the C distribution for a timestep
 
 input C, and either dx or the associated TransientProblem
 returns a vector of the flux between each 2d slice of voxels along direction of axis or problem.axis
-    or just between ind and ind+1 for entries to inds
+    or just between ind and ind+1 for entries to inds (note ind=N is out of range)
 """
-function flux_dist(C, D, dx, mask, axis; inds = nothing)
+function flux_dist(C, D, dx, img, axis; inds = nothing)
+
+    #accept pore-voxel vector form as well as full 3D distribution
+    C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
+
     ax = AXIS_DEFINITION[axis]      # 1, 2, or 3
     N  = size(C, ax)
 
@@ -53,14 +63,14 @@ function flux_dist(C, D, dx, mask, axis; inds = nothing)
         C1 = selectdim(C, ax, i)
         C2 = selectdim(C, ax, i+1)
 
-        m1 = selectdim(mask, ax, i)
-        m2 = selectdim(mask, ax, i+1)
+        m1 = selectdim(img, ax, i)
+        m2 = selectdim(img, ax, i+1)
 
-        
+        #zero voxels adjacent to solid for C[solid] = 0 case, redundant for C[solid] = NaN case
         ΔC = C1 .* (m2 .!= 0) .- C2 .* (m1 .!= 0)
         
         # sum over the perpendicular axes
-        fluxes[k] = sum(ΔC) .* (D * dx) # D/dx *dx^2 = D/dx * A/voxel
+        fluxes[k] = nansum(ΔC) .* (D * dx) # D/dx *dx^2 = D/dx * A/voxel
     end
 
     return fluxes
@@ -71,7 +81,11 @@ flux_dist(C, prob::TransientProblem; inds = nothing)=  flux_dist(C, prob.D_free,
 """
 returns flux between slice of C at ind and ind+1
 """
-function get_flux(C::Array, D, dx, mask, axis; ind=:end)
+function get_flux(C::Array, D, dx, img, axis; ind=:end)
+
+    #accept pore-voxel vector form as well as full 3D distribution
+    C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
+    
     ax = AXIS_DEFINITION[axis]          # 1, 2, or 3
     N  = size(C, ax)
 
@@ -81,14 +95,14 @@ function get_flux(C::Array, D, dx, mask, axis; ind=:end)
     C1 = selectdim(C, ax, ind)
     C2 = selectdim(C, ax, ind + 1)
 
-    m1 = selectdim(mask, ax, ind)
-    m2 = selectdim(mask, ax, ind + 1)
+    m1 = selectdim(img, ax, ind)
+    m2 = selectdim(img, ax, ind + 1)
 
     # flux only through pore voxels
     ΔC = C1 .* (m2 .!= 0) .- C2 .* (m1 .!= 0)
 
     # sum over the two perpendicular axes
-    flux = sum(ΔC) #, dims = AXIS_COMPLEMENT[ax])
+    flux = nansum(ΔC) #, dims = AXIS_COMPLEMENT[ax])
 
     return flux * (D * dx) #D/dx *dx^2
 end

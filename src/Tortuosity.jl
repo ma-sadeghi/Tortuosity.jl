@@ -35,5 +35,6 @@ export TransientState
 # Functions
 export solve
 export solve!
+export init_state
 
 end  # module Tortuosity
