@@ -54,29 +54,54 @@ struct TransientState{T}
 end
 
 ##----- define constructors for structs ------
-@doc """
-TransientProblem(img, D_free, dx, dt)
+"""
+    TransientProblem(img, dt; axis=:z, bound_mode=(1,0),
+                     D_free=1.0, dx=nothing, dtype=Float32, gpu=true)
 
-Constructs a TransientProblem for solving transient diffusion through a N^3 array representing a porous material
+Construct a `TransientProblem` describing transient diffusion through a
+3D voxelized porous material. The input `img` defines which voxels are
+pore space (nonzero) and which are solid (zero). A finite‑difference
+operator is built on this mask, with Dirichlet or insulated boundary
+conditions applied along one axis.
+
+The resulting problem can be passed to a transient diffusion solver.
 
 # Arguments
-D: a NxbyNybyNz array of positive scalars representing the diffusion constant in each voxel of the problem
-dx: the distance between adjacent nodes in each dimension
-dt: the size of timesteps between saving the concentration profile and checking the stop_condition
-    this is **not** the internal timestep used by the differential equation solver
+- `img`: a 3D array whose nonzero entries indicate pore voxels.
+- `dt`: the interval (in physical time units) between saved solution
+        snapshots and between evaluations of the `stop_condition`.
+        This is **not** the internal timestep used by the ODE solver.
 
-# kwargs
-axis: Symbol, the axis :x :y or :z which will have non-insulated bounds on the associated perpendicular faces
-        defaults to :z
-bound_mode: Tuple{Number, Number}
-        the values of dirichlet bounds for the two faces at either end of 'axis'
-        a NaN value corresponds to an insulated boundary ex. (1,NaN) 
-        defaults to (1,0)
-dtype: the data type of numbers used for the solution, ex. Float32, Float64
-gpu: a bool for whether the solver is run on the GPU. defaults to true
+# Keyword Arguments
+- `axis`: `:x`, `:y`, or `:z`. Specifies which axis has non‑insulated
+          boundary faces. Defaults to `:z`.
+- `bound_mode`: a 2‑tuple `(C_low, C_high)` giving Dirichlet boundary
+                values at the two faces along `axis`. Use `NaN` for an
+                insulated (Neumann) boundary. Defaults to `(1, 0)`.
+- `D_free`: scalar diffusion coefficient used inside pore voxels.
+            Defaults to `1.0`.
+- `dx`: physical spacing between adjacent voxel centers. If `nothing`,
+        it is set to `1/(N_axis - 1)` so that the domain spans `[0,1]`
+        along the chosen axis.
+- `dtype`: numeric type used for the operator and solution arrays
+           (e.g., `Float32` or `Float64`). Defaults to `Float32`.
+- `gpu`: whether to move the operator to the GPU. Defaults to `true`.
+
+# Returns
+A `TransientProblem` struct containing:
+- grid size,
+- spatial spacing `dx`,
+- output timestep `dt`,
+- diffusion coefficient,
+- pore mask,
+- axis and boundary mode,
+- sparse operator `A` (CPU or GPU),
+- numeric type.
+
 """
-function TransientProblem(img, D_free, dx, dt; 
+function TransientProblem(img, dt; 
     axis::Symbol = :z, bound_mode::NTuple=(1,0),
+    D_free = 1.0, dx = nothing,
     dtype=Float32, gpu=true
 )
 
@@ -84,6 +109,9 @@ function TransientProblem(img, D_free, dx, dt;
     mask = BitArray(img .!= 0)
     D_free = dtype(D_free)
     bound_mode = dtype.(bound_mode)
+
+    #default dx for dimensionless distance of 1 between bounds
+    isnothing(dx) && (dx = 1/(size(img, AXIS_DEFINITION[axis])-1)) 
 
     # finite difference matrix for dC = A*C
     A = build_operator(mask, D_free, dx, axis, bound_mode, dtype)
