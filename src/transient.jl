@@ -31,7 +31,7 @@ struct TransientProblem{T}
     dims::NTuple{3, Int}
     dx::Float64
     dt::Float64
-    D_free::T
+    D_pore::T
     img::BitArray{3}
     axis::Symbol
     bound_mode::NTuple{2,T}
@@ -45,8 +45,9 @@ end
 
 #stores integrator and datapoints
 #the reason this struct exists instead of just using ODE integrator (the type that 'integrator' is), which could store t and C history in itself
-# is that 'integrator.u' or C, would be stored on the same device as is being used
+# is that 'integrator.u' (C), would be stored on the same device as is being used
 # for the GPU case this would be mean huge GPU memory usage and seriously limit the size that can be run
+# so instead the data for each timestep is moved off GPU
 struct TransientState{T}
     integrator          
     t::Vector{Float64}
@@ -56,7 +57,7 @@ end
 ##----- define constructors for structs ------
 """
     TransientProblem(img, dt; axis=:z, bound_mode=(1,0),
-                     D_free=1.0, dx=nothing, dtype=Float32, gpu=true)
+                     D_pore=1.0, dx=nothing, dtype=Float32, gpu=true)
 
 Construct a `TransientProblem` describing transient diffusion through a
 3D voxelized porous material. The input `img` defines which voxels are
@@ -75,14 +76,14 @@ The resulting problem can be passed to a transient diffusion solver.
 # Keyword Arguments
 - `axis`: `:x`, `:y`, or `:z`. Specifies which axis has non‑insulated
           boundary faces. Defaults to `:z`.
-- `bound_mode`: a 2‑tuple `(C_low, C_high)` giving Dirichlet boundary
+- `bound_mode`: a 2‑tuple `(C_inlet, C_outlet)` giving Dirichlet boundary
                 values at the two faces along `axis`. Use `NaN` for an
                 insulated (Neumann) boundary. Defaults to `(1, 0)`.
-- `D_free`: scalar diffusion coefficient used inside pore voxels.
-            Defaults to `1.0`.
+- `D_pore`: scalar diffusion coefficient used inside pore voxels.
+            Defaults to `1.0` for easy comparison.
 - `dx`: physical spacing between adjacent voxel centers. If `nothing`,
         it is set to `1/(N_axis - 1)` so that the domain spans `[0,1]`
-        along the chosen axis.
+        along the chosen axis for easy comparison.
 - `dtype`: numeric type used for the operator and solution arrays
            (e.g., `Float32` or `Float64`). Defaults to `Float32`.
 - `gpu`: whether to move the operator to the GPU. Defaults to `true`.
@@ -93,7 +94,7 @@ A `TransientProblem` struct containing:
 - spatial spacing `dx`,
 - output timestep `dt`,
 - diffusion coefficient,
-- pore mask,
+- pore mask image,
 - axis and boundary mode,
 - sparse operator `A` (CPU or GPU),
 - numeric type.
@@ -101,26 +102,26 @@ A `TransientProblem` struct containing:
 """
 function TransientProblem(img, dt; 
     axis::Symbol = :z, bound_mode::NTuple=(1,0),
-    D_free = 1.0, dx = nothing,
+    D_pore = 1.0, dx = nothing,
     dtype=Float32, gpu=true
 )
 
     #make sure the types are as expected
-    mask = BitArray(img .!= 0)
-    D_free = dtype(D_free)
+    img = BitArray(img .!= 0)
+    D_pore = dtype(D_pore)
     bound_mode = dtype.(bound_mode)
 
     #default dx for dimensionless distance of 1 between bounds
     isnothing(dx) && (dx = 1/(size(img, AXIS_DEFINITION[axis])-1)) 
 
     # finite difference matrix for dC = A*C
-    A = build_operator(mask, D_free, dx, axis, bound_mode, dtype)
+    A = build_operator(img, D_pore, dx, axis, bound_mode, dtype)
 
     if gpu
         A = cu(A)
     end
 
-    return TransientProblem(size(img),dx,dt,D_free, mask, axis, bound_mode,A,gpu,dtype)
+    return TransientProblem(size(img),dx,dt,D_pore, img, axis, bound_mode,A,gpu,dtype)
 end
 
 
@@ -134,7 +135,7 @@ prob: A TransientProblem defining the problem
 
 #kwargs
 C0: an array with dimensions of the problem image representing initial concentration distribution.
-    represents the initial concentration profile, defaults to zero
+    represents the initial concentration profile, defaults to zero everywhere
 alg: the differential equation numerical algorithm, defaults to ROCK2, currently only supports explicit methods
 reltol: relative tolerance for the differential equation solver, default 1e-3 *to improve accuracy, prioritize solver choice
 abstol: absolute tolerance for the differential equation solver, default 1e-6
@@ -146,7 +147,7 @@ function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3
     else @assert size(C0) == size(prob.img) "C0 dims must match img"
     end
     
-    apply_boundaries!(C0, prob)
+    apply_boundaries!(C0, prob) #sets dirichlet bounds along axis
     C0 = C0[prob.img] #compress C0 to vector of pore voxels
 
     if prob.gpu
@@ -158,7 +159,7 @@ function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3
     end
 
     prob_ode = ODEProblem(dC!, C0, (0,1)) #tspan = (0,1) is arbitrary
-    integrator = init(prob_ode, alg; save_everystep=false, reltol=reltol, abstol=abstol) #in terms of tolerance, polynomial terms of ROCK alg play a roll?
+    integrator = init(prob_ode, alg; save_everystep=false, reltol=reltol, abstol=abstol) #in terms of tolerance, polynomial max/min terms for ROCK algorithm should be adjustable?
 
     #create history and input initial values
     C_hist = Vector{Vector{prob.eltype}}() #stored as vector of pore voxels
@@ -212,7 +213,7 @@ returns a sparse matrix for finding the finite-difference based time derivative 
 
 #Arguments
     mask: 3D binary array representing porous material
-    D_free: diffusion constant of substance in pores
+    D_pore: diffusion constant of substance in pores
     axis: Symbol, the axis :x :y or :z which will have non-insulated bounds on the associated perpendicular faces
         defaults to :z
     bound_mode: Tuple{Number, Number}
@@ -220,7 +221,7 @@ returns a sparse matrix for finding the finite-difference based time derivative 
         a NaN value corresponds to an insulated boundary ex. (1,NaN) 
     dtype: datatype of output operator, to match datatype of problem
 """
-function build_operator(img, D_free, dx, axis, bound_mode, dtype)
+function build_operator(img, D_pore, dx, axis, bound_mode, dtype)
     ax= AXIS_DEFINITION[axis] #from symbol to int
     Nx, Ny, Nz = size(img)
     pore_count = sum(img)
@@ -270,7 +271,7 @@ function build_operator(img, D_free, dx, axis, bound_mode, dtype)
         add(idx, idx, diag)
     end
 
-    vals .*= D_free/dx^2
+    vals .*= D_pore/dx^2
     sparse(rows, cols, vals, pore_count, pore_count)
 
 end
@@ -335,7 +336,7 @@ put a smaller delta value to go closer to equilibrium before stopping run
 function stop_at_delta_flux(delta, D, dx, mask, axis)
     return (t_hist, C_hist) -> abs(get_flux(C_hist[end], D,dx,mask, axis; ind = :end)-get_flux(C_hist[end], D,dx,mask, axis; ind=1)) <= delta
 end
-stop_at_delta_flux(delta, problem::TransientProblem) = stop_at_delta_flux(delta, problem.D_free, problem.dx, problem.img, problem.axis)
+stop_at_delta_flux(delta, problem::TransientProblem) = stop_at_delta_flux(delta, problem.D_pore, problem.dx, problem.img, problem.axis)
 
 
 
