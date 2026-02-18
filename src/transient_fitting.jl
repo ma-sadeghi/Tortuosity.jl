@@ -23,7 +23,7 @@ Boundary modes must be `(1, 0)` or `(1, NaN)`.
          TransientProblem defaults to depths from 0 to 1
 - `t_fit` — time window `(tmin, tmax)` for fitting, defaults all timesteps in TransientState.
 - `terms` — number of series terms in the analytical solution (infinite series).
-- `D0` — initial diffusivity guess (scalar or 1‑element vector).
+- `D0` — initial diffusivity guess scalar.
 
 # Returns
 `D_eff, σ, fit, xdata, ydata`
@@ -31,7 +31,7 @@ Boundary modes must be `(1, 0)` or `(1, NaN)`.
 function effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0)
     
     D0 = Float64.(D0) #avoid issue if passing in int 
-    size(D0) == () && (D0 = [D0]) #D0 (initial guess) will get passed to model as parameter vector
+    param = [D0, porosity(prob)] # inital guess for parameter vector
 
     # get indexes for fitting window
     idx_min = argmin(abs.(sim.t .- t_fit[1]))
@@ -42,7 +42,7 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
 
     #initialize fitting data
     xdata = sim.t[idx_min:idx_max]
-    ydata = nothing
+    ydata = nothing #depends on method
 
     model = nothing #depends on method
     
@@ -63,11 +63,12 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
         observable = A -> get_slice_conc(A, prob, depth_idx) #conc over time at that depth
         ydata = map(observable, sim.C[idx_min:idx_max])
         depth += prob.dx/2 # match reality that the flux is between two slices at idx, idx+1
-        model = (t, p) -> analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
+        model = (t, p) -> p[2]*analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
 
     elseif method == :mass
-        ydata = (normalized_mass_intake(sim))[idx_min:idx_max] #this needs work
-        model = (t, p) -> analytic_mass(p[1], t; C1=C1, C2=C2, L=L, terms = terms)
+        ydata = (mass_intake(sim.C[1:idx_max], prob))[idx_min:end]
+        model = (t, p) -> p[2]*(C1 + C2)/2 .*analytic_mass(p[1], t; C1=C1, C2=C2, L=L, terms = terms)
+
 
     elseif method == :flux
         depth_idx = round(Int, 0.5 + (depth)*(N-1)) #flux is between slices, offset by half index
@@ -76,18 +77,19 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
 
         observable = A -> get_flux(A, prob;ind= depth_idx) #conc over time at that depth
         ydata = map(observable, sim.C[idx_min:idx_max])
-        model = (t, p) -> analytic_flux(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
+        model = (t, p) -> p[2]*analytic_flux(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
 
     else throw("Built-in diffusivity fitting only supports method ':conc', ':mass', and ':flux'.") end
             
 
     #preform fit
-    fit = curve_fit(model, xdata, ydata, D0)
-    σ = stderror(fit)[1]
+    fit = curve_fit(model, xdata, ydata, param)
     D_eff = fit.param[1] #need to consider whether this is D_eff of full volume or of pores and update accordingly, depends on method
+    φ_eff = fit.param[2]
+
 
     #optional extra info in returns for plotting
-    return D_eff, σ, fit, xdata, ydata
+    return D_eff, φ_eff, fit, xdata, ydata
 end
 
 
