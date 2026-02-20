@@ -5,24 +5,6 @@
 # 3D porous material and related analysis tools
 
 
-## definition of axis symbols and related shorthand
-
-const AXIS_DEFINITION = Dict(
-    :x => 1,
-    :y => 2,
-    :z => 3
-)
-
-#used for kwargs in functions to act on dims other than primary dim
-const AXIS_COMPLEMENT = Dict(
-    1 => (2,3),
-    2 => (1,3),
-    3 => (1,2),
-    :x => (2,3),
-    :y => (1,3),
-    :z => (1,2)
-)
-
 
 ##------ define structs for convenience of only passing all parameters once ------
 
@@ -33,6 +15,7 @@ struct TransientProblem{T}
     dt::Float64
     D_pore::T
     img::BitArray{3}
+    grid_to_vec::Array{Int,3}
     axis::Symbol
     bound_mode::NTuple{2,T}
     A::Union{
@@ -106,22 +89,26 @@ function TransientProblem(img, dt;
     dtype=Float32, gpu=true
 )
 
-    #make sure the types are as expected
+    # --- make sure the types are as expected ---
     img = BitArray(img .!= 0)
     D_pore = dtype(D_pore)
     bound_mode = dtype.(bound_mode)
 
+    !(axis == :x || axis == :y || axis == :z) && (error("axis must be :x, :y, or :z"))
+
     #default dx for dimensionless distance of 1 between bounds
     isnothing(dx) && (dx = 1/(size(img, AXIS_DEFINITION[axis])-1)) 
 
+    # map from 3D image coords to pore_vector coords
+    grid_to_vec = build_grid_to_vec(img)
     # finite difference matrix for dC = A*C
-    A = build_operator(img, D_pore, dx, axis, bound_mode, dtype)
+    A = build_operator(img, grid_to_vec, D_pore, dx, axis, bound_mode, dtype)
 
     if gpu
         A = cu(A)
     end
 
-    return TransientProblem(size(img),dx,dt,D_pore, img, axis, bound_mode,A,gpu,dtype)
+    return TransientProblem(size(img),dx,dt,D_pore, img, grid_to_vec, axis, bound_mode,A,gpu,dtype)
 end
 
 
@@ -221,13 +208,10 @@ returns a sparse matrix for finding the finite-difference based time derivative 
         a NaN value corresponds to an insulated boundary ex. (1,NaN) 
     dtype: datatype of output operator, to match datatype of problem
 """
-function build_operator(img, D_pore, dx, axis, bound_mode, dtype)
+function build_operator(img, grid_to_vec, D_pore, dx, axis, bound_mode, dtype)
     ax= AXIS_DEFINITION[axis] #from symbol to int
     Nx, Ny, Nz = size(img)
     pore_count = sum(img)
-
-    grid_to_vec = zeros(Int,Nx,Ny,Nz)
-    grid_to_vec[img] = 1:pore_count #get compressed vector index from 3D index, error if you try to access index of solid voxel
 
     # Dirichlet mask: true for each face corresponding to non NaN boundary type
     is_dirichlet = falses(Nx, Ny, Nz)

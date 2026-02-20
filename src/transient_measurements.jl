@@ -12,10 +12,10 @@ function slice_conc_dist(C, img, axis)
     C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
 
     collapse = AXIS_COMPLEMENT[axis] #dims to sum over
-    dims_comp = size(img, AXIS_COMPLEMENT[axis])
-    slice_nodes = dims_comp[1]*dims_comp[2]
 
-    return dropdims(nansum(C, dims = collapse)./slice_nodes) #sum(img, dims=collapse), dims = collapse)
+    slice_nodes = length(selectdim(img, AXIS_DEFINITION[axis],1))
+
+    return dropdims(nansum(C, dims = collapse)./slice_nodes, dims = collapse)
 end
 slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.axis)
 
@@ -24,18 +24,18 @@ slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.a
 returns average concentration of pores in slices perpendicular to axis at index ind
 
 """
-function get_slice_conc(C, img, axis, ind)
+function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing)
     #accept pore-voxel vector form as well as full 3D distribution
-    C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
+    full_grid = size(C) == size(img)
+    @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_slice_conc() requires grid_to_vec array"
 
     ax = AXIS_DEFINITION[axis]
 
-    C_slice = selectdim(C, ax, ind)
-    img_slice = selectdim(img, ax, ind)
+    C_slice = full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
 
-    return nansum(C_slice)/length(img_slice)
+    return nansum(C_slice)/length(C_slice)
 end
-get_slice_conc(C, prob::TransientProblem, ind) = get_slice_conc(C, prob.img, prob.axis, ind)
+get_slice_conc(C, prob::TransientProblem, ind) = get_slice_conc(C, prob.img, prob.axis, ind; grid_to_vec= prob.grid_to_vec)
 
 
 
@@ -85,36 +85,35 @@ flux_dist(C, prob::TransientProblem; inds = nothing)=  flux_dist(C, prob.D_pore,
 """
 returns flux/area between slice of C at ind and ind+1
 """
-function get_flux(C::Array, D, dx, img, axis; ind=:end)
+function get_flux(C::Array, D, dx, img, axis; ind=:end, grid_to_vec = nothing)
 
     #accept pore-voxel vector form as well as full 3D distribution
-    C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
+    full_grid = size(C) == size(img)
+    @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_flux() requires grid_to_vec array"
     
     ax = AXIS_DEFINITION[axis]          # 1, 2, or 3
     comp = AXIS_COMPLEMENT[axis]
-    dims  = size(C)
-    
 
-    ind === :end && (ind = dims[ax] - 1) #end symbol for flux between second last and last slice
+    ind === :end && (ind = size(img,ax) - 1) #end symbol for flux between second last and last slice
 
     # slices along the chosen axis
-    C1 = selectdim(C, ax, ind)
-    C2 = selectdim(C, ax, ind + 1)
+    C1 = full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
+    C2 = full_grid ? selectdim(C, ax, ind + 1) : vec_to_slice(C, img, grid_to_vec, axis, ind+1)
 
     m1 = selectdim(img, ax, ind)
     m2 = selectdim(img, ax, ind + 1)
 
     # flux only through pore voxels
-    ΔC = C1 .* (m2 .!= 0) .- C2 .* (m1 .!= 0)
+    ΔC = (C1 .* m2) .- (C2 .* m1)
 
     
-    plane_nodes = (dims[comp[1]]) * (dims[comp[2]])
+    voxel_count = length(C1)
     # sum over the two perpendicular axes
-    flux = D * nansum(ΔC)/dx /plane_nodes  #
+    flux = D * nansum(ΔC)/dx /voxel_count  
 
     return flux  
 end
-get_flux(C, prob::TransientProblem; ind=:end)=  get_flux(C, prob.D_pore, prob.dx, prob.img, prob.axis; ind=ind)
+get_flux(C, prob::TransientProblem; ind=:end)=  get_flux(C, prob.D_pore, prob.dx, prob.img, prob.axis; ind=ind, grid_to_vec = prob.grid_to_vec)
 
 """
 mass_intake(state)
