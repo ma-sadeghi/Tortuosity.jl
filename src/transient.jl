@@ -317,10 +317,9 @@ put a smaller delta value to go closer to equilibrium before stopping run
     delta: the scalar for which function will return true when the flux difference is at or below it
     problem: relevant TransientProblem
 """
-function stop_at_delta_flux(delta, D, dx, mask, axis)
-    return (t_hist, C_hist) -> abs(get_flux(C_hist[end], D,dx,mask, axis; ind = :end)-get_flux(C_hist[end], D,dx,mask, axis; ind=1)) <= delta
+function stop_at_delta_flux(delta, prob::TransientProblem)
+    return (t_hist, C_hist) -> abs(get_flux(C_hist[end], prob; ind = :end)-get_flux(C_hist[end], prob; ind=1)) <= delta
 end
-stop_at_delta_flux(delta, problem::TransientProblem) = stop_at_delta_flux(delta, problem.D_pore, problem.dx, problem.img, problem.axis)
 
 
 

@@ -6,7 +6,7 @@
 ##---------- Curve Fitting Utility ---------
 
 """
-    effective_diffusivity(sim, prob, method; depth=0.5, t_fit=(0, sim.t[end]), terms=100, D0=1.0)
+    effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth=0.5, t_fit=(0, sim.t[end]), terms=100, D0=1.0)
 
 Fit an analytical transient‑diffusion solution to simulation data and return the
 effective diffusivity. For bound_mode's (1,0) and (1,insulated)
@@ -26,22 +26,22 @@ Boundary modes must be `(1, 0)` or `(1, NaN)`.
 - `D0` — initial diffusivity guess scalar.
 
 # Returns
-`D_eff, σ, fit, xdata, ydata`
+`D_eff, φ_eff, fit, xdata, ydata`
 """
-function effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0)
+function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, t[end]), terms = 100, D0 =1.0)
     
     D0 = Float64.(D0) #avoid issue if passing in int 
     param = [D0, porosity(prob)] # inital guess for parameter vector
 
     # get indexes for fitting window
-    idx_min = argmin(abs.(sim.t .- t_fit[1]))
-    idx_max = argmin(abs.(sim.t .- t_fit[2]))
+    idx_min = argmin(abs.(t .- t_fit[1]))
+    idx_max = argmin(abs.(t .- t_fit[2]))
 
     #index corresponding to normalized depth
     N = prob.dims[AXIS_DEFINITION[prob.axis]]
 
     #initialize fitting data
-    xdata = sim.t[idx_min:idx_max]
+    xdata = t[idx_min:idx_max]
     ydata = nothing #depends on method
 
     model = nothing #depends on method
@@ -61,12 +61,12 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
         depth = (depth_idx-1)*prob.dx #redefine depth to closest value that matches an index
 
         observable = A -> get_slice_conc(A, prob, depth_idx) #conc over time at that depth
-        ydata = map(observable, sim.C[idx_min:idx_max])
+        ydata = map(observable, C[idx_min:idx_max])
         depth += prob.dx/2 # match reality that the flux is between two slices at idx, idx+1
         model = (t, p) -> p[2]*analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
 
     elseif method == :mass
-        ydata = (mass_intake(sim.C[1:idx_max], prob))[idx_min:end]
+        ydata = (mass_intake(C[1:idx_max], prob))[idx_min:end]
         model = (t, p) -> p[2]*(C1 + C2)/2 .*analytic_mass(p[1], t; C1=C1, C2=C2, L=L, terms = terms)
 
 
@@ -76,7 +76,7 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
         depth = (depth_idx-0.5)*prob.dx #redefine depth to closest value that matches an index
 
         observable = A -> get_flux(A, prob;ind= depth_idx) #conc over time at that depth
-        ydata = map(observable, sim.C[idx_min:idx_max])
+        ydata = map(observable, C[idx_min:idx_max])
         model = (t, p) -> p[2]*analytic_flux(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
 
     else throw("Built-in diffusivity fitting only supports method ':conc', ':mass', and ':flux'.") end
@@ -84,12 +84,73 @@ function effective_diffusivity(sim::TransientState, prob::TransientProblem, meth
 
     #preform fit
     fit = curve_fit(model, xdata, ydata, param)
-    D_eff = fit.param[1] #need to consider whether this is D_eff of full volume or of pores and update accordingly, depends on method
+    D_eff = fit.param[1] #currently not D_eff overall, but 1/tortuosity or D_Eff/porosity
     φ_eff = fit.param[2]
 
 
     #optional extra info in returns for plotting
     return D_eff, φ_eff, fit, xdata, ydata
+end
+effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0) = effective_diffusivity(sim.t, sim.C, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0)
+
+
+#for many single voxel concentration curve fits
+function voxel_tortuosity(sim::TransientState, prob::TransientProblem;
+                          depth=0.5, n_samples=200,
+                          t_fit=(0, sim.t[end]), terms=100
+    )
+
+    # --- determine slice index ---
+    N = prob.dims[AXIS_DEFINITION[prob.axis]]
+    depth_idx = round(Int, 1 + depth*(N-1))
+
+    # get references to voxels to be fit, uniform w.r.t voxel density as opposed to spatially in image
+    slice_coords = slice_vec_indices(prob, depth_idx)
+    slice_voxels = length(slice_coords)
+    @assert slice_voxels >= n_samples "the number of samples to fit cannot exceed pore voxels at that index"
+
+    voxels = slice_coords[round.(Int, LinRange(1, slice_voxels, n_samples))]
+
+
+    # --- prepare outputs ---
+    D_list = Float64[]
+    x_list = Float64[]
+    # also get an idea of if the fit is decent
+    SE_D_list = Float64[]
+    SE_x_list = Float64[]
+
+
+    # --- time window ---
+    idx_min = argmin(abs.(sim.t .- t_fit[1]))
+    idx_max = argmin(abs.(sim.t .- t_fit[2]))
+    @assert idx_min < idx_max "t_fit window must contain at least two time points"
+    xdata = sim.t[idx_min:idx_max]
+
+    # --- boundary conditions ---
+    C1 = prob.bound_mode[1]
+    C2 = isnan(prob.bound_mode[2]) ? C1 : prob.bound_mode[2] #reflect solution for insulated bound equivalent
+    L = (N-1)*prob.dx * (isnan(prob.bound_mode[2]) ? 2 : 1) #double length for insulated bound equivalent
+
+    # --- homogenous solution ---
+    model = (t, p) -> analytic_conc(p[1], p[2], t; C1=C1, C2=C2, L=L, terms=terms)
+    p0 = [prob.D_pore, depth]  # initial guess: D_eff=D_pore (usually 1.0), x_eff=depth
+
+    # --- fit each voxel ---
+    for i in voxels
+        ydata = map(A -> A[i], sim.C[idx_min:idx_max])
+
+        fit = curve_fit(model, xdata, ydata, p0)
+
+        push!(D_list, fit.param[1])
+        push!(x_list, fit.param[2])
+
+        sigma = stderror(fit)
+        push!(SE_D_list, sigma[1])
+        push!(SE_x_list, sigma[2])
+    end
+    
+    #tortuosity would be 1 ./D_list, not sure yet if this makes sense to return
+    return D_list, x_list, SE_D_list, SE_x_list, voxels
 end
 
 
