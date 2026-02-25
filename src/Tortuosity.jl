@@ -23,6 +23,7 @@ include("transient.jl")
 include("transient_fitting.jl")
 include("transient_measurements.jl")
 include("geometry.jl")
+include("caverns.jl")
 
 # Submodules
 export Imaginator
