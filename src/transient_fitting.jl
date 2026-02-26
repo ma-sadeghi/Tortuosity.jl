@@ -111,14 +111,12 @@ function voxel_tortuosity(sim::TransientState, prob::TransientProblem;
 
     voxels = slice_coords[round.(Int, LinRange(1, slice_voxels, n_samples))]
 
-
     # --- prepare outputs ---
     D_list = Float64[]
-    x_list = Float64[]
+    x_list = Float64[] #effective depth or x_eff is not a good name for what this represents...
     # also get an idea of if the fit is decent
     SE_D_list = Float64[]
     SE_x_list = Float64[]
-
 
     # --- time window ---
     idx_min = argmin(abs.(sim.t .- t_fit[1]))
@@ -160,7 +158,7 @@ nothing
 end
 ##---------- Analytical Solutions ----------------
 # for homogenous versions of transient diffusion problems of interest
-# firstly for two opposite dirichlet bounds
+
 
 """
 analytic_conc(D,x,t; terms=100, C1=1, C2=0, C0=0, L=1)

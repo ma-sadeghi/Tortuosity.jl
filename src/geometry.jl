@@ -6,7 +6,7 @@ const AXIS_DEFINITION = Dict(
     :z => 3
 )
 
-#used for kwargs in functions to act on dims other than primary dim
+#used for kwargs in functions to act on dims other than primary dim (like summing over perp. dims)
 const AXIS_COMPLEMENT = Dict(
     1 => (2,3),
     2 => (1,3),

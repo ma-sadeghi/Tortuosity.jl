@@ -262,9 +262,9 @@ end
 
 
 """
-apply_boundaries!(C0, bound_types)
+apply_boundaries!(C0, problem::TransientProblem)
 
-overwrites any faces of C0 corresponding to a non-NaN value of bound_types with bound_types value
+overwrites any faces of C0 corresponding to a non-NaN value of problem.bound_mode with bound_mode value
 this will include face voxels that correspond to obstacles (D = 0), which should usually be zeroed to avoid confusion
 """
 function apply_boundaries!(C0, prob)
@@ -303,10 +303,8 @@ function stop_at_avg_concentration(C_final, img)
 end
 stop_at_avg_concentration(C_final, problem::TransientProblem) = stop_at_avg_concentration(C_final, problem.img)
 
-#assumes intake and outake is along axis corresponding to bound_types[1]
-#this should be communicated better or made more general. similar problems exist elsewhere
+
 """
-stop_at_delta_flux(delta, D, dx, mask, axis)
 stop_at_delta_flux(delta, problem::TransientProblem)
 
 creates a function to evaluate if the incoming flux and outgoing flux have a difference at or below delta

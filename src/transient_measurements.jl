@@ -1,7 +1,7 @@
 ##--- functions for extracting datapoints of interest from concentration distributions or problem---
 
 function porosity(img)
-    sum(img)/length(img) #assumes pores are represented by 1, not very standard but that is the definition here
+    sum(img)/length(img) #assumes pores are represented by true/1, not very standard but that is the definition here
 end
 porosity(problem::TransientProblem) = porosity(problem.img)
 
