@@ -1,5 +1,6 @@
 # adaptation of Mohammad Mehrnia's caverns.py to Tortuosity.jl
-# for identifying voxels in a 3D image of a porous material which do not contribute to flux
+# for identifying voxels in a 3D image of a porous material which do not contribute to steady state flux
+# i.e. dead ends or 'caverns'
 
 
 function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, gpu = true )
