@@ -3,26 +3,26 @@
 # i.e. dead ends or 'caverns'
 
 
-function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, gpu = true )
+function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, reltol = 1e-5, gpu = true )
 
     N = size(img, AXIS_DEFINITION[axis])
 
     caverns = falses(size(img))
     kai = zeros(iter+1) #keep track of 'cavernosity' at each iteration
-
+    filled_img = copy(img)
     for i= 1:iter
-        filled_img = copy(img)
         filled_img[caverns] .= false
-        Imaginator.trim_nonpercolating_paths(filled_img; axis=axis) #using the sub-module in the module, not great...
 
         sim = TortuositySimulation(filled_img; axis=axis, gpu=gpu)
         #scale 'flux' to be resolution independent, maybe better if this could be applied as boundary condition directly
-        C  = N.*vec_to_grid(solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5).u, filled_img)
+        C  = N.*vec_to_grid(solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=reltol).u, filled_img)
 
         #C is always on CPU from vec_to_grid, but this shouldn't be a bottleneck
         flux = flux_out(C, filled_img)
 
         caverns[(log10.(flux) .< vmin) .& filled_img] .= true
+        #also trim newly isolated pores
+        caverns[img .& .!Imaginator.trim_nonpercolating_paths(img .& .!caverns; axis=axis)] .= true #using the sub-module in the module, not great...
 
         kai[i+1] = count(caverns) / count(img)
     end
