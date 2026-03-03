@@ -26,7 +26,7 @@ Boundary modes must be `(1, 0)` or `(1, NaN)`.
 - `D0` — initial diffusivity guess scalar.
 
 # Returns
-`D_eff, φ_eff, fit, xdata, ydata`
+`D_eff, φ_eff, xdata, ydata, fit, model`
 """
 function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, t[end]), terms = 100, D0 =1.0)
     
@@ -89,9 +89,9 @@ function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; dep
 
 
     #optional extra info in returns for plotting
-    return D_eff, φ_eff, fit, xdata, ydata
+    return D_eff, φ_eff, xdata, ydata, fit, model
 end
-effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0) = effective_diffusivity(sim.t, sim.C, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0)
+effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth = 0.5, t_fit = (0, sim.t[end]), terms = 100, D0 =1.0) = effective_diffusivity(sim.t, sim.C, prob::TransientProblem, method::Symbol; depth = depth, t_fit = t_fit, terms = terms, D0 =D0)
 
 
 #for many single voxel concentration curve fits
@@ -183,17 +183,19 @@ function analytic_conc(D,x,t; terms=100, C1=1, C2=0, C0=0, L=1)
     n = reshape(1:terms, 1, terms)
     m = 2 .*n .-1
 
-    if length(t)>1
-        t = reshape(t, length(t))
-    end
 
+    t_is_scalar = t isa Number  
+    t_vec = t_is_scalar ? [t] : collect(t)  
+    t = reshape(t_vec, :, 1)  
 
-    return dropdims(
+    out = dropdims(
         C1 .+ (C2-C1).*x./L .+
         2 ./π.*sum( (C2.*cos.(π .* n).-C1)./(n).* sin.(n.*π.*x./L ).*exp.(-D.*(n).^2 .*π^2 .*t/L^2)  ,dims = 2) .+ 
         4 .*C0./π .* sum(1 ./m.*sin.((2 .*n.-1).*(π.*x./L)).*exp.(-D.*m .^2 .*π^2 .*t ./L^2)   ,dims =2),
         dims = 2
     )
+
+    return t_is_scalar ? out[1] : out
 
 end
 
@@ -219,12 +221,13 @@ function analytic_mass(D, t; terms=100, C1=1, C2=0, C0=0, L=1) #the concentratio
     
     #t array is along a different dimension, only sum along the series
     n = (2 .*reshape(1:terms, 1, terms).-1).^2
-    if length(t)>1
-        t = reshape(t, length(t))
-    end
+    t_is_scalar = t isa Number  
+    t_vec = t_is_scalar ? [t] : collect(t)  
+    t = reshape(t_vec, :, 1)  
 
     #also get rid of the summation term dimension
-    return  dropdims(1 .- 8 ./ (π^2) .* sum( (1 ./ n)  .* exp.(-D .* n .* ( π ./ L ).^2 .* t), dims=2), dims=2)
+    out =  dropdims(1 .- 8 ./ (π^2) .* sum( (1 ./ n)  .* exp.(-D .* n .* ( π ./ L ).^2 .* t), dims=2), dims=2)
+    return t_is_scalar ? out[1] : out
 end
 
 """
@@ -267,9 +270,9 @@ function analytic_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
     m = 2 .* n .- 1
 
     # reshape t if needed
-    if length(t) > 1
-        t = reshape(t, length(t))
-    end
+    t_is_scalar = t isa Number  
+    t_vec = t_is_scalar ? [t] : collect(t)  
+    t = reshape(t_vec, :, 1)  
 
     # wave numbers
     kn = n .* π ./ L
@@ -296,7 +299,7 @@ function analytic_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
     dCdx = dCdx_linear .+ dropdims(dCdx_series1 .+ dCdx_series2, dims=2)
 
     # flux = -D * dC/dx
-    return -D .* dCdx
+    return -D .* (t_is_scalar ? dCdx[1] : dCdx)
 end
 
 """
@@ -322,15 +325,16 @@ function analytic_∑flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
     n = reshape(1:terms, 1, terms)
     m = (2 .*n .-1).^2
 
-    if length(t)>1
-        t = reshape(t, length(t))
-    end
+    t_is_scalar = t isa Number  
+    t_vec = t_is_scalar ? [t] : collect(t)  
+    t = reshape(t_vec, :, 1)  
 
-    return dropdims(
+    out = dropdims(
         D*(C1-C2).*t./L .+
         (2*L/π^2).*sum( (C1.*cos.(π .* n).-C2)./(n.^2).* (1 .-exp.(-D.*(n).^2 .*π^2 .*t/L^2))  ,dims = 2) .+ 
         (4*C0*L/π^2) .* sum(1 ./m.* (1 .-exp.(-D.*m .*π^2 .*t ./L^2))   ,dims =2),
         dims = 2
     )
+    return t_is_scalar ? out[1] : out
 
 end
