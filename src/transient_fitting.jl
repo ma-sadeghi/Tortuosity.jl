@@ -60,8 +60,9 @@ function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; dep
         depth_idx = round(Int, 1 + depth*(N-1))
         depth = (depth_idx-1)*prob.dx #redefine depth to closest value that matches an index
 
-        observable = A -> get_slice_conc(A, prob, depth_idx) #conc over time at that depth
-        ydata = map(observable, C[idx_min:idx_max])
+        #observable = A -> get_slice_conc(A, prob, depth_idx) #conc over time at that depth
+        #ydata = map(observable, C[idx_min:idx_max])
+        ydata = get_slice_conc(C[idx_min:idx_max], prob, depth_idx)
         depth += prob.dx/2 # match reality that the flux is between two slices at idx, idx+1
         model = (t, p) -> p[2]*analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
 
@@ -75,8 +76,9 @@ function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; dep
         depth_idx == N && (depth_idx = N-1) #cannot calculate flux between index N and N+1
         depth = (depth_idx-0.5)*prob.dx #redefine depth to closest value that matches an index
 
-        observable = A -> get_flux(A, prob;ind= depth_idx) #conc over time at that depth
-        ydata = map(observable, C[idx_min:idx_max])
+        #observable = A -> get_flux(A, prob;ind= depth_idx) #conc over time at that depth
+        #ydata = map(observable, C[idx_min:idx_max])
+        ydata = get_flux(C[idx_min:idx_max], prob;ind= depth_idx)
         model = (t, p) -> p[2]*analytic_flux(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
 
     else throw("Built-in diffusivity fitting only supports method ':conc', ':mass', and ':flux'.") end
@@ -131,7 +133,7 @@ function voxel_tortuosity(sim::TransientState, prob::TransientProblem;
 
     # --- homogenous solution ---
     model = (t, p) -> analytic_conc(p[1], p[2], t; C1=C1, C2=C2, L=L, terms=terms)
-    p0 = [prob.D_pore, depth]  # initial guess: D_eff=D_pore (usually 1.0), x_eff=depth
+    p0 = [prob.D, depth]  # initial guess: D_eff=D (usually 1.0), x_eff=depth
 
     # --- fit each voxel ---
     for i in voxels
