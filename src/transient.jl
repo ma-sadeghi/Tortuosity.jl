@@ -9,22 +9,23 @@
 ##------ define structs for convenience of only passing all parameters once ------
 
 #struct for problem definition, not solution 
-struct TransientProblem{T}
-    dims::NTuple{3, Int}
+struct TransientProblem{T, DType}
+    dims::NTuple{3,Int}
     dx::Float64
     dt::Float64
-    D_pore::T
+    D::DType
     img::BitArray{3}
     grid_to_vec::Array{Int,3}
     axis::Symbol
     bound_mode::NTuple{2,T}
     A::Union{
-    SparseMatrixCSC{T,Int},
-    CUDA.CUSPARSE.CuSparseMatrixCSC{T,Int32}
+        SparseMatrixCSC{T,Int},
+        CUDA.CUSPARSE.CuSparseMatrixCSC{T,Int32}
     }
     gpu::Bool
     eltype::Type{T}
 end
+
 
 #stores integrator and datapoints
 #the reason this struct exists instead of just using ODE integrator (the type that 'integrator' is), which could store t and C history in itself
@@ -40,7 +41,7 @@ end
 ##----- define constructors for structs ------
 """
     TransientProblem(img, dt; axis=:z, bound_mode=(1,0),
-                     D_pore=1.0, dx=nothing, dtype=Float32, gpu=true)
+                     D=1.0, dx=nothing, dtype=Float32, gpu=true)
 
 Construct a `TransientProblem` describing transient diffusion through a
 3D voxelized porous material. The input `img` defines which voxels are
@@ -62,21 +63,22 @@ The resulting problem can be passed to a transient diffusion solver.
 - `bound_mode`: a 2‑tuple `(C_inlet, C_outlet)` giving Dirichlet boundary
                 values at the two faces along `axis`. Use `NaN` for an
                 insulated (Neumann) boundary. Defaults to `(1, 0)`.
-- `D_pore`: scalar diffusion coefficient used inside pore voxels.
+- `D`: scalar diffusion coefficient or scalar field of diffusivity 
+            at each pixel with shape img used inside pore voxels.
             Defaults to `1.0` for easy comparison.
 - `dx`: physical spacing between adjacent voxel centers. If `nothing`,
         it is set to `1/(N_axis - 1)` so that the domain spans `[0,1]`
         along the chosen axis for easy comparison.
 - `dtype`: numeric type used for the operator and solution arrays
            (e.g., `Float32` or `Float64`). Defaults to `Float32`.
-- `gpu`: whether to move the operator to the GPU. Defaults to `true`.
+- `gpu`: whether run solver on the GPU. Defaults to `true`.
 
 # Returns
 A `TransientProblem` struct containing:
 - grid size,
 - spatial spacing `dx`,
 - output timestep `dt`,
-- diffusion coefficient,
+- diffusion coefficient or scalar field,
 - pore mask image,
 - axis and boundary mode,
 - sparse operator `A` (CPU or GPU),
@@ -85,30 +87,30 @@ A `TransientProblem` struct containing:
 """
 function TransientProblem(img, dt; 
     axis::Symbol = :z, bound_mode::NTuple=(1,0),
-    D_pore = 1.0, dx = nothing,
+    D = 1.0, dx = nothing,
     dtype=Float32, gpu=true
 )
 
     # --- make sure the types are as expected ---
     img = BitArray(img .!= 0)
-    D_pore = dtype(D_pore)
+    @assert D isa Number || size(img) == size(D) "For scalar field D, size should match img size"
+    D = dtype.(D)
     bound_mode = dtype.(bound_mode)
+
+    img = atleast_3d(img)
 
     !(axis == :x || axis == :y || axis == :z) && (error("axis must be :x, :y, or :z"))
 
+    @assert size(img, AXIS_DEFINITION[axis]) > 1 "Image must have at least 2 voxels along the chosen axis"
     #default dx for dimensionless distance of 1 between bounds
     isnothing(dx) && (dx = 1/(size(img, AXIS_DEFINITION[axis])-1)) 
 
-    # map from 3D image coords to pore_vector coords
+    # map from 3D image coords to pore_vector coords, for use in getting observables
     grid_to_vec = build_grid_to_vec(img)
     # finite difference matrix for dC = A*C
-    A = build_operator(img, grid_to_vec, D_pore, dx, axis, bound_mode, dtype)
+    A = build_transient_operator(img, D, bound_mode; axis=axis, dx=dx, gpu=gpu)
 
-    if gpu
-        A = cu(A)
-    end
-
-    return TransientProblem(size(img),dx,dt,D_pore, img, grid_to_vec, axis, bound_mode,A,gpu,dtype)
+    return TransientProblem(size(img),dx,dt,D, img, grid_to_vec, axis, bound_mode,A,gpu,dtype)
 end
 
 
@@ -200,7 +202,7 @@ returns a sparse matrix for finding the finite-difference based time derivative 
 
 #Arguments
     mask: 3D binary array representing porous material
-    D_pore: diffusion constant of substance in pores
+    D: diffusion constant of substance in pores
     axis: Symbol, the axis :x :y or :z which will have non-insulated bounds on the associated perpendicular faces
         defaults to :z
     bound_mode: Tuple{Number, Number}
@@ -208,56 +210,59 @@ returns a sparse matrix for finding the finite-difference based time derivative 
         a NaN value corresponds to an insulated boundary ex. (1,NaN) 
     dtype: datatype of output operator, to match datatype of problem
 """
-function build_operator(img, grid_to_vec, D_pore, dx, axis, bound_mode, dtype)
-    ax= AXIS_DEFINITION[axis] #from symbol to int
-    Nx, Ny, Nz = size(img)
-    pore_count = sum(img)
+function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
 
-    # Dirichlet mask: true for each face corresponding to non NaN boundary type
-    is_dirichlet = falses(Nx, Ny, Nz)
+    gpu && (img = cu(img))
 
-    #apply bounds to end faces perpendicular to axis
-    if !isnan(bound_mode[1]) selectdim(is_dirichlet, ax, 1) .= true end
-    if !isnan(bound_mode[2]) selectdim(is_dirichlet, ax, size(is_dirichlet)[ax]) .= true end
+    nnodes = sum(img)
 
-    rows = Int[]
-    cols = Int[]
-    vals = dtype[] # values only need to range from -4 to 1 before scaling with D/dx^2
+    # 1. Connectivity (CPU or GPU)
+    conns = create_connectivity_list(img)
 
-    # helper to push entries
-    function add(i,j,v)
-        push!(rows, i)
-        push!(cols, j)
-        push!(vals, v)
+    # 2. Edge diffusivity (scalar or field)
+    if !(D isa Number)
+        D_local = atleast_3d(D)
+        gpu && (D_local = cu(D_local))
     end
 
-    # loop over all voxels
-    @inbounds for j in 1:Ny, i in 1:Nx , k in 1:Nz
-        if img[i,j,k] == 0 || is_dirichlet[i,j,k] #ignore non-pores and dirichlet rows are 0 -> constant concentration
-            continue
-        end
+    gd = D isa Number ? D : interpolate_edge_values(D_local[img], conns)
 
-        #idx = i + (j-1)*Nx + (k-1)*Nx*Ny #find flattened index of node
-        idx = grid_to_vec[i,j,k]
 
-        diag = 0
-        
-        for (di,dj,dk) in ((1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1))# neighbors
-            ii = i+di; jj = j+dj; kk = k+dk #3D index of neighbor
-            if 1 ≤ ii ≤ Nx && 1 ≤ jj ≤ Ny && 1 ≤ kk ≤ Nz && img[ii, jj, kk] != 0 #bounds check and ignore solid neighbors
-                #jdx = ii + (jj-1)*Nx + (kk-1)*Nx*Ny
-                jdx = grid_to_vec[ii, jj, kk]
-                add(idx, jdx, 1)
-                diag -= 1   #for flux balance, diagonal is negative sum of rest of row
-            end
-        end
+    # 3. Adjacency matrix (CPU or GPU)
+    am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
 
-        add(idx, idx, diag)
-    end
+    # 4. Laplacian
+    A = laplacian(am)
 
-    vals .*= D_pore/dx^2
-    sparse(rows, cols, vals, pore_count, pore_count)
+    # 5. Scale by 1/dx^2, and inverted from the laplacian
+    nonzeros(A) .= nonzeros(A) ./ (-dx^2)
 
+
+
+    # 6. Dirichlet nodes
+    axis_to_boundaries = Dict(
+        :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
+    )
+    inlet_face, outlet_face = axis_to_boundaries[axis]
+    #bc_nodes are only zeroed if they are dirichlet, face nodes are insulated by default
+    bc_nodes = Int[]
+    if !isnan(bound_mode[1]) append!(bc_nodes, find_boundary_nodes(img, inlet_face)) end
+    if !isnan(bound_mode[2]) append!(bc_nodes, find_boundary_nodes(img, outlet_face)) end
+    bc_nodes = gpu ? Int32.(bc_nodes) : bc_nodes
+
+    # 7. Transient BC: zero rows only
+    zero_rows!(A, bc_nodes)
+
+    return A
+end
+
+#CPU version of zero_rows! from kernels/sparse.jl is needed
+function zero_rows!(A::SparseMatrixCSC, rows)
+    I, _, _ = findnz(A)
+    row_inds = overlap_indices🚀(I, rows)
+    A.nzval[row_inds] .= 0
+    dropzeros!(A)
+    return nothing
 end
 
 
@@ -277,6 +282,7 @@ function apply_boundaries!(C0, prob)
     if !isnan(prob.bound_mode[2]) selectdim(C0, ax, N) .= prob.bound_mode[2] end
 
 end
+
 
 
 
