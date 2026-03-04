@@ -293,6 +293,71 @@ function zero_rows_cols!(
     return nothing
 end
 
+"""
+    zero_rows!(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv, Ti}, rows::AbstractVector{<:Integer}) where {Tv, Ti}
+
+Efficiently zeroes out all non-zero elements `A[i, :]` of a CuSparseMatrixCSC `A`
+where the row index `i` is in `rows`
+
+The function modifies the `nzVal` array of `A` in place. Assumes the kernel
+functions `zero_rows_kernel!` is defined elsewhere.
+
+Arguments:
+- A: The CuSparseMatrixCSC matrix on the GPU to modify.
+- rows: A vector of integer indices. Rows `i` where `i ∈ rows` will be zeroed out.
+        Indices out of matrix bounds are ignored.
+
+Returns:
+- `nothing` (The matrix `A` is modified in place).
+"""
+function zero_rows!(
+    A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti},
+    rows::AbstractVector{<:Integer}
+) where {Tv,Ti}
+
+    num_rows, _ = size(A)
+    nnz = length(A.nzVal)
+    if nnz == 0 || isempty(rows)
+        return nothing
+    end
+
+    # Convert to matrix index type early
+    rows_Ti = convert.(Ti, rows)
+
+    # Filter valid rows
+    valid_rows = filter(i -> 1 <= i <= num_rows, rows_Ti)
+
+    # Move to GPU and unique
+    cu_rows = CuArray(unique(valid_rows))
+    num_target_rows = length(cu_rows)
+
+    if num_target_rows == 0
+        return nothing
+    end
+
+    # Build boolean lookup table (GPU)
+    is_target_row = CUDA.zeros(Bool, num_rows)
+    is_target_row[cu_rows] .= true
+
+    # Launch kernel
+    nzVal = A.nzVal
+    rowVal = A.rowVal
+
+    threads = min(nnz, 256)
+    blocks  = cld(nnz, threads)
+
+    CUDA.@sync @cuda threads=threads blocks=blocks zero_rows_kernel!(
+        nzVal, rowVal, is_target_row, Ti(nnz)
+    )
+
+    # Cleanup
+    is_target_row = nothing
+    cu_rows = nothing
+
+    dropzeros!(A)
+    return nothing
+end
+
 # Combined kernel for compaction and calculating column counts for CSC rebuild
 function compact_and_count_kernel!(
     new_nzVal::CuDeviceVector{Tv},
