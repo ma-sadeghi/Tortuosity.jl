@@ -6,8 +6,8 @@ using Printf
 using Tortuosity
 using Tortuosity: Imaginator, stop_at_delta_flux, effective_diffusivity, analytic_mass
 
-PLOT = true
-USE_GPU = true
+PLOT = false
+USE_GPU = false
 
 # %% ------------------------------------------------------
 # Generate/load the image
@@ -35,14 +35,14 @@ solve!(sim, problem, stop_condition)
 # Compute the tortuosity factor and visualize the solution
 # very much a work in progress part
 
-D_eff_pore, φ, _, xdata, ydata = effective_diffusivity(sim, problem, :mass)
+D_eff_pore, φ, xdata, ydata, fit, f = effective_diffusivity(sim, problem, :mass)
 
-τ = 1/D_eff_pore #that wasn't actually tortuosity for now
+τ = 1/D_eff_pore #not the same as D_eff continuum
 @info "τ: $(@sprintf("%.5f", τ))"
 
 if PLOT
     t_analytic = range(sim.t[1], sim.t[end], 100)
-    m_analytic = φ/2 * analytic_mass(1/τ, t_analytic) #scaled by φ/2 for (1,0) bounds
+    m_analytic = f(t_analytic, fit.param)
 
     p = plot(t_analytic, m_analytic,
         title = "Mass Intake Curve",
