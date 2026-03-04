@@ -21,7 +21,7 @@ slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.a
 
 
 """
-returns average concentration of pores in slices perpendicular to axis at index ind
+returns average concentration slice perpendicular to axis at index ind (average for entire slice including obstacles)
 
 """
 function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing)
@@ -35,6 +35,11 @@ function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing)
 
     return nansum(C_slice)/length(C_slice)
 end
+#multiple Concentration fields wrapper
+function get_slice_conc(Cs::AbstractVector{<:Array}, img, axis, ind; grid_to_vec=nothing)
+    map(C -> get_slice_conc(C, img, axis, ind; grid_to_vec=grid_to_vec), Cs)
+end
+#problem struct convenience wrapper
 get_slice_conc(C, prob::TransientProblem, ind) = get_slice_conc(C, prob.img, prob.axis, ind; grid_to_vec= prob.grid_to_vec)
 
 
@@ -58,6 +63,7 @@ function flux_dist(C, D, dx, img, axis; inds = nothing)
 
     # all slice pairs (1,2), (2,3), ..., (N-1,N)
     isnothing(inds) && (inds = 1:(dims[ax]-1)) #default to entire distribution
+    @assert all(1 .<= inds .<= (dims[ax]-1)) "inds must be within 1:(size(C, axis)-1)"  
 
     # accumulate flux contributions for each slice pair
     fluxes = similar(inds, Float64)
@@ -79,41 +85,47 @@ function flux_dist(C, D, dx, img, axis; inds = nothing)
 
     return fluxes
 end
-flux_dist(C, prob::TransientProblem; inds = nothing)=  flux_dist(C, prob.D_pore, prob.dx, prob.img, prob.axis; inds = inds)
+flux_dist(C, prob::TransientProblem; inds = nothing)=  flux_dist(C, prob.D, prob.dx, prob.img, prob.axis; inds = inds)
 
 
 """
 returns flux/area between slice of C at ind and ind+1
 """
-function get_flux(C::Array, D, dx, img, axis; ind=:end, grid_to_vec = nothing)
-
-    #accept pore-voxel vector form as well as full 3D distribution
+function get_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
     full_grid = size(C) == size(img)
     @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_flux() requires grid_to_vec array"
-    
-    ax = AXIS_DEFINITION[axis]          # 1, 2, or 3
-    comp = AXIS_COMPLEMENT[axis]
 
-    ind === :end && (ind = size(img,ax) - 1) #end symbol for flux between second last and last slice
+    ax  = AXIS_DEFINITION[axis]
+    ind === :end && (ind = size(img, ax) - 1)
 
-    # slices along the chosen axis
-    C1 = full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
-    C2 = full_grid ? selectdim(C, ax, ind + 1) : vec_to_slice(C, img, grid_to_vec, axis, ind+1)
+    # slices of C
+    C1 = full_grid ? selectdim(C, ax, ind)     : vec_to_slice(C, img, grid_to_vec, axis, ind)
+    C2 = full_grid ? selectdim(C, ax, ind + 1) : vec_to_slice(C, img, grid_to_vec, axis, ind + 1)
 
+    # mask slices
     m1 = selectdim(img, ax, ind)
     m2 = selectdim(img, ax, ind + 1)
 
-    # flux only through pore voxels
     ΔC = (C1 .* m2) .- (C2 .* m1)
 
-    
-    voxel_count = length(C1)
-    # sum over the two perpendicular axes
-    flux = D * nansum(ΔC)/dx /voxel_count  
+    # diffusivity as scalar or scalar field
+    if D isa Number
+        D_eff = D
+    else
+        D1 = selectdim(D, ax, ind)
+        D2 = selectdim(D, ax, ind + 1)
+        D_eff = @. (2 * D1 * D2) / (D1 + D2 + eps())
+    end
 
-    return flux  
+    voxel_count = length(C1)
+    return nansum(D_eff.*ΔC) / dx / voxel_count
 end
-get_flux(C, prob::TransientProblem; ind=:end)=  get_flux(C, prob.D_pore, prob.dx, prob.img, prob.axis; ind=ind, grid_to_vec = prob.grid_to_vec)
+# Accept a vector of C arrays
+function get_flux(Cs::AbstractVector{<:Array}, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
+    map(C -> get_flux(C, D, dx, img, axis; ind=ind, grid_to_vec=grid_to_vec), Cs)
+end
+#pass in the problem struct for convenience
+get_flux(C, prob::TransientProblem; ind=:end)=  get_flux(C, prob.D, prob.dx, prob.img, prob.axis; ind=ind, grid_to_vec = prob.grid_to_vec)
 
 """
 mass_intake(state)
