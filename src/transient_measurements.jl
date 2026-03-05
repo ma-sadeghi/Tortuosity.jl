@@ -77,10 +77,19 @@ function flux_dist(C, D, dx, img, axis; inds = nothing)
 
         #zero voxels adjacent to solid for C[solid] = 0 case, redundant for C[solid] = NaN case
         ΔC = C1 .* (m2 .!= 0) .- C2 .* (m1 .!= 0)
+
+        #
+        if D isa Number
+            D_eff = D
+        else #handle scalar field diffusivity
+            D1 = selectdim(D, ax, i)
+            D2 = selectdim(D, ax, i + 1)
+            D_eff = @. (2 * D1 * D2) / (D1 + D2 + eps()) #harmonic mean
+        end
         
         plane_nodes = (dims[comp[1]]) * (dims[comp[2]])
         # sum over the perpendicular axes
-        fluxes[k] = D* nansum(ΔC) /dx /plane_nodes
+        fluxes[k] = nansum(D_eff.*ΔC) /dx /plane_nodes
     end
 
     return fluxes
@@ -97,6 +106,8 @@ function get_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
 
     ax  = AXIS_DEFINITION[axis]
     ind === :end && (ind = size(img, ax) - 1)
+    @assert 1 <= ind < size(img, ax) "ind must satisfy 1 <= ind < size(img, axis)"  
+
 
     # slices of C
     C1 = full_grid ? selectdim(C, ax, ind)     : vec_to_slice(C, img, grid_to_vec, axis, ind)

@@ -201,14 +201,16 @@ returns a sparse matrix for finding the finite-difference based time derivative 
     concentration array
 
 #Arguments
-    mask: 3D binary array representing porous material
-    D: diffusion constant of substance in pores
-    axis: Symbol, the axis :x :y or :z which will have non-insulated bounds on the associated perpendicular faces
-        defaults to :z
+    img: 3D binary array representing porous material
+    D: diffusion constant of substance in pores, or scalar field with dims of img
     bound_mode: Tuple{Number, Number}
         the values of dirichlet bounds for the two faces at either end of 'axis'
         a NaN value corresponds to an insulated boundary ex. (1,NaN) 
-    dtype: datatype of output operator, to match datatype of problem
+    axis: Symbol, the axis :x :y or :z which will have non-insulated bounds on the associated perpendicular faces
+        defaults to :z
+    dx: distance between nodes
+    gpu: build a CUDA sparse matrix or normal sparse matrix
+
 """
 function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
 

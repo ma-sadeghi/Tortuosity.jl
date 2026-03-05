@@ -38,10 +38,11 @@ end
 slice_vec_indices(prob::TransientProblem, idx::Int) = 
     slice_vec_indices(prob.img, prob.grid_to_vec, prob.axis, idx)
 
-#get a plane/slice of the 3D concentration distribution from the pore only 1D vector, similar to vec_to_grid
+#get a plane/slice of the 3D concentration distribution from the pore only 1D vector
+#similar to vec_to_grid, but it requires grid_to_vec which makes it unique to transient struct
 function vec_to_slice(u, img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
     @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
-
+    
     ax = AXIS_DEFINITION[axis]
     ind_slice = selectdim(grid_to_vec, ax, idx)
     img_slice = selectdim(img, ax, idx)
