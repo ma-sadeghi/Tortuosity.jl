@@ -33,9 +33,11 @@ end
 #not decided on this vs connectivity list approach
 #expects image space form - computation on solids is not a huge deal as this isn't a bottleneck
 #sum absolute values of flux over each connection for each voxel -> not the net flux
+#currently does not directly account for non-uniform diffusivity field
 function flux_out(C::AbstractArray, img::AbstractArray{Bool})
     @assert size(C) == size(img) "size of C must match size of img"
 
+    #find flux of each connection with image mask. note that in Julia, false * NaN = 0.0
     Fx = (img[1:end-1, :, :] .& img[2:end, :, :]).*
         abs.(C[1:end-1, :, :] .- C[2:end, :, :])
 
