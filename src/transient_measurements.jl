@@ -1,117 +1,110 @@
-##--- functions for extracting datapoints of interest from concentration distributions or problem---
+# Observables extracted from concentration fields and problem definitions
 
 function porosity(img)
-    sum(img)/length(img) #assumes pores are represented by true/1, not very standard but that is the definition here
+    return sum(img) / length(img)
 end
 porosity(problem::TransientProblem) = porosity(problem.img)
 
-
 function slice_conc_dist(C, img, axis)
-
-    #accept pore-voxel vector form as well as full 3D distribution
     C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
-
-    collapse = orthogonal_dims(axis) #dims to sum over
-
-    slice_nodes = length(selectdim(img, axis_dim(axis),1))
-
-    return dropdims(nansum(C, dims = collapse)./slice_nodes, dims = collapse)
+    collapse = orthogonal_dims(axis)
+    slice_nodes = length(selectdim(img, axis_dim(axis), 1))
+    return dropdims(nansum(C; dims=collapse) ./ slice_nodes; dims=collapse)
 end
 slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.axis)
 
-
 """
-returns average concentration slice perpendicular to axis at index ind (average for entire slice including obstacles)
+    get_slice_conc(C, img, axis, ind; grid_to_vec=nothing)
 
+Average concentration of a 2D slice perpendicular to `axis` at index `ind`,
+including obstacle voxels (treated as NaN).
 """
-function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing)
-    #accept pore-voxel vector form as well as full 3D distribution
+function get_slice_conc(C, img, axis, ind; grid_to_vec=nothing)
     full_grid = size(C) == size(img)
     @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_slice_conc() requires grid_to_vec array"
 
     ax = axis_dim(axis)
 
-    C_slice = full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
+    C_slice =
+        full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
 
-    return nansum(C_slice)/length(C_slice)
+    return nansum(C_slice) / length(C_slice)
 end
-#multiple Concentration fields wrapper
 function get_slice_conc(Cs::AbstractVector{<:Array}, img, axis, ind; grid_to_vec=nothing)
-    map(C -> get_slice_conc(C, img, axis, ind; grid_to_vec=grid_to_vec), Cs)
+    return map(C -> get_slice_conc(C, img, axis, ind; grid_to_vec=grid_to_vec), Cs)
 end
-#problem struct convenience wrapper
-get_slice_conc(C, prob::TransientProblem, ind) = get_slice_conc(C, prob.img, prob.axis, ind; grid_to_vec= prob.grid_to_vec)
-
-
+function get_slice_conc(C, prob::TransientProblem, ind)
+    return get_slice_conc(C, prob.img, prob.axis, ind; grid_to_vec=prob.grid_to_vec)
+end
 
 """
-flux_dist(C, prob)
-input the C distribution for a timestep
+    flux_dist(C, D, dx, img, axis; inds=nothing)
 
-input C, and either dx or the associated TransientProblem
-returns a vector of the flux between each 2d slice of voxels along direction of axis or problem.axis
-    or just between ind and ind+1 for entries to inds (note ind=N is out of range)
+Compute the diffusive flux between consecutive 2D slices along `axis`.
+Returns a vector of fluxes for each slice pair in `inds` (defaults to all).
 """
-function flux_dist(C, D, dx, img, axis; inds = nothing)
-
-    #accept pore-voxel vector form as well as full 3D distribution
+function flux_dist(C, D, dx, img, axis; inds=nothing)
     C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
 
     ax = axis_dim(axis)      # 1, 2, or 3
     comp = orthogonal_dims(axis)
-    dims  = size(C)
+    dims = size(C)
 
     # all slice pairs (1,2), (2,3), ..., (N-1,N)
-    isnothing(inds) && (inds = 1:(dims[ax]-1)) #default to entire distribution
-    @assert all(1 .<= inds .<= (dims[ax]-1)) "inds must be within 1:(size(C, axis)-1)"  
+    isnothing(inds) && (inds = 1:(dims[ax] - 1))
+    @assert all(1 .<= inds .<= (dims[ax] - 1)) "inds must be within 1:(size(C, axis)-1)"
 
     # accumulate flux contributions for each slice pair
     fluxes = similar(inds, Float64)
 
     for (k, i) in enumerate(inds)
         C1 = selectdim(C, ax, i)
-        C2 = selectdim(C, ax, i+1)
+        C2 = selectdim(C, ax, i + 1)
 
         m1 = selectdim(img, ax, i)
-        m2 = selectdim(img, ax, i+1)
+        m2 = selectdim(img, ax, i + 1)
 
-        #zero voxels adjacent to solid for C[solid] = 0 case, redundant for C[solid] = NaN case
+        # Zero contribution from voxels adjacent to solid
         ΔC = C1 .* (m2 .!= 0) .- C2 .* (m1 .!= 0)
 
-        #
         if D isa Number
             D_eff = D
-        else #handle scalar field diffusivity
+        else
             D1 = selectdim(D, ax, i)
             D2 = selectdim(D, ax, i + 1)
-            D_eff = @. (2 * D1 * D2) / (D1 + D2 + eps()) #harmonic mean
+            D_eff = @. (2 * D1 * D2) / (D1 + D2 + eps()) # harmonic mean
         end
-        
+
         plane_nodes = (dims[comp[1]]) * (dims[comp[2]])
-        # sum over the perpendicular axes
-        fluxes[k] = nansum(D_eff.*ΔC) /dx /plane_nodes
+        fluxes[k] = nansum(D_eff .* ΔC) / dx / plane_nodes
     end
 
     return fluxes
 end
-flux_dist(C, prob::TransientProblem; inds = nothing)=  flux_dist(C, prob.D, prob.dx, prob.img, prob.axis; inds = inds)
-
+function flux_dist(C, prob::TransientProblem; inds=nothing)
+    return flux_dist(C, prob.D, prob.dx, prob.img, prob.axis; inds=inds)
+end
 
 """
-returns flux/area between slice of C at ind and ind+1
+    get_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
+
+Flux per unit area between slices at `ind` and `ind + 1` along `axis`.
 """
 function get_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
     full_grid = size(C) == size(img)
     @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_flux() requires grid_to_vec array"
 
-    ax  = axis_dim(axis)
+    ax = axis_dim(axis)
     ind === :end && (ind = size(img, ax) - 1)
-    @assert 1 <= ind < size(img, ax) "ind must satisfy 1 <= ind < size(img, axis)"  
-
+    @assert 1 <= ind < size(img, ax) "ind must satisfy 1 <= ind < size(img, axis)"
 
     # slices of C
-    C1 = full_grid ? selectdim(C, ax, ind)     : vec_to_slice(C, img, grid_to_vec, axis, ind)
-    C2 = full_grid ? selectdim(C, ax, ind + 1) : vec_to_slice(C, img, grid_to_vec, axis, ind + 1)
+    C1 = full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
+    C2 = if full_grid
+        selectdim(C, ax, ind + 1)
+    else
+        vec_to_slice(C, img, grid_to_vec, axis, ind + 1)
+    end
 
     # mask slices
     m1 = selectdim(img, ax, ind)
@@ -129,29 +122,28 @@ function get_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
     end
 
     voxel_count = length(C1)
-    return nansum(D_eff.*ΔC) / dx / voxel_count
+    return nansum(D_eff .* ΔC) / dx / voxel_count
 end
-# Accept a vector of C arrays
-function get_flux(Cs::AbstractVector{<:Array}, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
-    map(C -> get_flux(C, D, dx, img, axis; ind=ind, grid_to_vec=grid_to_vec), Cs)
+function get_flux(
+    Cs::AbstractVector{<:Array}, D, dx, img, axis; ind=:end, grid_to_vec=nothing
+)
+    return map(C -> get_flux(C, D, dx, img, axis; ind=ind, grid_to_vec=grid_to_vec), Cs)
 end
-#pass in the problem struct for convenience
-get_flux(C, prob::TransientProblem; ind=:end)=  get_flux(C, prob.D, prob.dx, prob.img, prob.axis; ind=ind, grid_to_vec = prob.grid_to_vec)
+function get_flux(C, prob::TransientProblem; ind=:end)
+    return get_flux(
+        C, prob.D, prob.dx, prob.img, prob.axis; ind=ind, grid_to_vec=prob.grid_to_vec
+    )
+end
 
 """
-mass_intake(state)
+    mass_intake(C_hist, img)
 
-return the time curve for total mass intake per unit volume since initial-conditions
-
-#Arguments
-    state: a DiffusionState holding the solved datapoints
-
+Total mass intake per unit volume relative to the initial concentration field.
 """
 function mass_intake(C_hist, img::AbstractArray)
-
     voxels = length(img)
-    mass_intake = A -> (sum(A)-sum(C_hist[1]))/voxels
+    mass_intake = A -> (sum(A) - sum(C_hist[1])) / voxels
     return map(mass_intake, C_hist)
 end
 mass_intake(C_hist, prob::TransientProblem) = mass_intake(C_hist, prob.img)
-mass_intake(sim::TransientState, prob::TransientProblem) = mass_intake(sim.C, prob.img) 
+mass_intake(sim::TransientState, prob::TransientProblem) = mass_intake(sim.C, prob.img)

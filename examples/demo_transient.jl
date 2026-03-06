@@ -22,7 +22,7 @@ PLOT && display(heatmap(img[:, :, shape[3] ÷ 2]; aspect_ratio=:equal, clim=(0, 
 
 dt = 0.05
 
-problem = TransientProblem(img, dt; axis=:x, gpu=USE_GPU, bound_mode=(1, 0))
+problem = TransientProblem(img, dt; axis=:x, gpu=USE_GPU, bc_inlet=1, bc_outlet=0)
 sim = init_state(problem);
 stop_condition = stop_at_delta_flux(1.0, problem)
 @time solve!(sim, problem, stop_condition)
