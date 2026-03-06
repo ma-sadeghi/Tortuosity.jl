@@ -1,20 +1,11 @@
-## definition of axis symbols and related shorthand
+## axis helpers: map axis symbols to dimension indices, face names, and orthogonal dims
 
-const AXIS_DEFINITION = Dict(
-    :x => 1,
-    :y => 2,
-    :z => 3
-)
+axis_dim(ax::Symbol) = ax == :x ? 1 : ax == :y ? 2 : ax == :z ? 3 : error("axis must be :x, :y, or :z")
 
-#used for kwargs in functions to act on dims other than primary dim (like summing over perp. dims)
-const AXIS_COMPLEMENT = Dict(
-    1 => (2,3),
-    2 => (1,3),
-    3 => (1,2),
-    :x => (2,3),
-    :y => (1,3),
-    :z => (1,2)
-)
+axis_faces(ax::Symbol) = ax == :x ? (:left, :right) : ax == :y ? (:front, :back) : ax == :z ? (:bottom, :top) : error("axis must be :x, :y, or :z")
+
+orthogonal_dims(ax::Symbol) = orthogonal_dims(axis_dim(ax))
+orthogonal_dims(d::Int) = d == 1 ? (2, 3) : d == 2 ? (1, 3) : d == 3 ? (1, 2) : error("dim must be 1, 2, or 3")
 
 ## for going from 3D voxel image coords to 1D pore-voxel vector index
 function build_grid_to_vec(img::BitArray)
@@ -29,7 +20,7 @@ end
 #get the indexes of the pore only 1D vector corresponding to a slice in 3D space
 function slice_vec_indices(img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int) 
     
-    ax = AXIS_DEFINITION[axis]
+    ax = axis_dim(axis)
     ind_slice = selectdim(grid_to_vec, ax, idx)
     img_slice = selectdim(img, ax, idx)
 
@@ -43,7 +34,7 @@ slice_vec_indices(prob::TransientProblem, idx::Int) =
 function vec_to_slice(u, img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
     @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
     
-    ax = AXIS_DEFINITION[axis]
+    ax = axis_dim(axis)
     ind_slice = selectdim(grid_to_vec, ax, idx)
     img_slice = selectdim(img, ax, idx)
 

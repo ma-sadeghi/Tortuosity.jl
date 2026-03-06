@@ -5,7 +5,7 @@
 
 function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, reltol = 1e-5, gpu = true )
 
-    N = size(img, AXIS_DEFINITION[axis])
+    N = size(img, axis_dim(axis))
 
     caverns = falses(size(img))
     kai = zeros(iter+1) #keep track of 'cavernosity' at each iteration

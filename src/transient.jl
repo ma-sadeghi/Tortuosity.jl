@@ -101,9 +101,9 @@ function TransientProblem(img, dt;
 
     !(axis == :x || axis == :y || axis == :z) && (error("axis must be :x, :y, or :z"))
 
-    @assert size(img, AXIS_DEFINITION[axis]) > 1 "Image must have at least 2 voxels along the chosen axis"
+    @assert size(img, axis_dim(axis)) > 1 "Image must have at least 2 voxels along the chosen axis"
     #default dx for dimensionless distance of 1 between bounds
-    isnothing(dx) && (dx = 1/(size(img, AXIS_DEFINITION[axis])-1))
+    isnothing(dx) && (dx = 1/(size(img, axis_dim(axis))-1))
 
     # map from 3D image coords to pore_vector coords, for use in getting observables
     grid_to_vec = build_grid_to_vec(img)
@@ -147,7 +147,7 @@ function init_state(prob::TransientProblem; C0=nothing, alg=ROCK4(), reltol=1e-3
         mul!(dC, prob.A, C)
     end
 
-    prob_ode = ODEProblem(dC!, C0, (0,1)) #tspan = (0,1) is arbitrary
+    prob_ode = ODEProblem(dC!, C0, (0.0, Inf))
     integrator = init(prob_ode, alg; save_everystep=false, reltol=reltol, abstol=abstol) #in terms of tolerance, polynomial max/min terms for ROCK algorithm should be adjustable?
 
     #create history and input initial values
@@ -242,10 +242,7 @@ function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
 
 
     # 6. Dirichlet nodes
-    axis_to_boundaries = Dict(
-        :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
-    )
-    inlet_face, outlet_face = axis_to_boundaries[axis]
+    inlet_face, outlet_face = axis_faces(axis)
     #bc_nodes are only zeroed if they are dirichlet, face nodes are insulated by default
     bc_nodes = Int[]
     if !isnan(bound_mode[1]) append!(bc_nodes, find_boundary_nodes(img, inlet_face)) end
@@ -260,9 +257,12 @@ end
 
 #CPU version of zero_rows! from kernels/sparse.jl is needed
 function zero_rows!(A::SparseMatrixCSC, rows)
-    I, _, _ = findnz(A)
-    row_inds = overlap_indices🚀(I, rows)
-    A.nzval[row_inds] .= 0
+    target = Set(rows)
+    @inbounds for i in eachindex(A.rowval)
+        if A.rowval[i] in target
+            A.nzval[i] = 0
+        end
+    end
     dropzeros!(A)
     return nothing
 end
@@ -276,7 +276,7 @@ this will include face voxels that correspond to obstacles (D = 0), which should
 """
 function apply_boundaries!(C0, prob)
 
-    ax = AXIS_DEFINITION[prob.axis]   # 1, 2, or 3
+    ax = axis_dim(prob.axis)   # 1, 2, or 3
     N  = size(C0, ax)
 
     #dirichlet boundary handling for 2 faces of C0 perpendicular to axis
