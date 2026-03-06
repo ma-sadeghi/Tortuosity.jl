@@ -29,6 +29,13 @@ function vec_to_grid(u, img::AbstractArray{Bool})
     return c
 end
 
+# Inverse of vec_to_grid: map each pore voxel to its 1D index in the pore-voxel vector
+function grid_to_vec(img::BitArray)
+    g = zeros(Int, size(img))
+    g[img] = 1:count(img)
+    return g
+end
+
 function find_true_indices(a::AbstractArray{Bool})
     j = 0
     indices = Vector{Int}(undef, count(a))

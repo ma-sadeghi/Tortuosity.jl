@@ -37,13 +37,6 @@ function orthogonal_dims(d::Int)
     end
 end
 
-# Map 3D voxel coordinates to 1D pore-voxel vector indices
-function build_grid_to_vec(img::BitArray)
-    grid_to_vec = zeros(Int, size(img))
-    grid_to_vec[img] = 1:count(img)
-    return grid_to_vec
-end
-
 # Extract a 2D slice without reconstructing the full 3D concentration field
 
 function slice_vec_indices(img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
@@ -52,9 +45,6 @@ function slice_vec_indices(img::BitArray, grid_to_vec::Array{Int}, axis::Symbol,
     img_slice = selectdim(img, ax, idx)
 
     return vec(ind_slice[img_slice])
-end
-function slice_vec_indices(prob::TransientProblem, idx::Int)
-    return slice_vec_indices(prob.img, prob.grid_to_vec, prob.axis, idx)
 end
 
 function vec_to_slice(u, img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
@@ -67,7 +57,4 @@ function vec_to_slice(u, img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, i
     c = fill(NaN, size(img_slice))
     c[img_slice] .= Array(u)[vec(ind_slice[img_slice])]
     return c
-end
-function vec_to_slice(u, prob::TransientProblem, idx::Int)
-    return vec_to_slice(u, prob.img, prob.grid_to_vec, prob.axis, idx)
 end

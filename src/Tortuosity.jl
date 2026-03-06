@@ -11,8 +11,8 @@ using DifferentialEquations
 using LsqFit
 
 include("utils.jl")
+include("geometry.jl")
 include("imgen.jl")
-include("dnstools.jl")
 include("kernels/graph.jl")
 include("kernels/sparse.jl")
 include("topotools.jl")
@@ -20,9 +20,9 @@ include("numpytools.jl")
 include("pdetools.jl")
 include("simulations.jl")
 include("transient.jl")
-include("transient_fitting.jl")
 include("transient_measurements.jl")
-include("geometry.jl")
+include("transient_fitting.jl")
+include("dnstools.jl")
 include("caverns.jl")
 
 # Submodules

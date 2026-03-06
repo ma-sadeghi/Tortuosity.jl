@@ -77,10 +77,10 @@ function TransientProblem(
     # Default dx so domain spans [0, 1] along axis
     isnothing(dx) && (dx = 1 / (size(img, axis_dim(axis)) - 1))
 
-    grid_to_vec = build_grid_to_vec(img)
+    g2v = grid_to_vec(img)
     A = build_transient_operator(img, D, bc_inlet, bc_outlet; axis=axis, dx=dx, gpu=gpu)
 
-    return TransientProblem(dx, dt, D, img, grid_to_vec, axis, bc_inlet, bc_outlet, A)
+    return TransientProblem(dx, dt, D, img, g2v, axis, bc_inlet, bc_outlet, A)
 end
 
 """
@@ -292,4 +292,12 @@ function stop_at_delta_flux(delta, prob::TransientProblem)
     return (t_hist, C_hist) ->
         abs(get_flux(C_hist[end], prob; ind=:end) - get_flux(C_hist[end], prob; ind=1)) <=
         delta
+end
+
+# Convenience wrappers that unpack TransientProblem fields
+function slice_vec_indices(prob::TransientProblem, idx::Int)
+    return slice_vec_indices(prob.img, prob.grid_to_vec, prob.axis, idx)
+end
+function vec_to_slice(u, prob::TransientProblem, idx::Int)
+    return vec_to_slice(u, prob.img, prob.grid_to_vec, prob.axis, idx)
 end

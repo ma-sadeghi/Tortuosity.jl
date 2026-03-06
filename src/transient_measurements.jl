@@ -1,8 +1,6 @@
 # Observables extracted from concentration fields and problem definitions
 
-function porosity(img)
-    return sum(img) / length(img)
-end
+porosity(img) = Imaginator.phase_fraction(img, true)
 porosity(problem::TransientProblem) = porosity(problem.img)
 
 function slice_conc_dist(C, img, axis)
