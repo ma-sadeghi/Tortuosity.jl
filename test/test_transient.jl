@@ -93,7 +93,7 @@ end
 
 @testset "TransientProblem — open space, $(ax)-axis" for ax in (:x, :y, :z)
     prob = TransientProblem(
-        open_8, 0.1; axis=ax, bound_mode=(1.0, 0.0), gpu=false, dtype=Float64
+        open_8, 0.1; axis=ax, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64
     )
     A = prob.A
     n = count(open_8)  # 512
@@ -139,9 +139,9 @@ end
     end
 end
 
-@testset "TransientProblem — insulated boundary (1, NaN)" begin
+@testset "TransientProblem — insulated boundary (1, nothing)" begin
     prob = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1.0, NaN), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=nothing, gpu=false, dtype=Float64
     )
     A = prob.A
     coeff = prob.D / prob.dx^2
@@ -168,7 +168,7 @@ end
 
 @testset "TransientProblem — seeded blob" begin
     prob = TransientProblem(
-        blob_8, 0.1; axis=:z, bound_mode=(1.0, 0.0), gpu=false, dtype=Float64
+        blob_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64
     )
     A = prob.A
     n = size(A, 1)
@@ -210,7 +210,7 @@ end
 
 @testset "apply_boundaries! — Dirichlet (1, 0)" begin
     prob = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1, 0), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64
     )
     C0 = zeros(Float64, 8, 8, 8)
     apply_boundaries!(C0, prob)
@@ -219,9 +219,9 @@ end
     @test all(C0[:, :, 4] .== 0.0)  # interior untouched
 end
 
-@testset "apply_boundaries! — insulated (1, NaN)" begin
+@testset "apply_boundaries! — insulated (1, nothing)" begin
     prob = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1.0, NaN), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=nothing, gpu=false, dtype=Float64
     )
     C0 = fill(0.5, 8, 8, 8)
     apply_boundaries!(C0, prob)
@@ -237,7 +237,7 @@ end
     # 384 interior nodes with 3-6 neighbors each, coeff = D/dx² = 49.
     # trace = Σ(-k_i * 49) over interior, norm = sqrt(Σ(k_i² + k_i) * 49²)
     prob = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1.0, 0.0), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64
     )
     A = prob.A
 
@@ -248,23 +248,30 @@ end
 
     # D scaling: doubling D doubles the norm
     prob_2D = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1.0, 0.0), D=2.0, gpu=false, dtype=Float64
+        open_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=0.0, D=2.0, gpu=false, dtype=Float64
     )
     @test norm(prob_2D.A) ≈ 2.0 * 5771.193290819499 atol = 1e-8
 
     # dx scaling: halving dx quadruples D/dx²
     dx_half = prob.dx / 2
     prob_fine = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1.0, 0.0), dx=dx_half, gpu=false, dtype=Float64
+        open_8,
+        0.1;
+        axis=:z,
+        bc_inlet=1.0,
+        bc_outlet=0.0,
+        dx=dx_half,
+        gpu=false,
+        dtype=Float64,
     )
     @test norm(prob_fine.A) ≈ 4.0 * 5771.193290819499 atol = 1e-8
 
     # Axis symmetry: open cube gives identical norm and nnz regardless of axis
     prob_x = TransientProblem(
-        open_8, 0.1; axis=:x, bound_mode=(1.0, 0.0), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:x, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64
     )
     prob_y = TransientProblem(
-        open_8, 0.1; axis=:y, bound_mode=(1.0, 0.0), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:y, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64
     )
     @test norm(prob_x.A) ≈ 5771.193290819499 atol = 1e-8
     @test norm(prob_y.A) ≈ 5771.193290819499 atol = 1e-8
@@ -275,7 +282,7 @@ end
 @testset "TransientProblem — integration properties (insulated 8³)" begin
     # Insulated outlet adds 64 active rows vs Dirichlet
     prob = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1.0, NaN), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=nothing, gpu=false, dtype=Float64
     )
     A = prob.A
     @test nnz(A) == 2848
@@ -285,7 +292,7 @@ end
 
 @testset "TransientProblem — integration properties (blob 8³)" begin
     prob = TransientProblem(
-        blob_8, 0.1; axis=:z, bound_mode=(1.0, 0.0), gpu=false, dtype=Float64
+        blob_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64
     )
     A = prob.A
 
@@ -296,7 +303,7 @@ end
 
     # D scaling
     prob_2D = TransientProblem(
-        blob_8, 0.1; axis=:z, bound_mode=(1.0, 0.0), D=2.0, gpu=false, dtype=Float64
+        blob_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=0.0, D=2.0, gpu=false, dtype=Float64
     )
     @test norm(prob_2D.A) ≈ 2.0 * 2101.8658377736674 atol = 1e-8
 end
@@ -306,7 +313,7 @@ end
     # only the 64 nodes at k=2 see a nonzero neighbor (the inlet at C=1)
     # each gets rhs = coeff * 1 = 49, all others get 0
     prob = TransientProblem(
-        open_8, 0.1; axis=:z, bound_mode=(1, 0), gpu=false, dtype=Float64
+        open_8, 0.1; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64
     )
     C0 = zeros(Float64, 8, 8, 8)
     apply_boundaries!(C0, prob)
@@ -334,7 +341,7 @@ end
 
 @testset "TransientProblem — grid_to_vec consistency" begin
     prob = TransientProblem(
-        blob_8, 0.1; axis=:z, bound_mode=(1.0, 0.0), gpu=false, dtype=Float64
+        blob_8, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64
     )
     g = prob.grid_to_vec
     @test size(g) == size(prob.img)
@@ -349,7 +356,7 @@ end
 open_16 = ones(Bool, (16, 16, 16))
 
 @testset "Open space transient — $(ax)-axis" for ax in (:x, :y)
-    prob = TransientProblem(open_16, 0.05; axis=ax, bound_mode=(1, 0), gpu=false, dtype=Float64)
+    prob = TransientProblem(open_16, 0.05; axis=ax, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
     state = init_state(prob)
     solve!(state, prob, stop_at_delta_flux(0.01, prob); max_iter=500)
     C_final = state.C[end]
@@ -360,7 +367,7 @@ open_16 = ones(Bool, (16, 16, 16))
     @test J_in ≈ J_out atol = 0.02
 end
 
-prob_z = TransientProblem(open_16, 0.05; axis=:z, bound_mode=(1, 0), gpu=false, dtype=Float64)
+prob_z = TransientProblem(open_16, 0.05; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
 
 @testset "Open space transient — z-axis" begin
     state = init_state(prob_z)
@@ -382,8 +389,8 @@ end
     @test avg > 0
 end
 
-@testset "Insulated boundary (1, NaN)" begin
-    prob = TransientProblem(open_16, 0.1; axis=:z, bound_mode=(1.0, NaN), gpu=false, dtype=Float64)
+@testset "Insulated boundary (1, nothing)" begin
+    prob = TransientProblem(open_16, 0.1; axis=:z, bc_inlet=1.0, bc_outlet=nothing, gpu=false, dtype=Float64)
     state = init_state(prob)
     solve!(state, prob, stop_at_time(3.0); max_iter=100)
     avg = sum(state.C[end]) / length(state.C[end])
