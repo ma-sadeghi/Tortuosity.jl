@@ -38,7 +38,7 @@ function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; dep
     idx_max = argmin(abs.(t .- t_fit[2]))
 
     #index corresponding to normalized depth
-    N = prob.dims[AXIS_DEFINITION[prob.axis]]
+    N = prob.dims[axis_dim(prob.axis)]
 
     #initialize fitting data
     xdata = t[idx_min:idx_max]
@@ -99,7 +99,7 @@ function voxel_tortuosity(sim::TransientState, prob::TransientProblem;
     )
 
     # --- determine slice index ---
-    N = prob.dims[AXIS_DEFINITION[prob.axis]]
+    N = prob.dims[axis_dim(prob.axis)]
     depth_idx = round(Int, 1 + depth*(N-1))
 
     # get references to voxels to be fit, uniform w.r.t voxel density as opposed to spatially in image

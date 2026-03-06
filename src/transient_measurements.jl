@@ -11,9 +11,9 @@ function slice_conc_dist(C, img, axis)
     #accept pore-voxel vector form as well as full 3D distribution
     C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
 
-    collapse = AXIS_COMPLEMENT[axis] #dims to sum over
+    collapse = orthogonal_dims(axis) #dims to sum over
 
-    slice_nodes = length(selectdim(img, AXIS_DEFINITION[axis],1))
+    slice_nodes = length(selectdim(img, axis_dim(axis),1))
 
     return dropdims(nansum(C, dims = collapse)./slice_nodes, dims = collapse)
 end
@@ -29,7 +29,7 @@ function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing)
     full_grid = size(C) == size(img)
     @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_slice_conc() requires grid_to_vec array"
 
-    ax = AXIS_DEFINITION[axis]
+    ax = axis_dim(axis)
 
     C_slice = full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
 
@@ -57,8 +57,8 @@ function flux_dist(C, D, dx, img, axis; inds = nothing)
     #accept pore-voxel vector form as well as full 3D distribution
     C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
 
-    ax = AXIS_DEFINITION[axis]      # 1, 2, or 3
-    comp = AXIS_COMPLEMENT[axis]
+    ax = axis_dim(axis)      # 1, 2, or 3
+    comp = orthogonal_dims(axis)
     dims  = size(C)
 
     # all slice pairs (1,2), (2,3), ..., (N-1,N)
@@ -104,7 +104,7 @@ function get_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
     full_grid = size(C) == size(img)
     @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_flux() requires grid_to_vec array"
 
-    ax  = AXIS_DEFINITION[axis]
+    ax  = axis_dim(axis)
     ind === :end && (ind = size(img, ax) - 1)
     @assert 1 <= ind < size(img, ax) "ind must satisfy 1 <= ind < size(img, axis)"  
 

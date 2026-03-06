@@ -70,11 +70,7 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     A = laplacian(am)
 
     verbose && @info "Setting up boundary conditions..."
-    axis_to_boundaries = Dict(
-        :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
-    )
-
-    inlet, outlet = axis_to_boundaries[axis]
+    inlet, outlet = axis_faces(axis)
     inlet = find_boundary_nodes(img, inlet)
     outlet = find_boundary_nodes(img, outlet)
 
