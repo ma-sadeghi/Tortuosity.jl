@@ -44,7 +44,7 @@ sol = solve(sim.prob, KrylovJL_CG())
 
 c = vec_to_grid(sol.u, domain)
 PLOT && display(heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)))
-tau = tortuosity(c; axis=:x, D=D)
+tau = tortuosity(c, domain; axis=:x, D=D)
 @info "τ (variable diffusivity): $(@sprintf("%.5f", tau))"
 
 # %% ------------------------------------------------------
@@ -53,6 +53,6 @@ tau = tortuosity(c; axis=:x, D=D)
 sim_gt = TortuositySimulation(img; axis=:x)
 sol_gt = solve(sim_gt.prob, KrylovJL_CG())
 c_gt = vec_to_grid(sol_gt.u, img)
-tau_gt = tortuosity(c_gt; axis=:x)
+tau_gt = tortuosity(c_gt, img; axis=:x)
 PLOT && display(heatmap(c_gt[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)))
 @info "τ (ground truth): $(@sprintf("%.5f", tau_gt))"
