@@ -1,7 +1,7 @@
 name = "Tortuosity"
 uuid = "80bb5c7f-3561-4bbc-a7c3-5e29a4cab6cc"
-authors = ["Amin Sadeghi <amin.sadeghi@live.com>"]
 version = "0.0.5"
+authors = ["Amin Sadeghi <amin.sadeghi@live.com>"]
 
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
@@ -22,6 +22,7 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Sundials = "c3572dad-4567-51f8-b174-8c6c989267f4"
 
 [compat]
 CUDA = "5"
@@ -43,6 +44,7 @@ Random = "1"
 SparseArrays = "1"
 SpecialFunctions = "2"
 Statistics = "1"
+Sundials = "5.1.0"
 Test = "1"
 julia = "1.10"
 

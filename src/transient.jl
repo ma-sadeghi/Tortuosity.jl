@@ -8,7 +8,7 @@
 
 ##------ define structs for convenience of only passing all parameters once ------
 
-#struct for problem definition, not solution 
+#struct for problem definition, not solution
 struct TransientProblem{T, DType}
     dims::NTuple{3,Int}
     dx::Float64
@@ -33,7 +33,7 @@ end
 # for the GPU case this would be mean huge GPU memory usage and seriously limit the size that can be run
 # so instead the data for each timestep is moved off GPU
 struct TransientState{T}
-    integrator          
+    integrator
     t::Vector{Float64}
     C::Vector{Vector{T}}
 end
@@ -63,7 +63,7 @@ The resulting problem can be passed to a transient diffusion solver.
 - `bound_mode`: a 2‑tuple `(C_inlet, C_outlet)` giving Dirichlet boundary
                 values at the two faces along `axis`. Use `NaN` for an
                 insulated (Neumann) boundary. Defaults to `(1, 0)`.
-- `D`: scalar diffusion coefficient or scalar field of diffusivity 
+- `D`: scalar diffusion coefficient or scalar field of diffusivity
             at each pixel with shape img used inside pore voxels.
             Defaults to `1.0` for easy comparison.
 - `dx`: physical spacing between adjacent voxel centers. If `nothing`,
@@ -85,7 +85,7 @@ A `TransientProblem` struct containing:
 - numeric type.
 
 """
-function TransientProblem(img, dt; 
+function TransientProblem(img, dt;
     axis::Symbol = :z, bound_mode::NTuple=(1,0),
     D = 1.0, dx = nothing,
     dtype=Float32, gpu=true
@@ -103,7 +103,7 @@ function TransientProblem(img, dt;
 
     @assert size(img, AXIS_DEFINITION[axis]) > 1 "Image must have at least 2 voxels along the chosen axis"
     #default dx for dimensionless distance of 1 between bounds
-    isnothing(dx) && (dx = 1/(size(img, AXIS_DEFINITION[axis])-1)) 
+    isnothing(dx) && (dx = 1/(size(img, AXIS_DEFINITION[axis])-1))
 
     # map from 3D image coords to pore_vector coords, for use in getting observables
     grid_to_vec = build_grid_to_vec(img)
@@ -129,13 +129,13 @@ alg: the differential equation numerical algorithm, defaults to ROCK2, currently
 reltol: relative tolerance for the differential equation solver, default 1e-3 *to improve accuracy, prioritize solver choice
 abstol: absolute tolerance for the differential equation solver, default 1e-6
 """
-function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3, abstol=1e-6)
+function init_state(prob::TransientProblem; C0=nothing, alg=ROCK4(), reltol=1e-3, abstol=1e-6)
 
-    if C0 === nothing 
+    if C0 === nothing
         C0 = zeros(prob.eltype, prob.dims)
     else @assert size(C0) == size(prob.img) "C0 dims must match img"
     end
-    
+
     apply_boundaries!(C0, prob) #sets dirichlet bounds along axis
     C0 = C0[prob.img] #compress C0 to vector of pore voxels
 
@@ -175,7 +175,7 @@ at every dt step, on CPU regardless of whether running on GPU
         short hands include stop_at_time(time), stop_at_avg_concentration(conc, problem), stop_at_delta_flux(delta_flux, problem)
         if writing custom stop_condition, note that C_hist is in 1D pore voxel only form
 
-kwargs: 
+kwargs:
     max_iter: integer, steps of length prob.dt after which to stop integration if stop condition still unmet
 """
 function solve!(state::TransientState, prob::TransientProblem, stop_condition; max_iter=500, verbose = false)
@@ -205,7 +205,7 @@ returns a sparse matrix for finding the finite-difference based time derivative 
     D: diffusion constant of substance in pores, or scalar field with dims of img
     bound_mode: Tuple{Number, Number}
         the values of dirichlet bounds for the two faces at either end of 'axis'
-        a NaN value corresponds to an insulated boundary ex. (1,NaN) 
+        a NaN value corresponds to an insulated boundary ex. (1,NaN)
     axis: Symbol, the axis :x :y or :z which will have non-insulated bounds on the associated perpendicular faces
         defaults to :z
     dx: distance between nodes
@@ -326,6 +326,3 @@ put a smaller delta value to go closer to equilibrium before stopping run
 function stop_at_delta_flux(delta, prob::TransientProblem)
     return (t_hist, C_hist) -> abs(get_flux(C_hist[end], prob; ind = :end)-get_flux(C_hist[end], prob; ind=1)) <= delta
 end
-
-
-
