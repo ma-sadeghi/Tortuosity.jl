@@ -269,7 +269,7 @@ function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
     #bc_nodes are only zeroed if they are dirichlet (including time dependent function), otherwise face nodes are insulated by default
     bc_nodes = Int[]
     if bound_mode[1] isa Function || !isnan(bound_mode[1]) append!(bc_nodes, find_boundary_nodes(img, inlet_face)) end
-    if bound_mode[1] isa Function || !isnan(bound_mode[2]) append!(bc_nodes, find_boundary_nodes(img, outlet_face)) end
+    if bound_mode[2] isa Function || !isnan(bound_mode[2]) append!(bc_nodes, find_boundary_nodes(img, outlet_face)) end
     bc_nodes = gpu ? Int32.(bc_nodes) : bc_nodes
 
     # 7. Transient BC: zero rows only
@@ -306,7 +306,7 @@ function apply_boundaries!(C0, prob)
     end
     if prob.bound_mode[2] isa Function || !isnan(prob.bound_mode[2]) 
         selectdim(C0, ax, N) .= 
-        prob.bound_mode[2] isa Number ? prob.bound_mode[2] : prob.bound_mode[1](prob.eltype(0.0))
+        prob.bound_mode[2] isa Number ? prob.bound_mode[2] : prob.bound_mode[2](prob.eltype(0.0))
     end
 
 end
