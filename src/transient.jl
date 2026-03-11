@@ -7,6 +7,7 @@
 
 
 ##------ define structs for convenience of only passing all parameters once ------
+const BoundValue = Union{Number, Function}
 
 #struct for problem definition, not solution 
 struct TransientProblem{T, DType}
@@ -17,7 +18,7 @@ struct TransientProblem{T, DType}
     img::BitArray{3}
     grid_to_vec::Array{Int,3}
     axis::Symbol
-    bound_mode::NTuple{2,T}
+    bound_mode::NTuple{2, BoundValue}
     A::Union{
         SparseMatrixCSC{T,Int},
         CUDA.CUSPARSE.CuSparseMatrixCSC{T,Int32}
@@ -62,7 +63,8 @@ The resulting problem can be passed to a transient diffusion solver.
           boundary faces. Defaults to `:z`.
 - `bound_mode`: a 2‑tuple `(C_inlet, C_outlet)` giving Dirichlet boundary
                 values at the two faces along `axis`. Use `NaN` for an
-                insulated (Neumann) boundary. Defaults to `(1, 0)`.
+                insulated (Neumann) boundary, or a function f(t) = C
+                for a time varying boundary. Defaults to `(1, 0)`.
 - `D`: scalar diffusion coefficient or scalar field of diffusivity 
             at each pixel with shape img used inside pore voxels.
             Defaults to `1.0` for easy comparison.
@@ -86,18 +88,36 @@ A `TransientProblem` struct containing:
 
 """
 function TransientProblem(img, dt; 
-    axis::Symbol = :z, bound_mode::NTuple=(1,0),
+    axis::Symbol = :z, bound_mode::NTuple{2, BoundValue}=(1,0),
     D = 1.0, dx = nothing,
     dtype=Float32, gpu=true
 )
 
     # --- make sure the types are as expected ---
     img = BitArray(img .!= 0)
+    img = atleast_3d(img)
+
     @assert D isa Number || size(img) == size(D) "For scalar field D, size should match img size"
     D = dtype.(D)
-    bound_mode = dtype.(bound_mode)
 
-    img = atleast_3d(img)
+    #check bound_mode has expected types
+    for (i, b) in enumerate(bound_mode)
+        if b isa Number
+            continue
+        elseif b isa Function
+            # test-call at t=0 to ensure it returns a number
+            val = b(0.0)
+            @assert val isa Number "bound_mode[$i](t) must return a Number"
+        else
+            error("bound_mode[$i] must be a Number, Function, or NaN")
+        end
+    end
+    #make sure bound_mode number types match data type
+    bound_mode = ntuple(i -> begin
+        b = bound_mode[i]
+        b isa Number ? dtype(b) : b
+        end, 2
+    )
 
     !(axis == :x || axis == :y || axis == :z) && (error("axis must be :x, :y, or :z"))
 
@@ -133,7 +153,9 @@ function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3
 
     if C0 === nothing 
         C0 = zeros(prob.eltype, prob.dims)
-    else @assert size(C0) == size(prob.img) "C0 dims must match img"
+    else 
+        @assert size(C0) == size(prob.img) "C0 dims must match img"
+        C0 = prob.eltype.(C0)
     end
     
     apply_boundaries!(C0, prob) #sets dirichlet bounds along axis
@@ -143,9 +165,7 @@ function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3
         C0 = cu(C0)
     end
 
-    function dC!(dC, C, p, t) #trying to pass in A to dC! as a parameter through ODEProblem seems to try to truncate #elements of A (or #pore voxels^2) to Int32, causing an error. very confused, sticking to this approach for now
-        mul!(dC, prob.A, C)
-    end
+    dC! = make_appropriate_dC_function(prob)
 
     prob_ode = ODEProblem(dC!, C0, (0,1)) #tspan = (0,1) is arbitrary
     integrator = init(prob_ode, alg; save_everystep=false, reltol=reltol, abstol=abstol) #in terms of tolerance, polynomial max/min terms for ROCK algorithm should be adjustable?
@@ -246,10 +266,10 @@ function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
         :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
     )
     inlet_face, outlet_face = axis_to_boundaries[axis]
-    #bc_nodes are only zeroed if they are dirichlet, face nodes are insulated by default
+    #bc_nodes are only zeroed if they are dirichlet (including time dependent function), otherwise face nodes are insulated by default
     bc_nodes = Int[]
-    if !isnan(bound_mode[1]) append!(bc_nodes, find_boundary_nodes(img, inlet_face)) end
-    if !isnan(bound_mode[2]) append!(bc_nodes, find_boundary_nodes(img, outlet_face)) end
+    if bound_mode[1] isa Function || !isnan(bound_mode[1]) append!(bc_nodes, find_boundary_nodes(img, inlet_face)) end
+    if bound_mode[1] isa Function || !isnan(bound_mode[2]) append!(bc_nodes, find_boundary_nodes(img, outlet_face)) end
     bc_nodes = gpu ? Int32.(bc_nodes) : bc_nodes
 
     # 7. Transient BC: zero rows only
@@ -272,21 +292,60 @@ end
 apply_boundaries!(C0, problem::TransientProblem)
 
 overwrites any faces of C0 corresponding to a non-NaN value of problem.bound_mode with bound_mode value
-this will include face voxels that correspond to obstacles (D = 0), which should usually be zeroed to avoid confusion
+if the bound_mode is a function of time, it will write in the function evaluated at t=0
 """
 function apply_boundaries!(C0, prob)
 
     ax = AXIS_DEFINITION[prob.axis]   # 1, 2, or 3
     N  = size(C0, ax)
 
-    #dirichlet boundary handling for 2 faces of C0 perpendicular to axis
-    if !isnan(prob.bound_mode[1]) selectdim(C0, ax, 1) .= prob.bound_mode[1] end
-    if !isnan(prob.bound_mode[2]) selectdim(C0, ax, N) .= prob.bound_mode[2] end
+    #dirichlet boundary handling for 2 faces of C0 perpendicular to axis, allow for C=f(t) case as well
+    if prob.bound_mode[1] isa Function || !isnan(prob.bound_mode[1]) 
+        selectdim(C0, ax, 1) .= 
+        prob.bound_mode[1] isa Number ? prob.bound_mode[1] : prob.bound_mode[1](prob.eltype(0.0))
+    end
+    if prob.bound_mode[2] isa Function || !isnan(prob.bound_mode[2]) 
+        selectdim(C0, ax, N) .= 
+        prob.bound_mode[2] isa Number ? prob.bound_mode[2] : prob.bound_mode[1](prob.eltype(0.0))
+    end
 
 end
 
+#build a dC! function that handles time-dependent boundaries only if necessary
+function make_appropriate_dC_function(prob)
+    in_is_function  = prob.bound_mode[1] isa Function
+    out_is_function = prob.bound_mode[2] isa Function
 
+    inlet_inds  = slice_vec_indices(prob, 1)
+    outlet_inds = slice_vec_indices(prob, prob.dims[AXIS_DEFINITION[prob.axis]])
 
+    return let inlet_inds=inlet_inds, outlet_inds=outlet_inds, prob=prob
+
+        if in_is_function && out_is_function
+            (dC, C, p, t) -> begin
+                C[inlet_inds]  .= convert(prob.eltype, prob.bound_mode[1](t))
+                C[outlet_inds] .= convert(prob.eltype, prob.bound_mode[2](t))
+                mul!(dC, prob.A, C)
+            end
+
+        elseif in_is_function
+            (dC, C, p, t) -> begin
+                C[inlet_inds] .= convert(prob.eltype, prob.bound_mode[1](t))
+                mul!(dC, prob.A, C)
+            end
+
+        elseif out_is_function
+            (dC, C, p, t) -> begin
+                C[outlet_inds] .= convert(prob.eltype, prob.bound_mode[2](t))
+                mul!(dC, prob.A, C)
+            end
+
+        else
+            # Fast path
+            (dC, C, p, t) -> mul!(dC, prob.A, C)
+        end
+    end
+end
 
 
 ##--- define prebuilt stop conditions for convenience---
