@@ -5,26 +5,35 @@ function porosity(img)
 end
 porosity(problem::TransientProblem) = porosity(problem.img)
 
+"""
+slice_conc_dist(C, img, axis; pore_only = false)
 
-function slice_conc_dist(C, img, axis)
+returns 1D concentration distribution collapsed onto 'axis'
+
+kwargs
+    pore_only::bool - if it is false (default), include solid voxels in concentration calculation,
+                    so the result is overall concentration in that slice of material
+"""
+function slice_conc_dist(C, img, axis; pore_only::Bool = false)
 
     #accept pore-voxel vector form as well as full 3D distribution
     C = isa(C, AbstractVector) ? vec_to_grid(C, img) : C
 
     collapse = AXIS_COMPLEMENT[axis] #dims to sum over
 
-    slice_nodes = length(selectdim(img, AXIS_DEFINITION[axis],1))
+    slice_nodes = pore_only ? count(img, dims = collapse) : prod(size(img)[collect(collapse)])
 
     return dropdims(nansum(C, dims = collapse)./slice_nodes, dims = collapse)
 end
-slice_conc_dist(C, prob::TransientProblem) = slice_conc_dist(C, prob.img, prob.axis)
+slice_conc_dist(C, prob::TransientProblem; pore_only::Bool = false) = slice_conc_dist(C, prob.img, prob.axis; pore_only = pore_only)
 
 
+# argument for concentration in terms of entire volume, or just in terms of pores?
 """
 returns average concentration slice perpendicular to axis at index ind (average for entire slice including obstacles)
 
 """
-function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing)
+function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing, pore_only::Bool = false)
     #accept pore-voxel vector form as well as full 3D distribution
     full_grid = size(C) == size(img)
     @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_slice_conc() requires grid_to_vec array"
@@ -33,14 +42,17 @@ function get_slice_conc(C, img, axis, ind; grid_to_vec = nothing)
 
     C_slice = full_grid ? selectdim(C, ax, ind) : vec_to_slice(C, img, grid_to_vec, axis, ind)
 
-    return nansum(C_slice)/length(C_slice)
+    slice_nodes = pore_only ? count(selectdim(img, ax, ind)) : length(C_slice)
+
+    return nansum(C_slice)/slice_nodes
 end
 #multiple Concentration fields wrapper
-function get_slice_conc(Cs::AbstractVector{<:Array}, img, axis, ind; grid_to_vec=nothing)
-    map(C -> get_slice_conc(C, img, axis, ind; grid_to_vec=grid_to_vec), Cs)
+function get_slice_conc(Cs::AbstractVector{<:Array}, img, axis, ind; grid_to_vec=nothing, pore_only::Bool = false)
+    map(C -> get_slice_conc(C, img, axis, ind; grid_to_vec=grid_to_vec, pore_only = pore_only), Cs)
 end
 #problem struct convenience wrapper
-get_slice_conc(C, prob::TransientProblem, ind) = get_slice_conc(C, prob.img, prob.axis, ind; grid_to_vec= prob.grid_to_vec)
+get_slice_conc(C, prob::TransientProblem, ind; pore_only::Bool = false) =
+         get_slice_conc(C, prob.img, prob.axis, ind; grid_to_vec= prob.grid_to_vec, pore_only = pore_only)
 
 
 
@@ -150,7 +162,7 @@ return the time curve for total mass intake per unit volume since initial-condit
 function mass_intake(C_hist, img::AbstractArray)
 
     voxels = length(img)
-    mass_intake = A -> (sum(A)-sum(C_hist[1]))/voxels
+    mass_intake = A -> (nansum(A)-nansum(C_hist[1]))/voxels
     return map(mass_intake, C_hist)
 end
 mass_intake(C_hist, prob::TransientProblem) = mass_intake(C_hist, prob.img)
