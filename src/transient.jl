@@ -208,9 +208,10 @@ function solve!(state::TransientState, prob::TransientProblem, stop_condition; m
         verbose && @info "reached simulation time $(state.t[end])"
 
         if stop_condition(state.t, state.C)
-            break
+            return
         end
     end
+    @warn "Reached max_iter=$max_iter at t=$(state.t[end]) without satisfying stop_condition."
 end
 
 
@@ -388,3 +389,100 @@ end
 
 
 
+"""
+    stop_at_periodic(freq, prob; eps=1e-3, Nphase=4, frac_period=0.3, depth = 1.0)
+
+Constructs a stop-condition function for `solve!` that detects when the
+solution has reached periodic steady state for a frequency 'freq'.
+Specifically for use with a TransientProblem with a periodic function 
+boundary at a depth expected to reach a periodic state.
+
+The condition checks whether the slice concentration at several phase
+points within the *last `frac_period` fraction of a period* matches the
+concentration one period earlier, within tolerance `eps`.
+
+Arguments
+---------
+- `freq` : driving frequency (Hz)
+- `prob` : `TransientProblem` defining geometry and slice axis
+
+Keyword Arguments
+-----------
+- `eps`  : tolerance for periodicity (default 1e-3)
+- `Nphase` : number of phase points to test across the trailing window
+- `frac_period` : fraction of the period to test (0 < frac_period ≤ 1).
+                  Smaller values require less history; default 0.3.
+- `depth` : depth fraction in (0,1], how far along the main axis is the 
+            the concentration will be evaluated for periodicity; default 1.0,
+            associated with a insulated boundary at x=L face
+
+
+Returns
+-------
+A function `(t_hist, C_hist) -> Bool` suitable for use as a stop condition
+in `solve!`.
+"""
+function stop_at_periodic(freq, prob::TransientProblem;
+                          eps=1e-3, Nphase::Int=4, frac_period=0.3, depth = 1.0)
+
+    @assert 0 < frac_period "frac_period must be greater than 0."
+    @assert 0 < depth ≤ 1 "depth must be in (0,1]."
+
+    T = 1/freq
+    phases = range(0, frac_period; length=Nphase)
+
+    N = prob.dims[AXIS_DEFINITION[prob.axis]]
+    depth_ind = round(Int, depth * (N-1) +1)
+
+    # --- helper: linear interpolation of slice concentration ---
+    function interp_slice_conc(t, t_hist, C_hist)
+        i1 = findlast(ti -> ti ≤ t, t_hist)
+        i2 = findfirst(ti -> ti ≥ t, t_hist)
+
+        # not enough history yet
+        if isnothing(i1) || isnothing(i2)
+            return nothing
+        end
+
+        # exact hit
+        if i1 == i2
+            return get_slice_conc(C_hist[i1], prob, depth_ind)
+        end
+
+        t1, t2 = t_hist[i1], t_hist[i2]
+        C1 = get_slice_conc(C_hist[i1], prob, depth_ind)
+        C2 = get_slice_conc(C_hist[i2], prob, depth_ind)
+
+        w = (t - t1) / (t2 - t1)
+        return (1 - w)*C1 + w*C2
+    end
+
+    # --- returned stop condition ---
+    return (t_hist, C_hist) -> begin
+        t_end = t_hist[end]
+
+        # need at least (1 + frac_period)*T of history
+        if t_end < (1 + frac_period)*T
+            return false
+        end
+
+        for ϕ in phases
+            t1 = t_end - ϕ*T
+            t2 = t_end - T - ϕ*T
+
+            C1 = interp_slice_conc(t1, t_hist, C_hist)
+            C2 = interp_slice_conc(t2, t_hist, C_hist)
+
+            # insufficient history or interpolation failed
+            if C1 === nothing || C2 === nothing
+                return false
+            end
+
+            if abs(C1 - C2) > eps
+                return false
+            end
+        end
+
+        return true
+    end
+end
