@@ -18,6 +18,7 @@ makedocs(;
         "Imaginator" => "imaginator.md",
         "Variable diffusivity" => "variable_diffusivity.md",
         "Benchmark" => "benchmark.md",
+        "Transient" => "transient.md",
     ],
 )
 
