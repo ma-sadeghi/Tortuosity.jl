@@ -390,7 +390,7 @@ end
 
 
 """
-    stop_at_periodic(freq, prob; eps=1e-3, Nphase=4, frac_period=0.3, depth = 1.0)
+    stop_at_periodic(freq, prob; reltol=1e-3, Nphase=4, frac_period=0.3, depth = 1.0)
 
 Constructs a stop-condition function for `solve!` that detects when the
 solution has reached periodic steady state for a frequency 'freq'.
@@ -398,8 +398,11 @@ Specifically for use with a TransientProblem with a periodic function
 boundary at a depth expected to reach a periodic state.
 
 The condition checks whether the slice concentration at several phase
-points within the *last `frac_period` fraction of a period* matches the
-concentration one period earlier, within tolerance `eps`.
+points (obtained by linear interpolation) within the *last `frac_period`
+fraction of a period* matches the concentration one period earlier,
+within relative tolerance `reltol`*A where A is amplitude of the latest period.
+
+Do not use this stop condition if prob.dt is not many times smaller than the period.
 
 Arguments
 ---------
@@ -408,7 +411,7 @@ Arguments
 
 Keyword Arguments
 -----------
-- `eps`  : tolerance for periodicity (default 1e-3)
+- `reltol`  : relative tolerance for periodicity (default 1e-3)
 - `Nphase` : number of phase points to test across the trailing window
 - `frac_period` : fraction of the period to test (0 < frac_period ≤ 1).
                   Smaller values require less history; default 0.3.
@@ -423,7 +426,7 @@ A function `(t_hist, C_hist) -> Bool` suitable for use as a stop condition
 in `solve!`.
 """
 function stop_at_periodic(freq, prob::TransientProblem;
-                          eps=1e-3, Nphase::Int=4, frac_period=0.3, depth = 1.0)
+                          reltol=1e-2, Nphase::Int=4, frac_period=0.3, depth = 1.0)
 
     @assert 0 < frac_period "frac_period must be greater than 0."
     @assert 0 < depth ≤ 1 "depth must be in (0,1]."
@@ -434,10 +437,13 @@ function stop_at_periodic(freq, prob::TransientProblem;
     N = prob.dims[AXIS_DEFINITION[prob.axis]]
     depth_ind = round(Int, depth * (N-1) +1)
 
-    # --- helper: linear interpolation of slice concentration ---
-    function interp_slice_conc(t, t_hist, C_hist)
-        i1 = findlast(ti -> ti ≤ t, t_hist)
-        i2 = findfirst(ti -> ti ≥ t, t_hist)
+    #keep track of the average concentration in the relevant slice each timestep w/o extra computation
+    slice_hist = Float64[]
+
+    # --- helper: linear interpolation ---
+    function interp_slice_conc(t, t_vals, C_vals)
+        i1 = findlast(ti -> ti ≤ t, t_vals)
+        i2 = findfirst(ti -> ti ≥ t, t_vals)
 
         # not enough history yet
         if isnothing(i1) || isnothing(i2)
@@ -446,12 +452,12 @@ function stop_at_periodic(freq, prob::TransientProblem;
 
         # exact hit
         if i1 == i2
-            return get_slice_conc(C_hist[i1], prob, depth_ind)
+            return C_vals[i1]
         end
 
-        t1, t2 = t_hist[i1], t_hist[i2]
-        C1 = get_slice_conc(C_hist[i1], prob, depth_ind)
-        C2 = get_slice_conc(C_hist[i2], prob, depth_ind)
+        t1, t2 = t_vals[i1], t_vals[i2]
+        C1 = C_vals[i1]
+        C2 = C_vals[i2]
 
         w = (t - t1) / (t2 - t1)
         return (1 - w)*C1 + w*C2
@@ -460,25 +466,35 @@ function stop_at_periodic(freq, prob::TransientProblem;
     # --- returned stop condition ---
     return (t_hist, C_hist) -> begin
         t_end = t_hist[end]
+        push!(slice_hist, get_slice_conc(C_hist[end], prob, depth_ind))
 
+        tmin = t_end - (1 + frac_period)*T
         # need at least (1 + frac_period)*T of history
-        if t_end < (1 + frac_period)*T
+        if tmin < 0
             return false
         end
+
+        #in-case there were pre-existing ts before slice_hist
+        ts = @view t_hist[end-length(slice_hist)+1:end]
+
+        #get approx previous period amplitude to normalize error
+        i0 = searchsortedfirst(ts, tmin)
+        A = maximum(@view slice_hist[i0:end]) - minimum(@view slice_hist[i0:end])
 
         for ϕ in phases
             t1 = t_end - ϕ*T
             t2 = t_end - T - ϕ*T
 
-            C1 = interp_slice_conc(t1, t_hist, C_hist)
-            C2 = interp_slice_conc(t2, t_hist, C_hist)
+            
+            C1 = interp_slice_conc(t1, ts, slice_hist)
+            C2 = interp_slice_conc(t2, ts, slice_hist)
 
             # insufficient history or interpolation failed
             if C1 === nothing || C2 === nothing
                 return false
             end
 
-            if abs(C1 - C2) > eps
+            if abs(C1 - C2) > reltol *A #error scaled by amplitude and avoid 0 division
                 return false
             end
         end
