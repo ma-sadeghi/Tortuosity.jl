@@ -239,10 +239,10 @@ function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
 
     nnodes = sum(img)
 
-    # 1. Connectivity (CPU or GPU)
+    # Connectivity (CPU or GPU)
     conns = create_connectivity_list(img)
 
-    # 2. Edge diffusivity (scalar or field)
+    # Edge diffusivity (scalar or field)
     if !(D isa Number)
         D_local = atleast_3d(D)
         gpu && (D_local = cu(D_local))
@@ -250,19 +250,16 @@ function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
 
     gd = D isa Number ? D : interpolate_edge_values(D_local[img], conns)
 
-
-    # 3. Adjacency matrix (CPU or GPU)
+    # Adjacency matrix (CPU or GPU)
     am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
 
-    # 4. Laplacian
+    # Laplacian
     A = laplacian(am)
 
-    # 5. Scale by 1/dx^2, and inverted from the laplacian
+    # Scale by 1/dx^2, and inverted from the laplacian
     nonzeros(A) .= nonzeros(A) ./ (-dx^2)
 
-
-
-    # 6. Dirichlet nodes
+    # Dirichlet nodes
     axis_to_boundaries = Dict(
         :x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top)
     )
@@ -273,7 +270,7 @@ function build_transient_operator(img, D, bound_mode; axis, dx, gpu)
     if bound_mode[2] isa Function || !isnan(bound_mode[2]) append!(bc_nodes, find_boundary_nodes(img, outlet_face)) end
     bc_nodes = gpu ? Int32.(bc_nodes) : bc_nodes
 
-    # 7. Transient BC: zero rows only
+    # Transient BC: zero rows only -> asymmetric matrix, explicit only
     zero_rows!(A, bc_nodes)
 
     return A
@@ -484,7 +481,6 @@ function stop_at_periodic(freq, prob::TransientProblem;
         for ϕ in phases
             t1 = t_end - ϕ*T
             t2 = t_end - T - ϕ*T
-
             
             C1 = interp_slice_conc(t1, ts, slice_hist)
             C2 = interp_slice_conc(t2, ts, slice_hist)
