@@ -364,46 +364,44 @@ Flux `J(x,t)` as a scalar or array matching the shape of `t`.
 
 """
 function analytic_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
-    # n and m indices
     n = reshape(1:terms, 1, terms)
     m = 2 .* n .- 1
 
     # reshape t if needed
-    t_is_scalar = t isa Number  
-    t_vec = t_is_scalar ? [t] : collect(t)  
-    t = reshape(t_vec, :, 1)  
+    t_is_scalar = t isa Number
+    t_vec = t_is_scalar ? [t] : collect(t)
+    t_mat = reshape(t_vec, :, 1)
 
     # wave numbers
     kn = n .* π ./ L
     km = m .* π ./ L
 
     # derivative of linear term
-    dCdx_linear = (C2 - C1) ./ L
+    dCdx_linear = (C2 - C1) / L
 
     # derivative of first sine series
     dCdx_series1 = (2/π) .* sum(
-            ((C2 .* cos.(π .* n) .- C1) ./ n) .* (kn .* cos.(kn .* x)) .*
-             exp.(-D .* (n.^2) .* π^2 .* t ./ L^2),
-            dims=2
+        ((C2 .* cos.(π .* n) .- C1) ./ n) .* (kn .* cos.(kn .* x)) .*
+        exp.(-D .* (n.^2) .* π^2 .* t_mat ./ L^2),
+        dims = 2,
     )
 
     # derivative of second sine series
-    dCdx_series2 =(4*C0/π) .* sum(
-            (1 ./ m) .* (km .* cos.(km .* x)) .* 
-            exp.(-D .* (m.^2) .* π^2 .* t ./ L^2),
-            dims=2
+    dCdx_series2 = (4C0/π) .* sum(
+        (1 ./ m) .* (km .* cos.(km .* x)) .*
+        exp.(-D .* (m.^2) .* π^2 .* t_mat ./ L^2),
+        dims = 2,
     )
 
-    # total derivative
     dCdx = dCdx_linear .+ dropdims(dCdx_series1 .+ dCdx_series2, dims=2)
 
     # flux = -D * dC/dx
     # enforce flux=0 at t=0 to avoid trig series error
     if t_is_scalar
-        return t == 0 ? -D*(C2 - C1)/L : 0
+        return t == 0 ? 0.0 : -D * dCdx[1]
     else
         flux = -D .* dCdx
-        flux[t .== 0] .= 0
+        flux[t_vec .== 0] .= 0
         return flux
     end
 end
