@@ -13,4 +13,8 @@ using Tortuosity
     @testset verbose = true "Blobs (Gaussian noise)" begin
         include("test_blobs.jl")
     end
+
+    @testset verbose = true "Transient Solver" begin
+        include("test_transient.jl")
+    end
 end
