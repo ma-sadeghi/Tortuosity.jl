@@ -87,10 +87,10 @@ function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; dep
     #make assignments based on boundary mode and which observable is being fit to
     if method == :conc
         depth_idx = round(Int, 1 + depth*(N-1)) #voxel index 1 -> depth dx/2
-        depth = (depth_idx-0.5)*prob.dx #redefine depth to closest value that matches an index
+        depth_actual = (depth_idx-0.5)*prob.dx #redefine depth to closest value that matches an index
 
         ydata = get_slice_conc(C[idx_min:idx_max], prob, depth_idx; pore_only = true)
-        model = (t, p) -> analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
+        model = (t, p) -> analytic_conc(p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms = terms)
 
     elseif method == :mass
         ydata = (mass_intake(C[1:idx_max], prob))[idx_min:end]
@@ -100,10 +100,10 @@ function effective_diffusivity(t, C, prob::TransientProblem, method::Symbol; dep
     elseif method == :flux
         depth_idx = round(Int, 0.5 + (depth)*(N-1)) #flux is between slices, offset by half index
         depth_idx == N && (depth_idx = N-1) #cannot calculate flux between index N and N+1
-        depth = depth_idx*prob.dx #redefine depth to closest value that matches an index
+        depth_actual = depth_idx*prob.dx #redefine depth to closest value that matches an index
 
         ydata = get_flux(C[idx_min:idx_max], prob;ind= depth_idx)
-        model = (t, p) -> φ*analytic_flux(p[1], depth, t; C1=C1, C2=C2, L=L, terms = terms)
+        model = (t, p) -> φ .*analytic_flux(p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms = terms)
 
     else error("Built-in diffusivity fitting only supports method ':conc', ':mass', and ':flux'.") end
             
