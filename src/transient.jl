@@ -1,11 +1,3 @@
-# Written by Sawyer Hossfeld
-# Supervised by Prof. Jeff Gostick
-# Winter Term, 2026
-# Transient diffusion solver for cubic array representation of
-# 3D porous material and related analysis tools
-
-
-
 ##------ define structs for convenience of only passing all parameters once ------
 const BoundValue = Union{Number, Function}
 
@@ -31,7 +23,7 @@ end
 #stores integrator and datapoints
 #the reason this struct exists instead of just using ODE integrator (the type that 'integrator' is), which could store t and C history in itself
 # is that 'integrator.u' (C), would be stored on the same device as is being used
-# for the GPU case this would be mean huge GPU memory usage and seriously limit the size that can be run
+# for the GPU case this would mean huge GPU memory usage and seriously limit the size that can be run
 # so instead the data for each timestep is moved off GPU
 struct TransientState{T}
     integrator          
@@ -90,7 +82,7 @@ A `TransientProblem` struct containing:
 function TransientProblem(img, dt; 
     axis::Symbol = :z, bound_mode::NTuple{2, BoundValue}=(1,0),
     D = 1.0, dx = nothing,
-    dtype=Float32, gpu=true
+    dtype=Float32, gpu=nothing
 )
 
     # --- make sure the types are as expected ---
@@ -99,6 +91,10 @@ function TransientProblem(img, dt;
 
     @assert D isa Number || size(img) == size(D) "For scalar field D, size should match img size"
     D = dtype.(D)
+
+    nnodes = count(img)
+    # If gpu is not specified, use GPU if the image is large enough
+    gpu = !isnothing(gpu) ? gpu : (nnodes >= 100_000) && CUDA.functional()
 
     #check bound_mode has expected types
     for (i, b) in enumerate(bound_mode)
@@ -154,6 +150,7 @@ function init_state(prob::TransientProblem; C0=nothing, alg=ROCK2(), reltol=1e-3
     if C0 === nothing 
         C0 = zeros(prob.eltype, prob.dims)
     else 
+        C0 = atleast_3d(C0)
         @assert size(C0) == size(prob.img) "C0 dims must match img"
         C0 = prob.eltype.(C0)
     end
