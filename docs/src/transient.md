@@ -142,7 +142,7 @@ depth = 1.0
 tau_vals, SE_tau, voxel_inds_1d = voxel_tortuosity(sim, prob; depth =depth, n_samples = 400)
 
 
-# Visualize the image
+# Plot a histogram of the tortuosity values
 using Plots
 
 histogram( tau_vals,
@@ -165,7 +165,7 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"tortuosity_histogram.svg"))>
 TortuosityProblem supports boundary conditions that are a function of time, although this functionality does not have extensive analysis tools.
 This feature is potentially useful for:
 - Smoother startup behavior
-    - If the user wants to minimize numerical error caused by the large concentration gradient associated with zero initial conditions and a non-zero Dirichlet boundary, a boundary condition that starts at the zero and decays towards a final value can be used instead, along with the corresponding homogenous analytical solution.
+    - If the user wants to minimize numerical error caused by the large concentration gradient at early time when there is a zero initial condition and a non-zero Dirichlet boundary, a boundary condition that starts at zero and decays towards a final value can be used instead, along with the corresponding homogenous analytical solution.
 
 - Probing the material with periodic signals:
     - By setting the inlet boundary to a sine wave with a certain frequency, at periodic steady state the outlet concentration over time becomes a wave of the same frequency but decayed amplitude and offset phase. The amplitude and phase offset for a certain frequency can contain information about dead-end side channels in the porous material.
