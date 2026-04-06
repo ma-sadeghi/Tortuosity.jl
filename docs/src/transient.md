@@ -1,11 +1,11 @@
 # Transient Solver
 
-`Tortuosity.jl` includes transient functionality to compute the concentration distribution over time in a porous material with some dirichlet or insulated boundaries and initial conditions. It also includes functions to get observables from the solution, like the flux between two voxel planes perpendicular to the axis of the concentration gradient.
+`Tortuosity.jl` includes transient functionality to compute the concentration distribution over time in a porous material with some Dirichlet or insulated boundaries and initial conditions. It also includes functions to get observables from the solution, such as the flux between two voxel planes perpendicular to the axis of the concentration gradient.
 
 There may be effects from dead end channels, bottlenecks, and other porous features that vary from the behavior of a homogenous material, and cannot be predicted from the tortuosity calculated from steady state. This feature can be used to quantify and investigate those variations.
 
 
-## Comparing To Homogenous Solution
+## Comparing To Homogenous Solutions
 
 Note that the difference between the porous and homogenous solution may be exaggerated for a low resolution image or an image with low domain size to pore size ratio.
 
@@ -87,17 +87,17 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"outlet_flux.svg"))><figcapti
 
 ## Stop Conditions
 
-The transient `solve!()` function steps the TransientState forward in time, appending a concentration vector to state.C every dt time units, and evaluating a stop condition. Stop conditions are in the form `f(t_hist, C_hist) -> Bool`, when the return value is true, the solve!() function terminates.
+The transient `solve!()` function steps the TransientState forward in time, appending a concentration vector to state.C every dt time units, and evaluating a stop condition. Stop conditions are in the form `f(t_hist, C_hist) -> Bool`. When the return value is true, the `solve!()` function terminates.
 
-Built in stop conditions constructors include:
+Built in stop condition constructors include:
 - `stop_at_time(t)`: 
         stops running once the solver reaches time t
 - `stop_at_delta_flux(delta, prob::TransientProblem)`: 
-        stops running once the inlet flux and outlet flux are within tolerance delta, good for stopping close to when the concentration gradient reaches steady state, as the flux will be constant everywhere for time-independent boundary conditions
+        stops running once the inlet flux and outlet flux are within tolerance delta. Good for stopping close to when the concentration gradient reaches steady state, as the flux will be constant everywhere for time-independent boundary conditions.
 - `stop_at_avg_concentration(c, prob::TransientProblem)`: 
-        stops running once the average pore concentration reaches concentration c, good for boundary conditions where the steady state average concentration is predictable. For example stop a (1, insulated) boundary solution at c_avg=0.99
+        stops running once the average pore concentration reaches concentration c. Good for boundary conditions where the steady state average concentration is predictable. For example, stop a (1, insulated) boundary solution at c_avg=0.99.
 - `stop_at_periodic(freq, prob; reltol=1e-3, Nphase=4, frac_period=0.3, depth = 1.0)`: 
-        stops when Nphase points are within reltol of points one period of time behind them (relative to the amplitude of the previous period). Intended for problems with a time-periodic boundary condition
+        stops when Nphase points are within reltol of points one period of time behind them (relative to the amplitude of the previous period). Intended for problems with a time-periodic boundary condition.
 
 Custom stop condition example:
     `my_stop = (t_hist, C_hist) -> t_hist[end] > 5.0`
@@ -105,7 +105,7 @@ Custom stop condition example:
 
 ## Tortuosity Distribution
 
-One indicator of how different a porous material may act compared to a homogenous material is the deviation in tortuosity of the various paths that a substance can take through it. One of the `Tortuosity.jl` transient analysis tools is `voxel_tortuosity()`, a function that takes the concentration data from a regularly spaced sample of voxels at a certain plane along the concentration gradient axis of an image, and preforms a least-squares fit with the homogenous concentration over time solution for tortuosity at each voxel.
+One indicator of how different a porous material may act compared to a homogenous material is the deviation in tortuosity of the various paths that a substance can take through it. One of the `Tortuosity.jl` transient analysis tools is `voxel_tortuosity()`, a function that takes the concentration data from a regularly-spaced sample of voxels at a certain plane along the concentration gradient axis of an image, and preforms a least-squares fit with the homogenous concentration over time solution for tortuosity at each voxel.
 
 ```@example
 using Tortuosity
@@ -162,13 +162,13 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"tortuosity_histogram.svg"))>
 
 ## Time-Dependent Boundary
 
-TortuosityProblem supports boundary conditions that are a function of time, although this functionality does not have extensive analysis tools.
+`TortuosityProblem` supports boundary conditions that are a function of time, although this functionality does not have extensive analysis tools built-in.
 This feature is potentially useful for:
 - Smoother startup behavior
-    - If the user wants to minimize numerical error caused by the large concentration gradient at early time when there is a zero initial condition and a non-zero Dirichlet boundary, a boundary condition that starts at zero and decays towards a final value can be used instead, along with the corresponding homogenous analytical solution.
+    - If the user wants to minimize numerical error caused by the large concentration gradient at early time when there is a zero initial condition next to a non-zero Dirichlet boundary, the user can instead input a boundary condition that starts at zero and decays towards a final value, along with the corresponding homogenous analytical solution.
 
 - Probing the material with periodic signals:
-    - By setting the inlet boundary to a sine wave with a certain frequency, at periodic steady state the outlet concentration over time becomes a wave of the same frequency but decayed amplitude and offset phase. The amplitude and phase offset for a certain frequency can contain information about dead-end side channels in the porous material.
+    - By setting the inlet boundary to a sine wave with a certain frequency, at periodic steady state the outlet concentration over time becomes a wave of the same frequency but with decayed amplitude and offset phase. The amplitude and phase offset for a certain frequency can contain information about dead-end side channels in the porous material.
 
 ```@example
 using Tortuosity
@@ -208,7 +208,7 @@ start_ind = searchsortedfirst(sim.t, sim.t[end] - T)
 anim = @animate for k in start_ind:length(sim.t)
 
     plot(range(0,1,N),Tortuosity.slice_conc_dist(sim.C[k], prob, pore_only = true),
-        title = "Concentration Distribution With Sin Wave Inlet",
+        title = "Concentration Distribution With Sine Wave Inlet",
         ylim = (0,1), legend = false,
         ylabel = "Average Pore Concentration",
         xlabel = "Depth",
