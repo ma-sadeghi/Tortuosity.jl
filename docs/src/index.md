@@ -39,7 +39,7 @@ sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 # Convert the solution vector to an Nd grid
 c = vec_to_grid(sol.u, img)
 # Compute the tortuosity factor
-τ = tortuosity(c; axis=:x)
+τ = tortuosity(c, img; axis=:x)
 println("τ = $τ")
 
 # Visualize the concentration field
