@@ -5,7 +5,7 @@ authors = ["Amin Sadeghi <amin.sadeghi@live.com>"]
 
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
 HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
 ImageFiltering = "6a3955dd-da59-5b1f-98d4-e7296123deb5"
 ImageMorphology = "787d08f9-d448-5407-9aad-5290dd7ab264"
@@ -26,14 +26,14 @@ Sundials = "c3572dad-4567-51f8-b174-8c6c989267f4"
 
 [compat]
 CUDA = "5"
-DifferentialEquations = "7.16.1"
+OrdinaryDiffEq = "6"
 HDF5 = "0.17.2"
 ImageFiltering = "0.7.9"
 ImageMorphology = "0.4.5"
 ImageSegmentation = "1"
 Images = "0.26.2"
 Interpolations = "0.15.1, 0.16"
-JLD2 = "0.5.12"
+JLD2 = "0.6.4"
 Krylov = "0.9.10, 0.10"
 LinearAlgebra = "1"
 LinearSolve = "3"
