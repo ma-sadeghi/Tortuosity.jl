@@ -7,7 +7,7 @@ using LinearAlgebra
 using LinearSolve
 using NaNStatistics
 using SparseArrays
-using DifferentialEquations
+using OrdinaryDiffEq
 using LsqFit
 
 include("utils.jl")
@@ -38,5 +38,6 @@ export TransientState
 export solve
 export solve!
 export init_state
+export stop_at_time
 
 end  # module Tortuosity
