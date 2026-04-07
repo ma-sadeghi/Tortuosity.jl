@@ -133,10 +133,10 @@ end
 """
 init_state(prob::TransientProblem)
 
-returns a TransientState for the given TransientProblem
+returns a `TransientState` for the given `TransientProblem`
 
 # Arguments
-prob: A TransientProblem defining the problem
+prob: A `TransientProblem` defining the problem
 
 #kwargs
 C0: an array with dimensions of the problem image representing initial concentration distribution.
@@ -194,6 +194,7 @@ at every dt step, on CPU regardless of whether running on GPU
 
 kwargs: 
     max_iter: integer, steps of length prob.dt after which to stop integration if stop condition still unmet
+    verbose: bool, if true, displays an every `prob.dt` time units time a data point is saved
 """
 function solve!(state::TransientState, prob::TransientProblem, stop_condition; max_iter=500, verbose = false)
 
@@ -345,7 +346,11 @@ end
 
 ##--- define prebuilt stop conditions for convenience---
 
+"""
+stop_at_time(t_final)
 
+creates a stop_condition for stopping at a certain solver time
+"""
 function stop_at_time(t_final)
     return (t_hist, C_hist) -> t_hist[end] >= t_final
 end
