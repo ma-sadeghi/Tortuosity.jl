@@ -1,41 +1,23 @@
 # Axis helpers: map axis symbols to dimension indices, face names, and orthogonal dims
 
 function axis_dim(ax::Symbol)
-    return if ax == :x
-        1
-    elseif ax == :y
-        2
-    elseif ax == :z
-        3
-    else
-        error("axis must be :x, :y, or :z")
-    end
+    d = Dict(:x => 1, :y => 2, :z => 3)
+    haskey(d, ax) || error("axis must be :x, :y, or :z")
+    return d[ax]
 end
 
 function axis_faces(ax::Symbol)
-    return if ax == :x
-        (:left, :right)
-    elseif ax == :y
-        (:front, :back)
-    elseif ax == :z
-        (:bottom, :top)
-    else
-        error("axis must be :x, :y, or :z")
-    end
+    d = Dict(:x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top))
+    haskey(d, ax) || error("axis must be :x, :y, or :z")
+    return d[ax]
 end
 
-orthogonal_dims(ax::Symbol) = orthogonal_dims(axis_dim(ax))
-function orthogonal_dims(d::Int)
-    return if d == 1
-        (2, 3)
-    elseif d == 2
-        (1, 3)
-    elseif d == 3
-        (1, 2)
-    else
-        error("dim must be 1, 2, or 3")
-    end
+function orthogonal_dims(ax::Symbol)
+    d = Dict(:x => (2, 3), :y => (1, 3), :z => (1, 2))
+    haskey(d, ax) || error("axis must be :x, :y, or :z")
+    return d[ax]
 end
+orthogonal_dims(d::Int) = orthogonal_dims((:x, :y, :z)[d])
 
 # Extract a 2D slice without reconstructing the full 3D concentration field
 
