@@ -4,7 +4,7 @@
 using Plots
 using Printf
 using Tortuosity
-using Tortuosity: Imaginator, stop_at_delta_flux, effective_diffusivity, analytic_mass
+using Tortuosity: Imaginator, stop_at_delta_flux, fit_effective_diffusivity, slab_mass_uptake
 
 PLOT = false
 USE_GPU = false
@@ -30,7 +30,7 @@ stop_condition = stop_at_delta_flux(1.0, problem)
 # %%
 # Compute the tortuosity factor and visualize the solution
 
-D_eff_pore, φ, xdata, ydata, fit, f = effective_diffusivity(sim, problem, :mass)
+D_eff_pore, φ, xdata, ydata, fit, f = fit_effective_diffusivity(sim, problem, :mass)
 
 τ = 1 / D_eff_pore #not the same as D_eff continuum
 @info "τ: $(@sprintf("%.5f", τ))"
