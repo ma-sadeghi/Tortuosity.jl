@@ -4,23 +4,23 @@
 using Plots
 using Printf
 using Tortuosity
-using Tortuosity: Imaginator, stop_at_delta_flux, fit_effective_diffusivity, slab_mass_uptake
+using Tortuosity: Imaginator, stop_at_delta_flux, fit_effective_diffusivity
 
-PLOT = false
+PLOT = true
 USE_GPU = false
 
 # %%
 # Generate/load the image
 
-shape = (32, 32, 16)
-img = Imaginator.blobs(; shape=shape, porosity=0.5, blobiness=1, seed=2);
+shape = (64, 64, 64)
+img = Imaginator.blobs(; shape=shape, porosity=0.65, blobiness=1, seed=2);
 img = Imaginator.trim_nonpercolating_paths(img; axis=:x);
 PLOT && display(heatmap(img[:, :, shape[3] ÷ 2]; aspect_ratio=:equal, clim=(0, 1)));
 
 # %%
 # Build A*C = dC on CPU/GPU and run the transient solver until it reaches stop_condition
 
-dt = 0.05
+dt = 0.1
 
 problem = TransientProblem(img, dt; axis=:x, gpu=USE_GPU, bc_inlet=1, bc_outlet=0)
 sim = init_state(problem);
@@ -30,21 +30,18 @@ stop_condition = stop_at_delta_flux(1.0, problem)
 # %%
 # Compute the tortuosity factor and visualize the solution
 
-D_eff_pore, φ, xdata, ydata, fit, f = fit_effective_diffusivity(sim, problem, :mass)
+τ, D_eff, xdata, ydata, fit, f = fit_effective_diffusivity(sim, problem, :flux; depth=1.0)
 
-τ = 1 / D_eff_pore #not the same as D_eff continuum
 @info "τ: $(@sprintf("%.5f", τ))"
 
 if PLOT
     t_analytic = range(sim.t[1], sim.t[end], 100)
-    m_analytic = f(t_analytic, fit.param)
+    J_analytic = f(t_analytic, fit.param)
 
-    p = plot(
-        t_analytic,
-        m_analytic;
-        title="Mass Intake Curve",
+    p = plot(t_analytic, J_analytic;
+        title="Outlet Flux Curve",
         xlabel="time",
-        ylabel="mass intake",
+        ylabel="outlet flux",
         label="fitted curve, τ = $(@sprintf("%.5f", τ))",
         legend=:bottomright,
     )

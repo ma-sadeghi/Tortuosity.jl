@@ -2,7 +2,44 @@
 # for identifying voxels in a 3D image of a porous material which do not contribute to steady state flux
 # i.e. dead ends or 'caverns'
 
+"""
+    find_caverns(img; vmin=-2, iter=1, axis=:z, reltol=1e-5, gpu=true)
 
+Identify low‑flux “cavern” regions in a 3D porous medium by iteratively solving a
+steady diffusion problem and thresholding the resulting flux field.
+
+This routine repeatedly:
+1. Removes voxels already classified as caverns.
+2. Solves a steady diffusion problem on the remaining pore space.
+3. Computes the local flux magnitude at each pore voxel.
+4. Marks voxels with `log10(flux) < vmin` as caverns.
+5. Removes any newly isolated, non‑percolating pore clusters.
+
+The process is repeated for `iter` iterations, and the fraction of voxels
+classified as caverns is recorded after each step.
+
+# Arguments
+- `img::BitArray`: 3D boolean mask of the pore space (`true` = pore).
+
+# Keyword Arguments
+- `vmin::Real = -2`: Log‑flux threshold. Voxels with `log10(flux) < vmin` are
+  classified as caverns.
+- `iter::Int = 1`: Number of refinement iterations to perform.
+- `axis::Symbol = :z`: Transport axis used for the diffusion simulation.
+- `reltol::Real = 1e-5`: Relative tolerance for the diffusion solution.
+- `gpu::Bool = true`: Whether to run the diffusion solve on the GPU.
+
+# Returns
+- `caverns::BitArray`: A 3D boolean mask marking cavern voxels (`true`).
+- `kai::Vector{Float64}`: The cavern fraction at each iteration, including the
+  initial value of 0.
+
+# Notes
+- Caverns are defined as pore voxels with extremely low through‑flux relative to
+  the imposed gradient.
+- Non‑percolating pore clusters are removed at each iteration to prevent
+  artificially isolated regions from being misclassified.
+"""
 function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, reltol = 1e-5, gpu = true )
 
     N = size(img, axis_dim(axis))

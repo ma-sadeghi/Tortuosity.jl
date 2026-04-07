@@ -1,5 +1,7 @@
 # Transient diffusion solver for 3D porous materials
 
+const BoundValue = Union{Nothing, Number, Function}
+
 struct TransientProblem{T,DType}
     dx::Float64
     dt::Float64
@@ -7,8 +9,8 @@ struct TransientProblem{T,DType}
     img::BitArray{3}
     grid_to_vec::Array{Int,3}
     axis::Symbol
-    bc_inlet::Union{Nothing,T}
-    bc_outlet::Union{Nothing,T}
+    bc_inlet::BoundValue
+    bc_outlet::BoundValue
     A::Union{SparseMatrixCSC{T,Int},CUDA.CUSPARSE.CuSparseMatrixCSC{T,Int32}}
 end
 
@@ -22,15 +24,13 @@ end
 
 """
     TransientProblem(img, dt; axis=:z, bc_inlet=1, bc_outlet=0,
-                     D=1.0, dx=nothing, dtype=Float32, gpu=true)
+                     D=1.0, dx=nothing, dtype=Float32, gpu=nothing)
 
 Construct a `TransientProblem` describing transient diffusion through a
 3D voxelized porous material. The input `img` defines which voxels are
 pore space (nonzero) and which are solid (zero). A finite‑difference
 operator is built on this mask, with Dirichlet or insulated boundary
 conditions applied along one axis.
-
-The resulting problem can be passed to a transient diffusion solver.
 
 # Arguments
 - `img`: a 3D array whose nonzero entries indicate pore voxels.
@@ -42,9 +42,11 @@ The resulting problem can be passed to a transient diffusion solver.
 - `axis`: `:x`, `:y`, or `:z`. Specifies which axis has non‑insulated
           boundary faces. Defaults to `:z`.
 - `bc_inlet`: Dirichlet concentration at the inlet face along `axis`.
-              Use `nothing` for an insulated (Neumann) boundary. Defaults to `1`.
+              Use `nothing` for an insulated (Neumann) boundary, or a
+              function `f(t)` for a time-varying boundary. Defaults to `1`.
 - `bc_outlet`: Dirichlet concentration at the outlet face along `axis`.
-               Use `nothing` for an insulated (Neumann) boundary. Defaults to `0`.
+               Use `nothing` for an insulated (Neumann) boundary, or a
+               function `f(t)` for a time-varying boundary. Defaults to `0`.
 - `D`: scalar diffusion coefficient or scalar field of diffusivity
        at each pixel with shape img used inside pore voxels.
        Defaults to `1.0` for easy comparison.
@@ -53,28 +55,33 @@ The resulting problem can be passed to a transient diffusion solver.
         along the chosen axis for easy comparison.
 - `dtype`: numeric type used for the operator and solution arrays
            (e.g., `Float32` or `Float64`). Defaults to `Float32`.
-- `gpu`: whether to run solver on the GPU. Defaults to `true`.
+- `gpu`: whether to run solver on the GPU. If `nothing`, uses GPU when the
+         image has ≥100,000 pore voxels and CUDA is available. Defaults to `nothing`.
 """
 function TransientProblem(
     img,
     dt;
     axis::Symbol=:z,
-    bc_inlet=1,
-    bc_outlet=0,
+    bc_inlet::BoundValue=1,
+    bc_outlet::BoundValue=0,
     D=1.0,
     dx=nothing,
     dtype=Float32,
-    gpu=true,
+    gpu=nothing,
 )
     img = atleast_3d(img)
     img = BitArray(img .!= 0)
     @assert D isa Number || size(img) == size(D) "For scalar field D, size should match img size"
     D = D isa Number ? dtype(D) : dtype.(D)
-    bc_inlet = isnothing(bc_inlet) ? nothing : dtype(bc_inlet)
-    bc_outlet = isnothing(bc_outlet) ? nothing : dtype(bc_outlet)
+
+    # Validate and convert boundary conditions
+    bc_inlet = _validate_bc(bc_inlet, dtype, "bc_inlet")
+    bc_outlet = _validate_bc(bc_outlet, dtype, "bc_outlet")
+
+    nnodes = count(img)
+    gpu = !isnothing(gpu) ? gpu : (nnodes >= 100_000) && CUDA.functional()
 
     @assert size(img, axis_dim(axis)) > 1 "Image must have at least 2 voxels along the chosen axis"
-    # Default dx so domain spans [0, 1] along axis
     isnothing(dx) && (dx = 1 / (size(img, axis_dim(axis)) - 1))
 
     g2v = grid_to_vec(img)
@@ -83,15 +90,24 @@ function TransientProblem(
     return TransientProblem(dx, dt, D, img, g2v, axis, bc_inlet, bc_outlet, A)
 end
 
+function _validate_bc(bc, dtype, name)
+    if bc isa Function
+        val = bc(0.0)
+        @assert val isa Number "$name(t) must return a Number"
+        return bc
+    elseif bc isa Number
+        return dtype(bc)
+    else
+        return nothing
+    end
+end
+
 """
     init_state(prob::TransientProblem; C0=nothing, alg=ROCK4(),
                reltol=1e-3, abstol=1e-6)
 
 Initialize a `TransientState` for the given `TransientProblem`, applying boundary
 conditions to `C0` and setting up the ODE integrator.
-
-# Arguments
-- `prob`: a `TransientProblem` defining the problem.
 
 # Keyword Arguments
 - `C0`: initial concentration distribution with dimensions matching `prob.img`.
@@ -106,7 +122,9 @@ function init_state(
     if C0 === nothing
         C0 = zeros(T, size(prob.img))
     else
+        C0 = atleast_3d(C0)
         @assert size(C0) == size(prob.img) "C0 dims must match img"
+        C0 = T.(C0)
     end
 
     apply_boundaries!(C0, prob)
@@ -117,8 +135,7 @@ function init_state(
         C0 = cu(C0)
     end
 
-    # A is captured via closure; passing it through ODEProblem causes Int32 truncation errors
-    dC!(dC, C, p, t) = mul!(dC, prob.A, C)
+    dC! = make_dC_function(prob)
 
     prob_ode = ODEProblem(dC!, C0, (0.0, Inf))
     integrator = init(prob_ode, alg; save_everystep=false, reltol=reltol, abstol=abstol)
@@ -158,16 +175,17 @@ function solve!(
     verbose=false,
 )
     for _ in 1:max_iter
-        step!(state.integrator, prob.dt, true) # force step to land exactly at t + dt
+        step!(state.integrator, prob.dt, true)
         push!(state.t, state.integrator.t)
         push!(state.C, Array(state.integrator.u))
 
         verbose && @info "reached simulation time $(state.t[end])"
 
         if stop_condition(state.t, state.C)
-            break
+            return
         end
     end
+    @warn "Reached max_iter=$max_iter at t=$(state.t[end]) without satisfying stop_condition."
 end
 
 """
@@ -176,27 +194,14 @@ end
 Build the sparse finite-difference operator `A` such that `dC/dt = A * C` for the
 pore-voxel concentration vector. Dirichlet boundary rows are zeroed so that
 boundary values remain constant during integration.
-
-# Arguments
-- `img`: 3D binary array representing porous material.
-- `D`: scalar diffusion coefficient, or a 3D scalar field with the same size as `img`.
-- `bc_inlet`: Dirichlet value at the inlet face, or `nothing` for insulated.
-- `bc_outlet`: Dirichlet value at the outlet face, or `nothing` for insulated.
-
-# Keyword Arguments
-- `axis`: `:x`, `:y`, or `:z` — the axis with non-insulated boundary faces.
-- `dx`: physical spacing between adjacent voxel centers.
-- `gpu`: if `true`, build a CUDA sparse matrix.
 """
 function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
     gpu && (img = cu(img))
 
     nnodes = sum(img)
 
-    # 1. Connectivity (CPU or GPU)
     conns = create_connectivity_list(img)
 
-    # 2. Edge diffusivity (scalar or field)
     if !(D isa Number)
         D_local = atleast_3d(D)
         gpu && (D_local = cu(D_local))
@@ -204,13 +209,10 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
 
     gd = D isa Number ? D : interpolate_edge_values(D_local[img], conns)
 
-    # 3. Adjacency matrix (CPU or GPU)
     am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
 
-    # 4. Laplacian
     A = laplacian(am)
 
-    # Negate and scale: Laplacian L has negative off-diagonals, but dC/dt = D/dx² * (-L) * C
     nonzeros(A) .= nonzeros(A) ./ (-dx^2)
 
     # Collect Dirichlet boundary nodes; faces default to insulated (Neumann)
@@ -246,21 +248,65 @@ end
     apply_boundaries!(C0, prob::TransientProblem)
 
 Set Dirichlet boundary values on the faces of `C0` along `prob.axis`. Each face
-whose boundary condition is not `nothing` is overwritten with that value. Face
-voxels that correspond to obstacles (`D = 0`) are also set, so they should be
-zeroed separately if needed.
+whose boundary condition is not `nothing` is overwritten with that value. For
+time-varying (Function) boundaries, the function is evaluated at `t=0`.
 """
 function apply_boundaries!(C0, prob)
-    ax = axis_dim(prob.axis)   # 1, 2, or 3
+    ax = axis_dim(prob.axis)
     N = size(C0, ax)
 
-    if !isnothing(prob.bc_inlet)
+    if prob.bc_inlet isa Function
+        selectdim(C0, ax, 1) .= prob.bc_inlet(0.0)
+    elseif !isnothing(prob.bc_inlet)
         selectdim(C0, ax, 1) .= prob.bc_inlet
     end
-    if !isnothing(prob.bc_outlet)
+    if prob.bc_outlet isa Function
+        selectdim(C0, ax, N) .= prob.bc_outlet(0.0)
+    elseif !isnothing(prob.bc_outlet)
         selectdim(C0, ax, N) .= prob.bc_outlet
     end
 end
+
+"""
+    make_dC_function(prob::TransientProblem)
+
+Build the ODE right-hand side `dC!(dC, C, p, t)`. For problems with
+time-dependent (Function) boundaries, the closure updates boundary node
+concentrations at each timestep before computing `A * C`. For constant
+boundaries, the fast path is a simple matrix-vector multiply.
+"""
+function make_dC_function(prob)
+    in_is_func = prob.bc_inlet isa Function
+    out_is_func = prob.bc_outlet isa Function
+
+    inlet_inds = slice_vec_indices(prob, 1)
+    N_axis = size(prob.img, axis_dim(prob.axis))
+    outlet_inds = slice_vec_indices(prob, N_axis)
+
+    T = eltype(nonzeros(prob.A))
+
+    if in_is_func && out_is_func
+        return (dC, C, p, t) -> begin
+            C[inlet_inds] .= convert(T, prob.bc_inlet(t))
+            C[outlet_inds] .= convert(T, prob.bc_outlet(t))
+            mul!(dC, prob.A, C)
+        end
+    elseif in_is_func
+        return (dC, C, p, t) -> begin
+            C[inlet_inds] .= convert(T, prob.bc_inlet(t))
+            mul!(dC, prob.A, C)
+        end
+    elseif out_is_func
+        return (dC, C, p, t) -> begin
+            C[outlet_inds] .= convert(T, prob.bc_outlet(t))
+            mul!(dC, prob.A, C)
+        end
+    else
+        return (dC, C, p, t) -> mul!(dC, prob.A, C)
+    end
+end
+
+# --- Stop conditions ---
 
 function stop_at_time(t_final)
     return (t_hist, C_hist) -> t_hist[end] >= t_final
@@ -268,10 +314,9 @@ end
 
 """
     stop_at_avg_concentration(C_final, img)
-    stop_at_avg_concentration(C_final, prob::TransientProblem)
 
 Create a stop condition that returns `true` when the average concentration across
-pore voxels reaches `C_final`. Obstacle voxels are assumed to remain at zero.
+pore voxels reaches `C_final`.
 """
 function stop_at_avg_concentration(C_final, img)
     num_active = sum(img)
@@ -293,6 +338,83 @@ function stop_at_delta_flux(delta, prob::TransientProblem)
     return (t_hist, C_hist) ->
         abs(compute_flux(C_hist[end], D, dx, img, axis; ind=:end, grid_to_vec=g2v) -
             compute_flux(C_hist[end], D, dx, img, axis; ind=1, grid_to_vec=g2v)) <= delta
+end
+
+"""
+    stop_at_periodic(freq, prob; reltol=1e-2, Nphase=4, frac_period=0.3, depth=1.0)
+
+Stop condition for detecting periodic steady state under oscillating boundary
+conditions. Compares slice concentrations at several phase points across the
+trailing `frac_period` fraction of one period, checking whether the current
+period matches the previous period within `reltol` scaled by the amplitude.
+
+# Arguments
+- `freq`: driving frequency (Hz).
+- `prob`: `TransientProblem` defining geometry and slice axis.
+
+# Keyword Arguments
+- `reltol`: relative tolerance for periodicity (default `1e-2`).
+- `Nphase`: number of phase points to test across the trailing window.
+- `frac_period`: fraction of the period to test (`0 < frac_period ≤ 1`).
+- `depth`: normalized depth in `(0,1]` at which concentration is evaluated.
+"""
+function stop_at_periodic(
+    freq, prob::TransientProblem;
+    reltol=1e-2, Nphase::Int=4, frac_period=0.3, depth=1.0,
+)
+    @assert 0 < frac_period "frac_period must be greater than 0."
+    @assert 0 < depth <= 1 "depth must be in (0,1]."
+
+    period = 1 / freq
+    phases = range(0, frac_period; length=Nphase)
+
+    N = size(prob.img, axis_dim(prob.axis))
+    depth_ind = round(Int, depth * (N - 1) + 1)
+
+    slice_hist = Float64[]
+    img, axis, g2v = prob.img, prob.axis, prob.grid_to_vec
+
+    function interp(t, t_vals, C_vals)
+        i1 = findlast(ti -> ti <= t, t_vals)
+        i2 = findfirst(ti -> ti >= t, t_vals)
+        if isnothing(i1) || isnothing(i2)
+            return nothing
+        end
+        if i1 == i2
+            return C_vals[i1]
+        end
+        w = (t - t_vals[i1]) / (t_vals[i2] - t_vals[i1])
+        return (1 - w) * C_vals[i1] + w * C_vals[i2]
+    end
+
+    return (t_hist, C_hist) -> begin
+        t_end = t_hist[end]
+        push!(slice_hist, get_slice_conc(C_hist[end], img, axis, depth_ind; grid_to_vec=g2v))
+
+        tmin = t_end - (1 + frac_period) * period
+        if tmin < 0
+            return false
+        end
+
+        ts = @view t_hist[(end - length(slice_hist) + 1):end]
+
+        i0 = searchsortedfirst(ts, tmin)
+        amplitude = maximum(@view slice_hist[i0:end]) - minimum(@view slice_hist[i0:end])
+
+        for phi in phases
+            C1 = interp(t_end - phi * period, ts, slice_hist)
+            C2 = interp(t_end - period - phi * period, ts, slice_hist)
+
+            if C1 === nothing || C2 === nothing
+                return false
+            end
+            if abs(C1 - C2) > reltol * amplitude
+                return false
+            end
+        end
+
+        return true
+    end
 end
 
 # Convenience wrappers that unpack TransientProblem fields

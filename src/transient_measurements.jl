@@ -1,12 +1,13 @@
 # Observables extracted from concentration fields
 
 """
-    get_slice_conc(C, img, axis, ind; grid_to_vec=nothing)
+    get_slice_conc(C, img, axis, ind; grid_to_vec=nothing, pore_only=false)
 
-Average concentration of a 2D slice perpendicular to `axis` at index `ind`,
-including obstacle voxels (treated as NaN).
+Average concentration of a 2D slice perpendicular to `axis` at index `ind`.
+Obstacle voxels are treated as NaN. When `pore_only=true`, the average is taken
+over pore voxels only; otherwise over the full slice area.
 """
-function get_slice_conc(C, img, axis, ind; grid_to_vec=nothing)
+function get_slice_conc(C, img, axis, ind; grid_to_vec=nothing, pore_only::Bool=false)
     full_grid = size(C) == size(img)
     @assert (full_grid || !isnothing(grid_to_vec)) "if C is a vector of pore voxels, get_slice_conc() requires grid_to_vec array"
 
@@ -16,10 +17,11 @@ function get_slice_conc(C, img, axis, ind; grid_to_vec=nothing)
     else
         C_slice = vec_to_slice(C, img, grid_to_vec, axis, ind)
     end
-    return nansum(C_slice) / length(C_slice)
+    slice_nodes = pore_only ? count(selectdim(img, ax, ind)) : length(C_slice)
+    return nansum(C_slice) / slice_nodes
 end
-function get_slice_conc(Cs::AbstractVector{<:Array}, img, axis, ind; grid_to_vec=nothing)
-    return map(C -> get_slice_conc(C, img, axis, ind; grid_to_vec=grid_to_vec), Cs)
+function get_slice_conc(Cs::AbstractVector{<:Array}, img, axis, ind; grid_to_vec=nothing, pore_only::Bool=false)
+    return map(C -> get_slice_conc(C, img, axis, ind; grid_to_vec=grid_to_vec, pore_only=pore_only), Cs)
 end
 
 """
@@ -59,9 +61,7 @@ function compute_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
 
     return nansum(D_eff .* ΔC) / dx / length(C1)
 end
-function compute_flux(
-    Cs::AbstractVector{<:Array}, D, dx, img, axis; ind=:end, grid_to_vec=nothing
-)
+function compute_flux(Cs::AbstractVector{<:Array}, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
     return map(C -> compute_flux(C, D, dx, img, axis; ind=ind, grid_to_vec=grid_to_vec), Cs)
 end
 
@@ -71,6 +71,6 @@ end
 Total mass intake per unit volume relative to the initial concentration field.
 """
 function compute_mass_intake(C_hist, img::AbstractArray)
-    C0_total = sum(C_hist[1])
-    return [(sum(C) - C0_total) / length(img) for C in C_hist]
+    C0_total = nansum(C_hist[1])
+    return [(nansum(C) - C0_total) / length(img) for C in C_hist]
 end
