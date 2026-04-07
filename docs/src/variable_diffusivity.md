@@ -1,12 +1,15 @@
-# Variable diffusivity
+# Variable Diffusivity
 
-You can use `Tortuosity.jl` to compute the tortuosity factor of a porous medium (or non-porous for that matter!) with variable diffusivity, i.e., you can assign a custom diffusivity value to each voxel in the image. This is useful when you have a heterogeneous medium, where the diffusivity varies across the domain, like a fractured rock, or a non-porous medium made of different materials, e.g., a bubbly mixture.
+By default, `Tortuosity.jl` assumes uniform diffusivity (`D=1`) across all conducting voxels. You can override this by passing a custom diffusivity array that assigns a value to each voxel. This is useful for heterogeneous media such as fractured rock, or non-porous domains composed of different materials (e.g., a bubbly mixture).
 
-The workflow is similar to the basic usage, but you need to define a custom diffusivity field. Here are two examples:
+The workflow is similar to the [basic usage](index.md), but you define a custom `D` array and pass it to the simulation. The effective diffusivity (and hence tortuosity) is then computed as a flux-weighted quantity that accounts for the spatially varying `D`.
 
 ## Entire image as domain
 
-Assume you have a binary image where the true voxels are 5x more conductive than the false voxels. Note that tortuosity is ill-defined in this case, since we're not really dealing with a porous medium. In such cases, the concentration field is the important quantity to compute, but you can still compute the tortuosity factor for the sake of comparison!
+Assume you have a binary image where the `true` voxels are 5x more conductive than the `false` voxels. Here, we use the entire image as the computational domain by setting all voxels as conducting.
+
+!!! note
+    Tortuosity is ill-defined when the entire image is the domain, since there is no distinct void phase. The concentration field is the primary quantity of interest in this case, but you can still compute a tortuosity factor for comparison.
 
 ```@example
 using Tortuosity
@@ -21,17 +24,16 @@ img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2
 D = zeros(size(img))
 D[img] .= 1.0       # More conductive phase
 D[.!img] .= 0.2     # Less conductive phase
-domain = D .> 0     # Define domain as only-conducting voxels (i.e., the entire image)
+domain = D .> 0      # The entire image is the domain
 
-# Define the simulation
+# We pass `domain` (not `img`) to the constructor since all voxels are conducting
 sim = TortuositySimulation(domain; axis=:x, D=D, gpu=USE_GPU);
 
 # Solve the system of equations
-sol = solve(sim.prob, KrylovJL_CG())
+sol = solve(sim.prob, KrylovJL_CG(); verbose=false)
 
 # Convert the solution vector to an Nd grid
 c = vec_to_grid(sol.u, domain)
-# Compute the tortuosity factor
 τ = tortuosity(c, domain; axis=:x, D=D)
 println("τ = $τ")
 
@@ -44,18 +46,16 @@ savefig("c-plot.svg"); nothing # hide
 ```
 
 ```@example
-HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-plot.svg"))><figcaption>Original binary image used to assign diffusivity</figcaption></figure>""") # hide
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-plot.svg"))><figcaption>Binary image used to assign diffusivity</figcaption></figure>""") # hide
 ```
 
 ```@example
 HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-plot.svg"))><figcaption>Concentration field for the entire domain</figcaption></figure>""") # hide
 ```
 
-Note that we passed `domain` and not `img` to the `TortuositySimulation` constructor, since we are using the entire image (both true and false voxels) as the domain, and we only use the `img` to generate the diffusivity field.
-
 ## Subdomain as domain
 
-This example is similar to the first one, but we only consider a subdomain of the image as the domain. Assume we have a porous medium (described by a binary image) with a variable diffusivity field. Just to demonstrate the variable diffusivity, let's assume a random diffusivity field.
+This example uses only the pore phase as the computational domain, with a random diffusivity field assigned to each pore voxel. For illustration, we draw diffusivities from a uniform distribution.
 
 ```@example
 using Tortuosity
@@ -67,23 +67,19 @@ USE_GPU = false
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 
 # Define the diffusivity field
-D = rand(size(img)...)      # Random diffusivity field
-D[.!img] .= 0               # Non-conducting  
-domain = D .> 0             # Define domain as only-conducting voxels
+D = rand(Float64, size(img))  # Random diffusivity for all voxels
+D[.!img] .= 0                 # Zero out non-conducting voxels
+domain = D .> 0                # Conducting voxels only
 
-# Define the simulation
 sim = TortuositySimulation(domain; axis=:x, D=D, gpu=USE_GPU);
-
-# Solve the system of equations
-sol = solve(sim.prob, KrylovJL_CG())
+sol = solve(sim.prob, KrylovJL_CG(); verbose=false)
 
 # Convert the solution vector to an Nd grid
 c = vec_to_grid(sol.u, domain)
-# Compute the tortuosity factor
 τ = tortuosity(c, domain; axis=:x, D=D)
 println("τ = $τ")
 
-# Visualize the concentration field
+# Visualize
 using Plots
 heatmap(img[:,:,1]; aspect_ratio=:equal, clim=(0, 1))
 savefig("img-plot-partial-domain.svg"); nothing # hide
@@ -92,11 +88,11 @@ savefig("c-plot-partial-domain.svg"); nothing # hide
 ```
 
 ```@example
-HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-plot-partial-domain.svg"))><figcaption>Original binary image used to assign diffusivity</figcaption></figure>""") # hide
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-plot-partial-domain.svg"))><figcaption>Binary image used to assign diffusivity</figcaption></figure>""") # hide
 ```
 
 ```@example
-HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-plot-partial-domain.svg"))><figcaption>Concentration field</figcaption></figure>""") # hide
+HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-plot-partial-domain.svg"))><figcaption>Concentration field for the pore subdomain</figcaption></figure>""") # hide
 ```
 
-Note that in this case, `domain` is essentially the same as `img`, but we still define it separately to demonstrate how to use a variable diffusivity field. The diffusivity field `D` is defined only for the conducting voxels, and the non-conducting voxels are set to zero.
+In this case, `domain` is essentially the same as `img`, but we define it separately to show how the workflow generalizes. `D` is initialized for all voxels but set to zero for non-conducting ones, and `domain` is derived from where `D > 0`.

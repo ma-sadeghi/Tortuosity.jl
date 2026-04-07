@@ -14,11 +14,15 @@ makedocs(;
     sitename="Tortuosity.jl",
     format=format,
     pages=[
-        "Getting started" => "index.md",
+        "Home" => "index.md",
+        "Tutorials" => [
+            "Steady-State Tortuosity" => "tutorials/steady_state.md",
+            "Variable Diffusivity" => "tutorials/variable_diffusivity.md",
+            "Transient Diffusion" => "tutorials/transient.md",
+            "Advanced Transient" => "tutorials/advanced_transient.md",
+        ],
         "Imaginator" => "imaginator.md",
-        "Variable diffusivity" => "variable_diffusivity.md",
-        "Benchmark" => "benchmark.md",
-        "Transient" => "transient.md",
+        "API Reference" => "api.md",
     ],
 )
 
