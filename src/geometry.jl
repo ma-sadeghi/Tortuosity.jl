@@ -21,6 +21,14 @@ orthogonal_dims(d::Int) = orthogonal_dims((:x, :y, :z)[d])
 
 # Extract a 2D slice without reconstructing the full 3D concentration field
 
+"""
+    slice_vec_indices(img, grid_to_vec, axis, idx)
+
+Return the vector indices corresponding to the pore voxels in a 2D slice of a
+3D porous medium. Extracts a single slice along `axis` at position `idx`, then
+returns the 1D vector indices (into the pore-only vectorization) for the pore
+voxels in that slice.
+"""
 function slice_vec_indices(img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
     ax = axis_dim(axis)
     ind_slice = selectdim(grid_to_vec, ax, idx)
@@ -29,6 +37,12 @@ function slice_vec_indices(img::BitArray, grid_to_vec::Array{Int}, axis::Symbol,
     return vec(ind_slice[img_slice])
 end
 
+"""
+    vec_to_slice(u, img, grid_to_vec, axis, idx)
+
+Reconstruct a 2D slice of the concentration field from a pore-only 1D vector.
+Pore voxels receive their values from `u`, solid voxels are filled with `NaN`.
+"""
 function vec_to_slice(u, img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
     @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
 
