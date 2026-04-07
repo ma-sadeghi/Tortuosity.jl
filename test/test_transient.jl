@@ -7,72 +7,72 @@ using Tortuosity:
     Imaginator,
     apply_boundaries!,
     find_boundary_nodes,
-    analytic_conc,
-    analytic_mass,
-    analytic_flux,
-    analytic_∑flux
+    slab_concentration,
+    slab_mass_uptake,
+    slab_flux,
+    slab_cumulative_flux
 
 # --- Analytical solutions (pure math, no ODE solve) ---
 
-@testset "analytic_conc — boundary conditions" begin
+@testset "slab_concentration — boundary conditions" begin
     # C(x=0, t) = C1 = 1 and C(x=L, t) = C2 = 0 for any t
     for t in [0.01, 0.1, 1.0, 10.0]
-        @test analytic_conc(1.0, 0.0, t) ≈ 1.0 atol = 1e-8
-        @test analytic_conc(1.0, 1.0, t) ≈ 0.0 atol = 1e-8
+        @test slab_concentration(1.0, 0.0, t) ≈ 1.0 atol = 1e-8
+        @test slab_concentration(1.0, 1.0, t) ≈ 0.0 atol = 1e-8
     end
 end
 
-@testset "analytic_conc — steady state is linear" begin
+@testset "slab_concentration — steady state is linear" begin
     # At large t, C(x) → C1 + (C2-C1)*x/L = 1 - x
     for x in [0.2, 0.3, 0.5, 0.7, 0.9]
-        @test analytic_conc(1.0, x, 10.0) ≈ (1.0 - x) atol = 1e-8
+        @test slab_concentration(1.0, x, 10.0) ≈ (1.0 - x) atol = 1e-8
     end
 end
 
-@testset "analytic_conc — D scaling" begin
+@testset "slab_concentration — D scaling" begin
     # Higher D reaches steady state faster: |C - C_ss| should be smaller
-    c_slow = analytic_conc(0.1, 0.5, 0.5)
-    c_fast = analytic_conc(10.0, 0.5, 0.5)
+    c_slow = slab_concentration(0.1, 0.5, 0.5)
+    c_fast = slab_concentration(10.0, 0.5, 0.5)
     @test abs(c_fast - 0.5) < abs(c_slow - 0.5)
 end
 
-@testset "analytic_conc — vector of times" begin
+@testset "slab_concentration — vector of times" begin
     ts = [0.1, 0.5, 1.0, 5.0]
-    result = analytic_conc(1.0, 0.5, ts)
+    result = slab_concentration(1.0, 0.5, ts)
     @test length(result) == 4
     # Last time point should be near steady state
     @test result[end] ≈ 0.5 atol = 1e-6
 end
 
-@testset "analytic_mass — limits" begin
+@testset "slab_mass_uptake — limits" begin
     # Series converges slowly at t=0; with 100 terms the residual is ~0.002
-    @test analytic_mass(1.0, 0.0) ≈ 0.0 atol = 0.01
-    @test analytic_mass(1.0, 10.0) ≈ 1.0 atol = 1e-6
-    @test analytic_mass(1.0, 100.0) ≈ 1.0 atol = 1e-8
+    @test slab_mass_uptake(1.0, 0.0) ≈ 0.0 atol = 0.01
+    @test slab_mass_uptake(1.0, 10.0) ≈ 1.0 atol = 1e-6
+    @test slab_mass_uptake(1.0, 100.0) ≈ 1.0 atol = 1e-8
 end
 
-@testset "analytic_mass — monotonically increasing" begin
+@testset "slab_mass_uptake — monotonically increasing" begin
     ts = collect(range(0.0, 5.0; length=50))
-    ms = analytic_mass(1.0, ts)
+    ms = slab_mass_uptake(1.0, ts)
     @test all(diff(ms) .>= 0)
 end
 
-@testset "analytic_flux — steady state" begin
+@testset "slab_flux — steady state" begin
     # At steady state, flux = D*(C1-C2)/L = 1.0 everywhere
     for x in [0.0, 0.25, 0.5, 0.75, 1.0]
-        @test analytic_flux(1.0, x, 10.0) ≈ 1.0 atol = 1e-6
+        @test slab_flux(1.0, x, 10.0) ≈ 1.0 atol = 1e-6
     end
 end
 
-@testset "analytic_∑flux — cumulative" begin
-    @test analytic_∑flux(1.0, 0.0) ≈ 0.0 atol = 1e-8
+@testset "slab_cumulative_flux — cumulative" begin
+    @test slab_cumulative_flux(1.0, 0.0) ≈ 0.0 atol = 1e-8
     # Monotonically increasing
     ts = collect(range(0.01, 5.0; length=50))
-    Qs = analytic_∑flux(1.0, ts)
+    Qs = slab_cumulative_flux(1.0, ts)
     @test all(diff(Qs) .>= 0)
     # At large t, slope approaches D*(C1-C2)/L = 1.0
-    Q1 = analytic_∑flux(1.0, 100.0)
-    Q2 = analytic_∑flux(1.0, 101.0)
+    Q1 = slab_cumulative_flux(1.0, 100.0)
+    Q2 = slab_cumulative_flux(1.0, 101.0)
     @test (Q2 - Q1) ≈ 1.0 atol = 1e-4
 end
 
@@ -362,8 +362,8 @@ open_16 = ones(Bool, (16, 16, 16))
     C_final = state.C[end]
     mid = get_slice_conc(C_final, prob, size(open_16, 1) ÷ 2)
     @test mid ≈ 0.5 atol = 0.05
-    J_in = get_flux(C_final, prob; ind=1)
-    J_out = get_flux(C_final, prob; ind=:end)
+    J_in = compute_flux(C_final, prob; ind=1)
+    J_out = compute_flux(C_final, prob; ind=:end)
     @test J_in ≈ J_out atol = 0.02
 end
 
@@ -375,8 +375,8 @@ prob_z = TransientProblem(open_16, 0.05; axis=:z, bc_inlet=1, bc_outlet=0, gpu=f
     C_final = state.C[end]
     mid = get_slice_conc(C_final, prob_z, size(open_16, 3) ÷ 2)
     @test mid ≈ 0.5 atol = 0.05
-    J_in = get_flux(C_final, prob_z; ind=1)
-    J_out = get_flux(C_final, prob_z; ind=:end)
+    J_in = compute_flux(C_final, prob_z; ind=1)
+    J_out = compute_flux(C_final, prob_z; ind=:end)
     @test J_in ≈ J_out atol = 0.02
 end
 
@@ -397,23 +397,23 @@ end
     @test avg ≈ 1.0 atol = 0.1
 end
 
-@testset verbose = true "effective_diffusivity — open space" begin
+@testset verbose = true "fit_effective_diffusivity — open space" begin
     state_fit = init_state(prob_z)
     solve!(state_fit, prob_z, stop_at_delta_flux(0.01, prob_z); max_iter=500)
 
     @testset "method = :mass" begin
-        D_eff, φ, _, _, _, _ = effective_diffusivity(state_fit, prob_z, :mass)
+        D_eff, φ, _, _, _, _ = fit_effective_diffusivity(state_fit, prob_z, :mass)
         @test D_eff ≈ 1.0 atol = 0.1
         @test φ ≈ 1.0 atol = 0.15
     end
 
     @testset "method = :conc" begin
-        D_eff, _, _, _, _, _ = effective_diffusivity(state_fit, prob_z, :conc; depth=0.5)
+        D_eff, _, _, _, _, _ = fit_effective_diffusivity(state_fit, prob_z, :conc; depth=0.5)
         @test D_eff ≈ 1.0 atol = 0.1
     end
 
     @testset "method = :flux" begin
-        D_eff, _, _, _, _, _ = effective_diffusivity(state_fit, prob_z, :flux; depth=0.5)
+        D_eff, _, _, _, _, _ = fit_effective_diffusivity(state_fit, prob_z, :flux; depth=0.5)
         @test D_eff ≈ 1.0 atol = 0.25
     end
 end

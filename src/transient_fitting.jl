@@ -1,7 +1,7 @@
 # Analytical solutions to homogeneous transient diffusion and curve-fitting utilities
 
 """
-    effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth=0.5, t_fit=(0, sim.t[end]), terms=100, D0=1.0)
+    fit_effective_diffusivity(sim::TransientState, prob::TransientProblem, method::Symbol; depth=0.5, t_fit=(0, sim.t[end]), terms=100, D0=1.0)
 
 Fit an analytical transient‑diffusion solution to simulation data and return the
 effective diffusivity. Supports `bc_outlet=0` and `bc_outlet=nothing` (insulated).
@@ -23,7 +23,7 @@ Boundary modes must be `bc_inlet=1, bc_outlet=0` or `bc_inlet=1, bc_outlet=nothi
 # Returns
 `D_eff, φ_eff, xdata, ydata, fit, model`
 """
-function effective_diffusivity(
+function fit_effective_diffusivity(
     t,
     C,
     prob::TransientProblem,
@@ -34,7 +34,7 @@ function effective_diffusivity(
     D0=1.0,
 )
     D0 = Float64.(D0)
-    param = [D0, porosity(prob)]
+    param = [D0, Imaginator.phase_fraction(prob.img, true)]
 
     idx_min = argmin(abs.(t .- t_fit[1]))
     idx_max = argmin(abs.(t .- t_fit[2]))
@@ -53,26 +53,36 @@ function effective_diffusivity(
         depth_idx = round(Int, 1 + depth * (N - 1))
         depth = (depth_idx - 1) * prob.dx # snap to nearest grid point
 
-        ydata = get_slice_conc(C[idx_min:idx_max], prob, depth_idx)
+        ydata = get_slice_conc(
+            C[idx_min:idx_max], prob.img, prob.axis, depth_idx; grid_to_vec=prob.grid_to_vec
+        )
         depth += prob.dx / 2 # flux sits between slice idx and idx+1
         model =
-            (t, p) -> p[2] * analytic_conc(p[1], depth, t; C1=C1, C2=C2, L=L, terms=terms)
+            (t, p) -> p[2] * slab_concentration(p[1], depth, t; C1=C1, C2=C2, L=L, terms=terms)
 
     elseif method == :mass
-        ydata = (mass_intake(C[1:idx_max], prob))[idx_min:end]
+        ydata = (compute_mass_intake(C[1:idx_max], prob.img))[idx_min:end]
         model =
             (t, p) ->
                 p[2] * (C1 + C2) / 2 .*
-                analytic_mass(p[1], t; C1=C1, C2=C2, L=L, terms=terms)
+                slab_mass_uptake(p[1], t; C1=C1, C2=C2, L=L, terms=terms)
 
     elseif method == :flux
         depth_idx = round(Int, 0.5 + (depth) * (N - 1)) # flux lives between slices
         depth_idx == N && (depth_idx = N - 1) # clamp: no flux past last slice
         depth = (depth_idx - 0.5) * prob.dx # snap to nearest inter-slice position
 
-        ydata = get_flux(C[idx_min:idx_max], prob; ind=depth_idx)
+        ydata = compute_flux(
+            C[idx_min:idx_max],
+            prob.D,
+            prob.dx,
+            prob.img,
+            prob.axis;
+            ind=depth_idx,
+            grid_to_vec=prob.grid_to_vec,
+        )
         model =
-            (t, p) -> p[2] * analytic_flux(p[1], depth, t; C1=C1, C2=C2, L=L, terms=terms)
+            (t, p) -> p[2] * slab_flux(p[1], depth, t; C1=C1, C2=C2, L=L, terms=terms)
 
     else
         error(
@@ -86,7 +96,7 @@ function effective_diffusivity(
 
     return D_eff, φ_eff, xdata, ydata, fit, model
 end
-function effective_diffusivity(
+function fit_effective_diffusivity(
     sim::TransientState,
     prob::TransientProblem,
     method::Symbol;
@@ -95,7 +105,7 @@ function effective_diffusivity(
     terms=100,
     D0=1.0,
 )
-    return effective_diffusivity(
+    return fit_effective_diffusivity(
         sim.t,
         sim.C,
         prob::TransientProblem,
@@ -107,7 +117,7 @@ function effective_diffusivity(
     )
 end
 
-function voxel_tortuosity(
+function fit_voxel_diffusivity(
     sim::TransientState,
     prob::TransientProblem;
     depth=0.5,
@@ -144,7 +154,7 @@ function voxel_tortuosity(
     C2 = isnothing(prob.bc_outlet) ? C1 : prob.bc_outlet
     L = (N - 1) * prob.dx * (isnothing(prob.bc_outlet) ? 2 : 1) # symmetric slab for insulated outlet
 
-    model = (t, p) -> analytic_conc(p[1], p[2], t; C1=C1, C2=C2, L=L, terms=terms)
+    model = (t, p) -> slab_concentration(p[1], p[2], t; C1=C1, C2=C2, L=L, terms=terms)
 
     D_init = if prob.D isa Number
         Float64(prob.D)
@@ -175,7 +185,7 @@ function tortuosity()
 end
 
 """
-    analytic_conc(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_concentration(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 Analytical concentration in a 1D slab with constant diffusivity (Crank, *The
 Mathematics of Diffusion*, 2nd ed., p. 50).
@@ -192,7 +202,7 @@ Mathematics of Diffusion*, 2nd ed., p. 50).
 - `C0`: initial concentration throughout slab (default: 0).
 - `L`: slab thickness (default: 1).
 """
-function analytic_conc(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_concentration(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
     # Series indices reshaped for broadcasting: time along dim 1, terms along dim 2
     n = reshape(1:terms, 1, terms)
     m = 2 .* n .- 1
@@ -220,7 +230,7 @@ function analytic_conc(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
 end
 
 """
-    analytic_mass(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_mass_uptake(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 Normalized mass uptake `M_t/M_inf` in a 1D slab with constant diffusivity,
 where `M_inf = L * ((C1 + C2)/2 - C0)` (Crank, p. 50).
@@ -236,7 +246,7 @@ where `M_inf = L * ((C1 + C2)/2 - C0)` (Crank, p. 50).
 - `C0`: initial concentration throughout slab (default: 0).
 - `L`: slab thickness (default: 1).
 """
-function analytic_mass(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_mass_uptake(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
     n = (2 .* reshape(1:terms, 1, terms) .- 1) .^ 2
     t_is_scalar = t isa Number
     t_vec = t_is_scalar ? [t] : collect(t)
@@ -250,7 +260,7 @@ function analytic_mass(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
 end
 
 """
-    analytic_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 Analytical diffusive flux in a 1D slab, computed as
 
@@ -283,7 +293,7 @@ accuracy at early times and near boundaries.
 Flux `J(x,t)` as a scalar or array matching the shape of `t`.
 
 """
-function analytic_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
     # n and m indices
     n = reshape(1:terms, 1, terms)
     m = 2 .* n .- 1
@@ -323,7 +333,7 @@ function analytic_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
 end
 
 """
-    analytic_∑flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_cumulative_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
 
 Cumulative amount of substance that has diffused through the slab in the
 interval `(0, t)` (Crank, p. 51).
@@ -339,7 +349,7 @@ interval `(0, t)` (Crank, p. 51).
 - `C0`: initial concentration throughout slab (default: 0).
 - `L`: slab thickness (default: 1).
 """
-function analytic_∑flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_cumulative_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
     n = reshape(1:terms, 1, terms)
     m = (2 .* n .- 1) .^ 2
 

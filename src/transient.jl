@@ -289,9 +289,10 @@ inlet and outlet flux falls at or below `delta`. A smaller `delta` drives the
 simulation closer to steady state before stopping.
 """
 function stop_at_delta_flux(delta, prob::TransientProblem)
+    D, dx, img, axis, g2v = prob.D, prob.dx, prob.img, prob.axis, prob.grid_to_vec
     return (t_hist, C_hist) ->
-        abs(get_flux(C_hist[end], prob; ind=:end) - get_flux(C_hist[end], prob; ind=1)) <=
-        delta
+        abs(compute_flux(C_hist[end], D, dx, img, axis; ind=:end, grid_to_vec=g2v) -
+            compute_flux(C_hist[end], D, dx, img, axis; ind=1, grid_to_vec=g2v)) <= delta
 end
 
 # Convenience wrappers that unpack TransientProblem fields
