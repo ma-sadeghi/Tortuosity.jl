@@ -39,9 +39,9 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-vardiff.svg"))><figcaption
 
 The key difference from the uniform case: we pass `D=D` to both `TortuositySimulation` and `tortuosity()`.
 
-## Using the entire image as domain
+## Example: bubbly mixture
 
-You can also treat the entire image as the domain, assigning different diffusivities to "pore" and "solid" phases. This is useful for non-porous heterogeneous media:
+Consider a liquid with gas bubbles dispersed in it. Diffusion in the gas phase is slower than in the liquid, so the two phases have different diffusivities. We can model this by treating the entire image as the domain and assigning a lower diffusivity to the "bubble" voxels. (In reality, bubbles would be spherical — here we use blob shapes as a simple approximation.)
 
 ```@example vardiff2
 using Tortuosity
@@ -50,8 +50,8 @@ using Tortuosity: tortuosity, vec_to_grid
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 
 D = zeros(size(img))
-D[img] .= 1.0    # More conductive phase
-D[.!img] .= 0.2  # Less conductive phase
+D[img] .= 1.0    # Liquid phase (fast diffusion)
+D[.!img] .= 0.2  # Gas bubbles (slower diffusion)
 domain = D .> 0   # Everything is conducting
 
 sim = TortuositySimulation(domain; axis=:x, D=D, gpu=false)
@@ -63,7 +63,7 @@ println("τ = $τ")
 ```
 
 !!! note
-    Tortuosity is ill-defined when the entire image is the domain, since there is no distinct void phase. The concentration field is the primary quantity of interest in this case.
+    Tortuosity is traditionally a geometric property: it measures how much the solid walls and internal microstructure force diffusing species to take longer, more winding paths compared to a straight line. When the entire image is conducting fluid with no solid obstruction, there is no geometric hindrance — the computed $\tau$ reflects diffusivity contrast between phases, not structural tortuosity in the traditional sense. The concentration field is the primary quantity of interest in this case.
 
 Here, we pass `domain` (not `img`) to the constructor because all voxels are conducting — `domain` is derived from where `D > 0`.
 
