@@ -28,7 +28,7 @@ sol_ss = solve(sim_ss.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 # Convert the solution vector to an Nd grid
 C_ss = vec_to_grid(sol_ss.u, img)
 # Compute the tortuosity factor from steady state
-τ_ss = tortuosity(C_ss; axis=:x)
+τ_ss = tortuosity(C_ss, img; axis=:x)
 
 # Now the transient solution:
 dt = 0.05
