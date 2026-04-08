@@ -1,6 +1,9 @@
-# ================================================================
-# Helper Kernel: Fill the idx array on the GPU
-# ================================================================
+"""
+    fill_idx_kernel!(idx_gpu, linear_indices, num_true)
+
+CUDA kernel: write sequential indices (1, 2, …) into `idx_gpu` at positions
+given by `linear_indices`. Maps each `true` voxel to its pore-voxel number.
+"""
 function fill_idx_kernel!(idx_gpu, linear_indices, num_true)
     # Calculate the global linear index for this thread
     thread_idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
@@ -15,9 +18,13 @@ function fill_idx_kernel!(idx_gpu, linear_indices, num_true)
     return nothing
 end
 
-# ================================================================
-# Kernel 1: Count Connections
-# ================================================================
+"""
+    count_connections_kernel!(d_conn_count, im_gpu, idx_gpu, nx, ny, nz)
+
+CUDA kernel: count total face-connected neighbor pairs in a 3D boolean image.
+Each thread processes one voxel and atomically adds its neighbor count to
+`d_conn_count[1]`.
+"""
 function count_connections_kernel!(d_conn_count, im_gpu, idx_gpu, nx, ny, nz)
     # Calculate the global linear index for the voxel this thread processes
     linear_idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
@@ -74,9 +81,12 @@ function count_connections_kernel!(d_conn_count, im_gpu, idx_gpu, nx, ny, nz)
     return nothing
 end
 
-# ================================================================
-# Kernel 2: Write Connections
-# ================================================================
+"""
+    write_connections_kernel!(conns_gpu, d_row_counter, im_gpu, idx_gpu, nx, ny, nz)
+
+CUDA kernel: write `(neighbor, current)` connection pairs into `conns_gpu` using
+atomic row counter increments. Each thread processes one voxel.
+"""
 function write_connections_kernel!(conns_gpu, d_row_counter, im_gpu, idx_gpu, nx, ny, nz)
     # Calculate the global linear index for the voxel this thread processes
     linear_idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
@@ -139,10 +149,13 @@ function write_connections_kernel!(conns_gpu, d_row_counter, im_gpu, idx_gpu, nx
     return nothing
 end
 
-# ================================================================
-# Kernel 1 (New): Create Histogram of Connections by First Index
-# ================================================================
-# This kernel counts how many connections will have 'k' as their first element
+"""
+    histogram_connections_kernel!(d_histogram, d_total_conn_count, im_gpu, idx_gpu, nx, ny, nz)
+
+CUDA kernel: build a histogram counting connections per source node. Each thread
+processes one voxel and atomically increments `d_histogram[neighbor_idx]` for
+each face-connected neighbor. Also accumulates `d_total_conn_count`.
+"""
 function histogram_connections_kernel!(
     d_histogram, d_total_conn_count, im_gpu, idx_gpu, nx, ny, nz
 )
@@ -211,10 +224,12 @@ function histogram_connections_kernel!(
     return nothing
 end
 
-# ================================================================
-# GPU Exclusive Scan Helper (using cumsum!)
-# ================================================================
-# Simple kernel for shifting - potentially faster than CPU roundtrip for large N
+"""
+    shift_kernel!(dest, src, n)
+
+CUDA kernel: right-shift `src` into `dest` with `dest[1] = 0`, converting an
+inclusive prefix sum into an exclusive prefix sum.
+"""
 function shift_kernel!(dest, src, n)
     idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     if idx == 1 && n >= 1
@@ -225,7 +240,12 @@ function shift_kernel!(dest, src, n)
     return nothing
 end
 
-# Computes exclusive scan: out[i] = sum(inp[1]...inp[i-1])
+"""
+    exclusive_scan!(out::CuVector{T}, inp::CuVector{T})
+
+Compute the exclusive prefix sum on the GPU: `out[i] = sum(inp[1:i-1])`.
+Uses `CUDA.cumsum!` for the inclusive scan, then shifts via [`shift_kernel!`](@ref).
+"""
 function exclusive_scan!(out::CuVector{T}, inp::CuVector{T}) where {T}
     n = length(inp)
     if n == 0
@@ -251,10 +271,13 @@ function exclusive_scan!(out::CuVector{T}, inp::CuVector{T}) where {T}
     return out
 end
 
-# ================================================================
-# Kernel 2 (New): Write Connections using Offsets
-# ================================================================
-# Writes connections to their final sorted slot using atomically incremented offsets
+"""
+    write_connections_offset_kernel!(conns_gpu, d_bucket_write_counters, im_gpu, idx_gpu, nx, ny, nz)
+
+CUDA kernel: write connections into pre-computed sorted positions using per-bucket
+atomic counters (from [`exclusive_scan!`](@ref)). Produces a connectivity list
+sorted by the first (source) index.
+"""
 function write_connections_offset_kernel!(
     conns_gpu, d_bucket_write_counters, im_gpu, idx_gpu, nx, ny, nz
 )

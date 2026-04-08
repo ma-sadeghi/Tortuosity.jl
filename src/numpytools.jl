@@ -1,3 +1,9 @@
+"""
+    atleast_3d(x)
+
+Reshape `x` to at least 3 dimensions by appending singleton dimensions.
+0D → `(1,1,1)`, 1D → `(n,1,1)`, 2D → `(m,n,1)`, ≥3D → unchanged.
+"""
 function atleast_3d(x)
     if ndims(x) == 0
         reshape([x], 1, 1, 1)
@@ -13,29 +19,17 @@ end
 """
     isin_slow(a::AbstractArray, b::AbstractArray)
 
-Reference implementation of element-wise membership test. Simple and
-correct but O(n*m). Kept as a readable baseline for verifying optimized
-versions. Similar to `numpy.isin`.
+Reference implementation of element-wise membership test. Returns a boolean
+vector indicating which elements of `a` are present in `b`. Simple and correct
+but O(n×m). Kept as a readable baseline for verifying optimized versions.
+Similar to `numpy.isin`.
 
 # Arguments
-- `a::AbstractArray`: The array to check for membership.
-- `b::AbstractArray`: The array to check for membership in `a`.
+- `a`: array whose elements are tested for membership.
+- `b`: set of values to test against.
 
 # Returns
-- `Vector{Bool}`: A boolean array for `a` elements checked for membership in `b`.
-
-# Example
-```jldoctest
-julia> a = [1, 2, 3, 4, 5]
-julia> b = [3, 4, 1]
-julia> isin_slow(a, b)
-5-element Vector{Bool}:
- 1
- 0
- 1
- 1
- 0
-```
+- `Vector{Bool}`: `true` at index `i` if `a[i] ∈ b`.
 """
 function isin_slow(a::AbstractArray, b::AbstractArray)
     b = Set(b)

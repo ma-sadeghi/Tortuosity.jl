@@ -1,6 +1,13 @@
-# Reference implementation of Dirichlet BC application. Uses single-threaded
-# `overlap_indices` instead of `overlap_indices_fast`. Kept as a readable
-# baseline for verifying the optimized `apply_dirichlet_bc_fast!`.
+"""
+    apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
+
+Reference implementation of Dirichlet BC application. Uses single-threaded
+`overlap_indices`. Kept as a readable baseline for verifying the optimized
+[`apply_dirichlet_bc_fast!`](@ref).
+
+Zeroes out rows and columns of `A` for boundary nodes, sets the diagonal
+to its original value, and adjusts `b` so that `x[nodes] .= vals` upon solve.
+"""
 function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
     diag_inds = SparseArrays.diagind(A)[nodes]
     diag_vals = SparseArrays.diag(A)[nodes]
@@ -18,6 +25,18 @@ function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
     dropzeros!(A)
 end
 
+"""
+    apply_dirichlet_bc_fast!(A, b; nodes, vals)
+
+Apply Dirichlet boundary conditions to the linear system `A x = b` in place.
+Zeroes out rows and columns of `A` for boundary `nodes`, preserves the original
+diagonal, and adjusts `b` so that `x[nodes] .= vals` upon solve. Uses
+multi-threaded `overlap_indices_fast` on CPU and custom CUDA kernels on GPU.
+
+# Keyword Arguments
+- `nodes`: vector of node indices where Dirichlet conditions are applied.
+- `vals`: corresponding boundary values.
+"""
 function apply_dirichlet_bc_fast!(A::SparseMatrixCSC, b; nodes, vals)
     # NOTE: This is the standard way to apply Dirichlet BCs:
     #  - Add contribution from BCs to the non-BC nodes in the RHS

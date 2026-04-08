@@ -1,5 +1,7 @@
 # Transient diffusion solver for 3D porous materials
 
+"""Type alias for boundary condition values: `Nothing` (insulated), `Number`
+(constant Dirichlet), or `Function` (time-dependent Dirichlet)."""
 const BoundValue = Union{Nothing, Number, Function}
 
 struct TransientProblem{T,DType}
@@ -14,8 +16,18 @@ struct TransientProblem{T,DType}
     A::Union{SparseMatrixCSC{T,Int},CUDA.CUSPARSE.CuSparseMatrixCSC{T,Int32}}
 end
 
-# Concentration history is stored on CPU to avoid GPU memory exhaustion.
-# The ODE integrator alone would keep all snapshots on the compute device.
+"""
+    TransientState{T, I}
+
+Holds the evolving state of a transient simulation. Created by [`init_state`](@ref).
+Concentration history is stored on CPU to avoid GPU memory exhaustion.
+
+# Fields
+- `integrator::I`: ODE integrator instance (from OrdinaryDiffEq.jl).
+- `t::Vector{Float64}`: recorded simulation times.
+- `C::Vector{Vector{T}}`: concentration snapshots. Each entry is a 1D pore-only
+  vector (CPU), one per recorded time step.
+"""
 struct TransientState{T,I}
     integrator::I
     t::Vector{Float64}
@@ -232,7 +244,14 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
     return A
 end
 
-# CPU counterpart to the GPU kernel in kernels/sparse.jl
+"""
+    zero_rows!(A::SparseMatrixCSC, rows)
+    zero_rows!(A::CuSparseMatrixCSC, rows)
+
+Zero out all entries in the specified `rows` of sparse matrix `A`, then drop
+the resulting structural zeros. Used to enforce Dirichlet boundary conditions
+in the transient operator.
+"""
 function zero_rows!(A::SparseMatrixCSC, rows)
     target = Set(rows)
     @inbounds for i in eachindex(A.rowval)
@@ -308,6 +327,12 @@ end
 
 # --- Stop conditions ---
 
+"""
+    stop_at_time(t_final)
+
+Create a stop condition that returns `true` when the simulation time reaches
+or exceeds `t_final`.
+"""
 function stop_at_time(t_final)
     return (t_hist, C_hist) -> t_hist[end] >= t_final
 end

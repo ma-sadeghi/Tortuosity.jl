@@ -3,8 +3,8 @@ import SparseArrays: dropzeros!  # Needed for extending for CUDA.CUSPARSE.CuSpar
 """
     set_diag_kernel!(nzVal, rowVal, colPtr, vals, N_diag)
 
-CUDA kernel to set the values of existing non-zero diagonal elements
-in a CSC sparse matrix representation.
+CUDA kernel: set existing non-zero diagonal elements in a CSC sparse matrix.
+Each thread handles one column/diagonal index `k` and searches for `rowVal[idx] == k`.
 """
 function set_diag_kernel!(
     nzVal::CuDeviceVector{Tv},
@@ -33,22 +33,15 @@ function set_diag_kernel!(
 end
 
 """
-    set_diag!(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv, Ti}, vals::AbstractVector) where {Tv, Ti}
+    set_diag!(A::CuSparseMatrixCSC, vals::AbstractVector)
 
-Efficiently sets the values of *existing* non-zero diagonal elements of a CuSparseMatrixCSC `A`.
+Set the values of *existing* non-zero diagonal elements of `A` in place.
+Diagonal elements `A[k,k]` that are structurally zero are not inserted.
 
-The function modifies the `nzVal` array of `A` in place. Diagonal elements `A[k,k]`
-that were originally zero will *not* be inserted, and their corresponding value in `vals`
-will be ignored.
-
-Arguments:
-- A: The CuSparseMatrixCSC matrix on the GPU to modify.
-- vals: A vector (CPU or GPU) containing the desired values for the diagonal.
-        It must have length `min(size(A)...)`. If it's a CPU vector, it will be
-        transferred to the GPU. Its element type will be converted to match `A`.
-
-Returns:
-- `nothing` (The matrix `A` is modified in place).
+# Arguments
+- `A`: the `CuSparseMatrixCSC` to modify.
+- `vals`: vector of length `min(size(A)...)` with desired diagonal values.
+  CPU vectors are transferred to the GPU automatically.
 """
 function set_diag!(
     A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}, vals::AbstractVector
@@ -90,7 +83,8 @@ end
 """
     get_diag_kernel!(diag_vals, nzVal, rowVal, colPtr, N_diag)
 
-CUDA kernel to extract diagonal elements from a CSC sparse matrix representation.
+CUDA kernel: extract diagonal elements from a CSC sparse matrix. Each thread
+handles one column `k` and writes the found diagonal value to `diag_vals[k]`.
 """
 function get_diag_kernel!(
     diag_vals::CuDeviceVector{Tv},
@@ -120,19 +114,10 @@ function get_diag_kernel!(
 end
 
 """
-    get_diag(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv, Ti}) where {Tv, Ti}
+    get_diag(A::CuSparseMatrixCSC) -> CuVector
 
-Efficiently extracts the diagonal elements of a CuSparseMatrixCSC `A` on the GPU.
-
-Returns a `CuVector{Tv}` containing the diagonal values. If a diagonal element `A[k,k]`
-is not explicitly stored in the sparse matrix (i.e., it's zero), the corresponding
-value in the output vector will be zero.
-
-Arguments:
-- A: The CuSparseMatrixCSC matrix on the GPU.
-
-Returns:
-- CuVector{Tv}: A vector containing the diagonal elements of `A`.
+Extract the diagonal elements of `A` on the GPU. Returns a `CuVector` where
+structurally absent diagonal entries are zero.
 """
 function get_diag(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
     num_rows, num_cols = size(A)
@@ -163,7 +148,11 @@ function get_diag(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
     return diag_vals
 end
 
-# Kernel 1: Zeroes elements based on row index lookup table
+"""
+    zero_rows_kernel!(nzVal, rowVal, is_target_row, nnz)
+
+CUDA kernel: zero out nonzero values whose row index is flagged in `is_target_row`.
+"""
 function zero_rows_kernel!(
     nzVal::CuDeviceVector{Tv},
     rowVal::CuDeviceVector{Ti},
@@ -184,7 +173,11 @@ function zero_rows_kernel!(
     return nothing
 end
 
-# Kernel 2: Zeroes elements based on target column indices
+"""
+    zero_cols_kernel!(nzVal, colPtr, target_cols, num_target_cols)
+
+CUDA kernel: zero out all nonzero values in the specified target columns.
+"""
 function zero_cols_kernel!(
     nzVal::CuDeviceVector{Tv},
     colPtr::CuDeviceVector{Ti},
@@ -213,21 +206,14 @@ function zero_cols_kernel!(
 end
 
 """
-    zero_rows_cols!(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv, Ti}, idxs::AbstractVector{<:Integer}) where {Tv, Ti}
+    zero_rows_cols!(A::CuSparseMatrixCSC, idxs)
 
-Efficiently zeroes out all non-zero elements `A[i, j]` of a CuSparseMatrixCSC `A`
-where the row index `i` is in `idxs` OR the column index `j` is in `idxs`.
+Zero out all entries `A[i, j]` where `i ∈ idxs` or `j ∈ idxs`, in place.
+Out-of-bounds indices are silently ignored.
 
-The function modifies the `nzVal` array of `A` in place. Assumes the kernel
-functions `zero_rows_kernel!` and `zero_cols_kernel!` are defined elsewhere.
-
-Arguments:
-- A: The CuSparseMatrixCSC matrix on the GPU to modify.
-- idxs: A vector of integer indices. Rows `i` where `i ∈ idxs` and columns `j` where `j ∈ idxs` will be zeroed out.
-        Indices out of matrix bounds are ignored.
-
-Returns:
-- `nothing` (The matrix `A` is modified in place).
+# Arguments
+- `A`: the `CuSparseMatrixCSC` to modify.
+- `idxs`: vector of row/column indices to zero.
 """
 function zero_rows_cols!(
     A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}, idxs::AbstractVector{<:Integer}
@@ -294,21 +280,10 @@ function zero_rows_cols!(
 end
 
 """
-    zero_rows!(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv, Ti}, rows::AbstractVector{<:Integer}) where {Tv, Ti}
+    zero_rows!(A::CuSparseMatrixCSC, rows)
 
-Efficiently zeroes out all non-zero elements `A[i, :]` of a CuSparseMatrixCSC `A`
-where the row index `i` is in `rows`
-
-The function modifies the `nzVal` array of `A` in place. Assumes the kernel
-functions `zero_rows_kernel!` is defined elsewhere.
-
-Arguments:
-- A: The CuSparseMatrixCSC matrix on the GPU to modify.
-- rows: A vector of integer indices. Rows `i` where `i ∈ rows` will be zeroed out.
-        Indices out of matrix bounds are ignored.
-
-Returns:
-- `nothing` (The matrix `A` is modified in place).
+Zero out all entries in the specified `rows` of `A` in place, then drop
+structural zeros. Out-of-bounds indices are silently ignored.
 """
 function zero_rows!(
     A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti},
@@ -358,7 +333,14 @@ function zero_rows!(
     return nothing
 end
 
-# Combined kernel for compaction and calculating column counts for CSC rebuild
+"""
+    compact_and_count_kernel!(new_nzVal, new_rowVal, new_col_counts,
+                              nzVal_old, rowVal_old, colPtr_old,
+                              flags, scan_output, nnz_old)
+
+CUDA kernel: compact nonzero values (flagged for retention) into new arrays
+and atomically count entries per column for CSC `colPtr` reconstruction.
+"""
 function compact_and_count_kernel!(
     new_nzVal::CuDeviceVector{Tv},
     new_rowVal::CuDeviceVector{Ti},
@@ -406,22 +388,13 @@ function compact_and_count_kernel!(
 end
 
 """
-    dropzeros!(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv, Ti}; tol=eps(real(Tv))) where {Tv, Ti}
+    dropzeros!(A::CuSparseMatrixCSC; tol=eps(real(Tv)))
 
-Removes explicit zeros (or values close to zero within tolerance `tol`)
-from a `CuSparseMatrixCSC` `A` by rebuilding its structure. Modifies `A` in place.
+Remove explicit zeros (values with `abs(v) ≤ tol`) from `A` by rebuilding
+the CSC structure on the GPU. Modifies `A` in place.
 
-Arguments:
-- A: The `CuSparseMatrixCSC` on the GPU to modify.
-- tol: Tolerance for considering a value as zero. Defaults to `eps` of the real part of the value type. Values `v` where `abs(v) <= tol` are dropped.
-
-Returns:
-- `nothing` (The matrix `A` is modified in place).
-
-Note: This operation is computationally intensive as it requires rebuilding
-the sparse matrix structure (nzVal, rowVal, colPtr). Relies on CUDA.jl features like
-scan (`accumulate`), atomics, and potentially `searchsortedlast` within kernels.
-Ensure your CUDA.jl version supports these device-side functions efficiently.
+# Keyword Arguments
+- `tol`: tolerance for treating a value as zero. Default: `eps` of the value type.
 """
 function dropzeros!(
     A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}; tol=eps(real(Tv))

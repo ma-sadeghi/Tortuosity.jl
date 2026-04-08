@@ -67,10 +67,13 @@ function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, rel
     return caverns, kai
 end
 
-#not decided on this vs connectivity list approach
-#expects image space form - computation on solids is not a huge deal as this isn't a bottleneck
-#sum absolute values of flux over each connection for each voxel -> not the net flux
-#currently does not directly account for non-uniform diffusivity field
+"""
+    flux_out(C::AbstractArray, img::AbstractArray{Bool})
+
+Compute the total absolute flux at each voxel by summing `|ΔC|` over all
+face-connected neighbors. Operates in image space (full 3D grid). Solid
+voxels contribute zero flux. Does not account for non-uniform diffusivity.
+"""
 function flux_out(C::AbstractArray, img::AbstractArray{Bool})
     @assert size(C) == size(img) "size of C must match size of img"
 

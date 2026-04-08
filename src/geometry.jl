@@ -1,5 +1,10 @@
 # Axis helpers: map axis symbols to dimension indices, face names, and orthogonal dims
 
+"""
+    axis_dim(ax::Symbol) -> Int
+
+Convert an axis symbol (`:x`, `:y`, `:z`) to its dimension index (1, 2, 3).
+"""
 function axis_dim(ax::Symbol)
     ax === :x && return 1
     ax === :y && return 2
@@ -7,6 +12,12 @@ function axis_dim(ax::Symbol)
     error("axis must be :x, :y, or :z, got :$ax")
 end
 
+"""
+    axis_faces(ax::Symbol) -> Tuple{Symbol, Symbol}
+
+Return the `(inlet, outlet)` face names for a given axis:
+`:x` → `(:left, :right)`, `:y` → `(:front, :back)`, `:z` → `(:bottom, :top)`.
+"""
 function axis_faces(ax::Symbol)
     ax === :x && return (:left, :right)
     ax === :y && return (:front, :back)
@@ -14,6 +25,13 @@ function axis_faces(ax::Symbol)
     error("axis must be :x, :y, or :z, got :$ax")
 end
 
+"""
+    orthogonal_dims(ax::Symbol) -> Tuple{Int, Int}
+    orthogonal_dims(d::Int) -> Tuple{Int, Int}
+
+Return the two dimension indices orthogonal to `ax`:
+`:x` → `(2, 3)`, `:y` → `(1, 3)`, `:z` → `(1, 2)`.
+"""
 function orthogonal_dims(ax::Symbol)
     ax === :x && return (2, 3)
     ax === :y && return (1, 3)

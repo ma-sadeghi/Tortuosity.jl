@@ -1,5 +1,16 @@
 # Harmonic mean of node diffusivities at each edge: 2*D_a*D_b / (D_a + D_b).
 # This is the standard finite-volume interface conductance for unit-spacing grids.
+"""
+    interpolate_edge_values(node_vals, conns)
+
+Compute edge weights from node diffusivities using the harmonic mean:
+`2 * D_a * D_b / (D_a + D_b)`. This is the standard finite-volume interface
+conductance for unit-spacing grids.
+
+# Arguments
+- `node_vals`: diffusivity value for each node (1D vector, length = number of nodes).
+- `conns`: `nedges × 2` connectivity matrix where each row is a `(source, target)` pair.
+"""
 function interpolate_edge_values(node_vals, conns)
     @assert length(node_vals) == maximum(conns)
     P1 = @view conns[:, 1]
@@ -8,6 +19,16 @@ function interpolate_edge_values(node_vals, conns)
     return edge_vals
 end
 
+"""
+    TortuositySimulation{A}
+
+Holds the data for a steady-state diffusion problem on a binary pore image.
+
+# Fields
+- `img::A`: boolean pore mask (`true` = pore).
+- `axis::Symbol`: transport direction (`:x`, `:y`, or `:z`).
+- `prob::LinearProblem`: the assembled linear system ready for `solve(sim.prob, alg)`.
+"""
 struct TortuositySimulation{A<:AbstractArray{Bool}}
     img::A
     axis::Symbol
@@ -20,6 +41,24 @@ function Base.show(io::IO, ts::TortuositySimulation)
     return print(io, msg)
 end
 
+"""
+    TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
+
+Construct a `TortuositySimulation` for steady-state diffusion on a binary pore
+image. Builds the graph Laplacian, applies Dirichlet boundary conditions
+(`c = 1` at inlet, `c = 0` at outlet), and returns a ready-to-solve `LinearProblem`.
+
+# Arguments
+- `img`: boolean array where `true` = pore, `false` = solid. Promoted to 3D if needed.
+
+# Keyword Arguments
+- `axis`: transport direction (`:x`, `:y`, or `:z`).
+- `D`: diffusivity. `nothing` for uniform (default), or an array matching `img` shape
+  for spatially variable diffusivity.
+- `gpu`: `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect
+  (uses GPU when ≥ 100k pore voxels and CUDA is available).
+- `verbose`: print progress messages. Default: `false`.
+"""
 function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)

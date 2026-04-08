@@ -1,3 +1,9 @@
+"""
+    spdiagm(v)
+
+Construct a sparse diagonal matrix from vector `v`. Dispatches to
+`SparseArrays.spdiagm` on CPU and builds a `CuSparseMatrixCSC` directly on GPU.
+"""
 spdiagm(v::AbstractVector) = SparseArrays.spdiagm(0 => v)
 function spdiagm(v::CuArray)
     nnz = length(v)
@@ -8,12 +14,29 @@ function spdiagm(v::CuArray)
     return CUSPARSE.CuSparseMatrixCSC(colPtr, rowVal, nzVal, dims)
 end
 
+"""
+    laplacian(am)
+
+Compute the graph Laplacian `L = D - A` where `D` is the degree matrix and
+`A` is the adjacency matrix `am`.
+"""
 function laplacian(am)
     degrees = vec(sum(am; dims=2))
     degree_matrix = spdiagm(degrees)
     return degree_matrix - am
 end
 
+"""
+    create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
+
+Build an `nedges × 2` connectivity matrix listing all face-connected neighbor
+pairs in the 3D boolean image `img`. Each row `[i, j]` indicates that pore
+voxels `i` and `j` share a face. Connections are listed in both directions.
+
+# Keyword Arguments
+- `inds`: pre-computed index array mapping grid positions to sequential pore
+  indices. Default: computed internally.
+"""
 function create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
     nx, ny, nz = size(img)
 
@@ -62,9 +85,13 @@ function create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
     return conns[1:row, :]
 end
 
-# ================================================================
-# Main GPU Function (Histogram Strategy)
-# ================================================================
+"""
+    create_connectivity_list(img::CuArray{Bool}; inds=nothing)
+
+GPU implementation of [`create_connectivity_list`](@ref). Uses a two-pass
+histogram strategy: pass 1 counts connections per node, pass 2 writes them
+into pre-allocated sorted positions via exclusive scan offsets.
+"""
 function create_connectivity_list(img::CuArray{Bool}; inds=nothing)
     # --- Preprocessing & Data Transfer ---
     img = ndims(img) == 2 ? reshape(img, size(img)..., 1) : img
@@ -137,6 +164,17 @@ function create_connectivity_list(img::CuArray{Bool}; inds=nothing)
     return conns_gpu
 end
 
+"""
+    create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
+
+Build a sparse adjacency matrix in CSC format from an `nedges × 2` connectivity
+list. Constructs `colPtr` directly from the sorted connectivity, avoiding the
+overhead of `sparse()`.
+
+# Keyword Arguments
+- `n`: number of nodes (determines matrix size `n × n`).
+- `weights`: scalar weight for all edges, or a vector of per-edge weights.
+"""
 function create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
     nedges = size(conns, 1)
     w = length(weights) == 1 ? fill(weights, nedges) : weights
@@ -153,9 +191,13 @@ function create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
     return SparseMatrixCSC(n, n, colPtr, rowVal, w)
 end
 
-# Reference GPU implementation using COO→CSC conversion. Simpler than the
-# optimized `create_adjacency_matrix` but slower. Kept as a readable
-# baseline for verifying the optimized version.
+"""
+    create_adjacency_matrix_slow(conns::CuArray{Int64,2}; n, weights=1)
+
+Reference GPU implementation using COO → CSC conversion. Simpler than the
+optimized [`create_adjacency_matrix`](@ref) but slower. Kept as a readable
+baseline for verification.
+"""
 function create_adjacency_matrix_slow(conns::CuArray{Int64,2}; n, weights=1)
     dims = (n, n)
     nedges = size(conns, 1)
@@ -265,6 +307,12 @@ function create_adjacency_matrix(
     return csc
 end
 
+"""
+    find_boundary_nodes(img, face)
+
+Return the pore-voxel indices on a given `face` of the 3D image `img`.
+`face` is one of `:left`, `:right`, `:front`, `:back`, `:bottom`, `:top`.
+"""
 function find_boundary_nodes(img, face)
     nnodes = sum(img)
     indices = fill(-1, size(img))
