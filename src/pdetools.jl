@@ -1,3 +1,6 @@
+# Reference implementation of Dirichlet BC application. Uses single-threaded
+# `overlap_indices` instead of `overlap_indices_fast`. Kept as a readable
+# baseline for verifying the optimized `apply_dirichlet_bc_fast!`.
 function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
     diag_inds = SparseArrays.diagind(A)[nodes]
     diag_vals = SparseArrays.diag(A)[nodes]
@@ -15,7 +18,7 @@ function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
     dropzeros!(A)
 end
 
-function apply_dirichlet_bc🚀!(A::SparseMatrixCSC, b; nodes, vals)
+function apply_dirichlet_bc_fast!(A::SparseMatrixCSC, b; nodes, vals)
     # NOTE: This is the standard way to apply Dirichlet BCs:
     #  - Add contribution from BCs to the non-BC nodes in the RHS
     #  - Zero out rows and columns corresponding to BC nodes to keep A symmetric
@@ -30,8 +33,8 @@ function apply_dirichlet_bc🚀!(A::SparseMatrixCSC, b; nodes, vals)
 
     # Zero out rows and columns corresponding to BCs
     I, J, _ = findnz(A)
-    row_inds = overlap_indices🚀(I, nodes)
-    col_inds = overlap_indices🚀(J, nodes)
+    row_inds = overlap_indices_fast(I, nodes)
+    col_inds = overlap_indices_fast(J, nodes)
     A.nzval[union(row_inds, col_inds)] .= 0.0
 
     # Apply BCs x[i] = vals[i] via diag[i] * x[i] = diag[i] * vals[i]
@@ -40,7 +43,7 @@ function apply_dirichlet_bc🚀!(A::SparseMatrixCSC, b; nodes, vals)
     dropzeros!(A)
 end
 
-function apply_dirichlet_bc🚀!(A::CUDA.CUSPARSE.CuSparseMatrixCSC, b; nodes, vals)
+function apply_dirichlet_bc_fast!(A::CUDA.CUSPARSE.CuSparseMatrixCSC, b; nodes, vals)
     # NOTE: This is the standard way to apply Dirichlet BCs:
     #  - Add contribution from BCs to the non-BC nodes in the RHS
     #  - Zero out rows and columns corresponding to BC nodes to keep A symmetric

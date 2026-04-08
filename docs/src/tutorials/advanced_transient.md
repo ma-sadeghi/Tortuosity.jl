@@ -37,7 +37,6 @@ Steady-state tortuosity is a single number for the whole image. But transport th
 ```@example advtrans
 using Plots
 using Tortuosity
-using Tortuosity: stop_at_avg_concentration, fit_voxel_diffusivity
 
 # 3D image — we need spatial variation along the transport axis
 img = Imaginator.blobs(; shape=(64, 64, 32), porosity=0.4, blobiness=0.5, seed=3)
@@ -79,7 +78,6 @@ Key parameters of `fit_voxel_diffusivity`:
 ```@example timedep
 using Plots
 using Tortuosity
-using Tortuosity: stop_at_periodic, stop_at_time, vec_to_grid
 
 # 1D homogeneous image for clarity
 N = 64

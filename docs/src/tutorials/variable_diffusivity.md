@@ -13,7 +13,6 @@ We generate a binary pore image and assign a random diffusivity to each pore vox
 ```@example vardiff
 using Plots
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
 
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 
@@ -45,7 +44,6 @@ Consider a liquid with gas bubbles dispersed in it. Diffusion in the gas phase i
 
 ```@example vardiff2
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
 
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 

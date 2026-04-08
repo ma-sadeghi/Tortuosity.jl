@@ -1,21 +1,24 @@
 # Axis helpers: map axis symbols to dimension indices, face names, and orthogonal dims
 
 function axis_dim(ax::Symbol)
-    d = Dict(:x => 1, :y => 2, :z => 3)
-    haskey(d, ax) || error("axis must be :x, :y, or :z")
-    return d[ax]
+    ax === :x && return 1
+    ax === :y && return 2
+    ax === :z && return 3
+    error("axis must be :x, :y, or :z, got :$ax")
 end
 
 function axis_faces(ax::Symbol)
-    d = Dict(:x => (:left, :right), :y => (:front, :back), :z => (:bottom, :top))
-    haskey(d, ax) || error("axis must be :x, :y, or :z")
-    return d[ax]
+    ax === :x && return (:left, :right)
+    ax === :y && return (:front, :back)
+    ax === :z && return (:bottom, :top)
+    error("axis must be :x, :y, or :z, got :$ax")
 end
 
 function orthogonal_dims(ax::Symbol)
-    d = Dict(:x => (2, 3), :y => (1, 3), :z => (1, 2))
-    haskey(d, ax) || error("axis must be :x, :y, or :z")
-    return d[ax]
+    ax === :x && return (2, 3)
+    ax === :y && return (1, 3)
+    ax === :z && return (1, 2)
+    error("axis must be :x, :y, or :z, got :$ax")
 end
 orthogonal_dims(d::Int) = orthogonal_dims((:x, :y, :z)[d])
 

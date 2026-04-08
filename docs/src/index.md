@@ -19,7 +19,6 @@ Pkg.add("Tortuosity")
 
 ```@example
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
 
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 img = Imaginator.trim_nonpercolating_paths(img, axis=:x)

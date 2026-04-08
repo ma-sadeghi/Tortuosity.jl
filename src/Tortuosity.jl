@@ -34,10 +34,34 @@ export TortuositySimulation
 export TransientProblem
 export TransientState
 
-# Functions
+# Steady-state analysis
 export solve
+export tortuosity
+export effective_diffusivity
+export formation_factor
+export vec_to_grid
+
+# Transient solver
 export solve!
 export init_state
 export stop_at_time
+export stop_at_avg_concentration
+export stop_at_delta_flux
+export stop_at_periodic
+
+# Transient measurements
+export compute_flux
+export get_slice_conc
+export compute_mass_uptake
+
+# Transient fitting
+export fit_effective_diffusivity
+export fit_voxel_diffusivity
+
+# Analytical solutions
+export slab_concentration
+export slab_mass_uptake
+export slab_flux
+export slab_cumulative_flux
 
 end  # module Tortuosity

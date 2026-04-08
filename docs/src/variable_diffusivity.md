@@ -13,7 +13,6 @@ Assume you have a binary image where the `true` voxels are 5x more conductive th
 
 ```@example
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
 
 USE_GPU = false
 
@@ -59,7 +58,6 @@ This example uses only the pore phase as the computational domain, with a random
 
 ```@example
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
 
 USE_GPU = false
 

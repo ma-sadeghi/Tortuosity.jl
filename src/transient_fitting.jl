@@ -58,6 +58,8 @@ function fit_effective_diffusivity(
     L = (N - 1) * prob.dx * (insulated ? 2 : 1)
 
     if method == :conc
+        # Cell-center convention: concentration lives at the center of each voxel,
+        # so voxel index i maps to physical position (i - 0.5) * dx.
         depth_idx = round(Int, 1 + depth * (N - 1))
         depth_actual = (depth_idx - 0.5) * prob.dx
 
@@ -68,10 +70,12 @@ function fit_effective_diffusivity(
         model = (t, p) -> slab_concentration(p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms=terms)
 
     elseif method == :mass
-        ydata = (compute_mass_intake(C[1:idx_max], prob.img))[idx_min:end]
+        ydata = (compute_mass_uptake(C[1:idx_max], prob.img))[idx_min:end]
         model = (t, p) -> φ * (C1 + C2) / 2 .* slab_mass_uptake(p[1], t; C1=C1, C2=C2, L=L, terms=terms)
 
     elseif method == :flux
+        # Cell-face convention: flux is computed at the face between voxels
+        # depth_idx and depth_idx+1, so the physical position is depth_idx * dx.
         depth_idx = round(Int, 0.5 + depth * (N - 1))
         if depth_idx == N
             depth_idx = N - 1
@@ -89,9 +93,9 @@ function fit_effective_diffusivity(
     end
 
     fit = curve_fit(model, xdata, ydata, param)
-    D_rel = fit.param[1]
-    τ = D_pore / D_rel
-    D_eff = φ * D_pore * D_rel
+    D_app = fit.param[1]  # apparent diffusivity: D_pore / τ
+    τ = D_pore / D_app
+    D_eff = φ * D_app
 
     return τ, D_eff, xdata, ydata, fit, model
 end
@@ -158,10 +162,12 @@ function fit_voxel_diffusivity(
     C2 = insulated ? C1 : prob.bc_outlet
     L = (N - 1) * prob.dx * (insulated ? 2 : 1)
 
+    # Cell-center convention: voxel index i maps to physical position (i - 0.5) * dx
+    depth_actual = (depth_idx - 0.5) * prob.dx
     if fit_depth
         model = (t, p) -> slab_concentration(1 / p[1], p[2], t; C1=C1, C2=C2, L=L, terms=terms)
     else
-        model = (t, p) -> slab_concentration(1 / p[1], depth, t; C1=C1, C2=C2, L=L, terms=terms)
+        model = (t, p) -> slab_concentration(1 / p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms=terms)
     end
 
     D_pore = prob.D isa Number ? Float64(prob.D) : Float64(sum(prob.D[prob.img]) / count(prob.img))
@@ -187,10 +193,6 @@ function fit_voxel_diffusivity(
     else
         return tau_list, SE_tau_list, voxels
     end
-end
-
-function tortuosity()
-    return nothing
 end
 
 # --- Analytical solutions for 1D slab diffusion ---

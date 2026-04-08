@@ -11,8 +11,9 @@ function norm_to_uniform(img; scale=(minimum(img), maximum(img)))
     lb, ub = scale
     img = (img .- mean(img)) / std(img)
     img = 1 / 2 * erfc.(-img / sqrt(2))
-    img = (img .- lb) / (ub - lb)
-    return img = img * (ub - lb) .+ lb
+    # Normalize to [0, 1] using actual post-erfc bounds, then rescale to [lb, ub]
+    img = (img .- minimum(img)) / (maximum(img) - minimum(img))
+    return img * (ub - lb) .+ lb
 end
 
 function apply_gaussian_blur(img, sigma)

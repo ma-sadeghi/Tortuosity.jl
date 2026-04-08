@@ -1,3 +1,4 @@
+spdiagm(v::AbstractVector) = SparseArrays.spdiagm(0 => v)
 function spdiagm(v::CuArray)
     nnz = length(v)
     colPtr = cu(collect(1:(nnz + 1)))
@@ -9,12 +10,11 @@ end
 
 function laplacian(am)
     degrees = vec(sum(am; dims=2))
-    degree_matrix = SparseArrays.spdiagm(degrees)
+    degree_matrix = spdiagm(degrees)
     return degree_matrix - am
 end
 
 function create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
-    img = ndims(img) == 2 ? reshape(img, size(img)..., 1) : img
     nx, ny, nz = size(img)
 
     if isnothing(inds)
@@ -138,32 +138,25 @@ function create_connectivity_list(img::CuArray{Bool}; inds=nothing)
 end
 
 function create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
-    # Ensure conns describes bidirectional connections
     nedges = size(conns, 1)
-    if length(weights) == 1
-        weights = fill(weights, nedges)
-    end
+    w = length(weights) == 1 ? fill(weights, nedges) : weights
 
-    # Build colPtr, rowVal, and nzVal
+    # Build CSC directly from pre-sorted connectivity (sorted by column, then row).
+    # This avoids the 3-4x memory overhead and sorting cost of sparse().
     rowVal = conns[:, 1]
-    colPtr = Vector{Int}(undef, n + 1)
-    j = 1  # colPtr index
-    for (i, col) in enumerate(@view conns[:, 2])
-        if i == 1
-            colPtr[j] = 1
-        end
-        if col != j
-            colPtr[j + 1] = i
-            j += 1
-        end
+    colPtr = zeros(Int, n + 1)
+    for k in 1:nedges
+        colPtr[conns[k, 2] + 1] += 1
     end
-    colPtr[end] = nedges + 1
-
-    return am = SparseMatrixCSC(n, n, colPtr, rowVal, weights)
-    # am = sparse(conns[:, 1], conns[:, 2], weights, n, n)
+    cumsum!(colPtr, colPtr)
+    colPtr .+= 1
+    return SparseMatrixCSC(n, n, colPtr, rowVal, w)
 end
 
-function create_adjacency_matrix🐢(conns::CuArray{Int64,2}; n, weights=1)
+# Reference GPU implementation using COO→CSC conversion. Simpler than the
+# optimized `create_adjacency_matrix` but slower. Kept as a readable
+# baseline for verifying the optimized version.
+function create_adjacency_matrix_slow(conns::CuArray{Int64,2}; n, weights=1)
     dims = (n, n)
     nedges = size(conns, 1)
     # NOTE: Promoting to Cint makes creating COO non-allocating and faster, but slower for CSC

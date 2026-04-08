@@ -62,6 +62,6 @@ end
     c̄ = mean(sol.u[img[:]])
     @test c̄ ≈ c̄_gt[ax] atol = 1e-2
     c_grid = vec_to_grid(sol.u, domain)
-    tau = tortuosity(c_grid, domain; axis=ax, eps=ε, D=D)
+    tau = tortuosity(c_grid, domain; axis=ax, ε=ε, D=D)
     @test tau ≈ tau_gt[ax] atol = 1e-2
 end

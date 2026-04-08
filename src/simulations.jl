@@ -1,30 +1,15 @@
-# function interpolate_edge_values(node_vals, conns)
-#     @assert length(node_vals) == maximum(conns)
-#     nedges = size(conns, 1)
-#     edge_vals = similar(node_vals, nedges)
-#     for i in 1:nedges
-#         m, n = conns[i, :]
-#         edge_vals[i] = 1 / (1 / node_vals[m] + 1 / node_vals[n])
-#     end
-#     return edge_vals
-# end
-
+# Harmonic mean of node diffusivities at each edge: 2*D_a*D_b / (D_a + D_b).
+# This is the standard finite-volume interface conductance for unit-spacing grids.
 function interpolate_edge_values(node_vals, conns)
-    # Ensure both arrays are on the same device (GPU if conns is on GPU)
     @assert length(node_vals) == maximum(conns)
-
-    # Extract node indices for all edges at once
     P1 = @view conns[:, 1]
     P2 = @view conns[:, 2]
-
-    # Vectorized harmonic mean calculation
     edge_vals = 1 ./ (1 ./ node_vals[P1] / 2 .+ 1 ./ node_vals[P2] / 2)
-
     return edge_vals
 end
 
-struct TortuositySimulation
-    img::AbstractArray{Bool}
+struct TortuositySimulation{A<:AbstractArray{Bool}}
+    img::A
     axis::Symbol
     prob::LinearProblem
 end
@@ -80,7 +65,7 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     # Pre-process for GPU if needed
     bc_nodes = gpu ? Int32.(bc_nodes) : bc_nodes
     bc_vals = gpu ? cu(bc_vals) : bc_vals
-    apply_dirichlet_bc🚀!(A, b; nodes=bc_nodes, vals=bc_vals)
+    apply_dirichlet_bc_fast!(A, b; nodes=bc_nodes, vals=bc_vals)
 
     return TortuositySimulation(img, axis, LinearProblem(A, b))
 end

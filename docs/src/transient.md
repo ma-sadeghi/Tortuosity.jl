@@ -20,7 +20,6 @@ The example below runs a transient simulation on a porous image and compares the
 
 ```@example
 using Tortuosity
-using Tortuosity: stop_at_delta_flux, vec_to_grid, tortuosity, compute_flux, slab_flux
 
 USE_GPU = false
 
@@ -109,7 +108,6 @@ One indicator of how a porous material deviates from homogeneous behavior is the
 
 ```@example
 using Tortuosity
-using Tortuosity: stop_at_avg_concentration, fit_voxel_diffusivity
 
 USE_GPU = false
 
@@ -159,7 +157,6 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"tortuosity_histogram.svg"))>
 
 ```@example
 using Tortuosity
-using Tortuosity: stop_at_periodic, stop_at_time, vec_to_grid
 
 USE_GPU = false
 axis = :z

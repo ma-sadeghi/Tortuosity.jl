@@ -348,6 +348,11 @@ conditions. Compares slice concentrations at several phase points across the
 trailing `frac_period` fraction of one period, checking whether the current
 period matches the previous period within `reltol` scaled by the amplitude.
 
+!!! warning
+    The returned closure tracks an internal history that must stay aligned with
+    `state.t`. Do not reuse the same closure across non-consecutive `solve!`
+    calls with a different stop condition in between — create a fresh one instead.
+
 # Arguments
 - `freq`: driving frequency (Hz).
 - `prob`: `TransientProblem` defining geometry and slice axis.
@@ -362,7 +367,7 @@ function stop_at_periodic(
     freq, prob::TransientProblem;
     reltol=1e-2, Nphase::Int=4, frac_period=0.3, depth=1.0,
 )
-    @assert 0 < frac_period "frac_period must be greater than 0."
+    @assert 0 < frac_period <= 1 "frac_period must be in (0, 1]."
     @assert 0 < depth <= 1 "depth must be in (0,1]."
 
     period = 1 / freq

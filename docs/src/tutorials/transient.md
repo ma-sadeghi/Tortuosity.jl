@@ -19,7 +19,6 @@ The transient workflow has three steps: create a `TransientProblem`, initialize 
 ```@example transient
 using Plots
 using Tortuosity
-using Tortuosity: stop_at_delta_flux, vec_to_grid, tortuosity, compute_flux, slab_flux
 
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 φ = Imaginator.phase_fraction(img, true)

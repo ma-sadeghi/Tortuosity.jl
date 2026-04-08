@@ -66,8 +66,6 @@ nothing # hide
 The solution `sol.u` is a 1D vector containing concentrations at pore voxels only (solid voxels are excluded to save memory). Use `vec_to_grid` to reconstruct the full 3D concentration field, with `NaN` for solid voxels.
 
 ```@example steady
-using Tortuosity: vec_to_grid, tortuosity, effective_diffusivity, formation_factor
-
 c = vec_to_grid(sol.u, img)
 
 heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1), title="Concentration field")

@@ -24,7 +24,8 @@ end
 
 function vec_to_grid(u, img::AbstractArray{Bool})
     @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
-    c = fill(NaN, size(img))
+    T = eltype(u)
+    c = fill(T(NaN), size(img))
     c[img] = Array(u)
     return c
 end

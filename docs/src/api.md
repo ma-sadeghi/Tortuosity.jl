@@ -1,6 +1,6 @@
 # API Reference
 
-This page lists the main types and functions in `Tortuosity.jl`. Functions marked with **(exported)** are available after `using Tortuosity`. All others require a qualified import, e.g., `using Tortuosity: tortuosity`.
+This page lists the main types and functions in `Tortuosity.jl`. All functions listed below are exported and available after `using Tortuosity` unless noted otherwise.
 
 ## Types
 
@@ -63,23 +63,23 @@ Solves the steady-state linear system. Accepts any [LinearSolve.jl](https://docs
 ### `tortuosity`
 
 ```julia
-tortuosity(c, img; axis, slice=1, eps=nothing, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, dx=1.0, L=nothing, Δc=nothing)
 ```
 
-Computes $\tau = \varepsilon / D_\text{eff}$ from a concentration field.
+Computes $\tau = \varepsilon / D_\text{eff}$ from a concentration field. When `ε` is omitted, porosity is computed automatically from `img`.
 
 ### `effective_diffusivity`
 
 ```julia
-effective_diffusivity(c, img; axis, slice=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+effective_diffusivity(c, img; axis, ind=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
 ```
 
-Computes $D_\text{eff}$ by measuring flux through a cross-sectional `slice`.
+Computes $D_\text{eff}$ by measuring flux through the cross-section at index `ind`.
 
 ### `formation_factor`
 
 ```julia
-formation_factor(c, img; axis, slice=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+formation_factor(c, img; axis, ind=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
 ```
 
 Computes $F = 1 / D_\text{eff}$.
@@ -154,27 +154,30 @@ Stop condition for periodic steady-state detection under oscillating boundary co
 
 ```julia
 compute_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
+compute_flux(C, prob::TransientProblem; ind=:end)
 compute_flux(Cs::AbstractVector, D, dx, img, axis; kwargs...)
 ```
 
-Computes the diffusive flux between two adjacent voxel planes at index `ind` along `axis`. The vector overload maps over a list of concentration snapshots.
+Computes the diffusive flux between two adjacent voxel planes at index `ind` along `axis`. The `TransientProblem` overload unpacks `D`, `dx`, `img`, `axis`, and `grid_to_vec` automatically. The vector overload maps over a list of concentration snapshots.
 
 ### `get_slice_conc`
 
 ```julia
 get_slice_conc(C, img, axis, ind; grid_to_vec=nothing, pore_only=false)
+get_slice_conc(C, prob::TransientProblem, ind; pore_only=false)
 get_slice_conc(Cs::AbstractVector, img, axis, ind; kwargs...)
 ```
 
-Returns the mean concentration along a 2D cross-section at index `ind`.
+Returns the mean concentration along a 2D cross-section at index `ind`. The `TransientProblem` overload unpacks `img`, `axis`, and `grid_to_vec` automatically.
 
-### `compute_mass_intake`
+### `compute_mass_uptake`
 
 ```julia
-compute_mass_intake(C_hist, img)
+compute_mass_uptake(C_hist, img)
+compute_mass_uptake(C_hist, prob::TransientProblem)
 ```
 
-Computes total pore-averaged concentration at each timestep.
+Change in mean pore concentration from the initial state at each timestep. This is the numerical counterpart of `slab_mass_uptake()`.
 
 ## Fitting functions
 

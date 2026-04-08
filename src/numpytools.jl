@@ -11,10 +11,11 @@ function atleast_3d(x)
 end
 
 """
-    isin👎(a::AbstractArray, b::AbstractArray)
+    isin_slow(a::AbstractArray, b::AbstractArray)
 
-Returns a boolean array where each element of `a` is checked
-for membership in `b`. Similar to `numpy.isin`.
+Reference implementation of element-wise membership test. Simple and
+correct but O(n*m). Kept as a readable baseline for verifying optimized
+versions. Similar to `numpy.isin`.
 
 # Arguments
 - `a::AbstractArray`: The array to check for membership.
@@ -27,7 +28,7 @@ for membership in `b`. Similar to `numpy.isin`.
 ```jldoctest
 julia> a = [1, 2, 3, 4, 5]
 julia> b = [3, 4, 1]
-julia> isin👎(a, b)
+julia> isin_slow(a, b)
 5-element Vector{Bool}:
  1
  0
@@ -36,19 +37,21 @@ julia> isin👎(a, b)
  0
 ```
 """
-function isin👎(a::AbstractArray, b::AbstractArray)
+function isin_slow(a::AbstractArray, b::AbstractArray)
     b = Set(b)
     return [x in b for x in a]
 end
 
 """
-    overlap_indices👎(a::AbstractArray, b::AbstractArray)
-    overlap_indices👎(a::AbstractArray, b::Set)
+    overlap_indices_slow(a::AbstractArray, b::AbstractArray)
+    overlap_indices_slow(a::AbstractArray, b::Set)
 
-Similar to `overlap_indices`, but uses legacy internal functions.
+Reference implementation of `overlap_indices` using `isin_slow`. Simple
+and correct but slower than `overlap_indices`. Kept as a readable
+baseline for verifying optimized versions.
 """
-function overlap_indices👎(a::AbstractArray, b::AbstractArray)
-    return findall(isin👎(a, b))
+function overlap_indices_slow(a::AbstractArray, b::AbstractArray)
+    return findall(isin_slow(a, b))
 end
 
 """
@@ -69,7 +72,7 @@ in ascending order, not the order in which they appear in `a`.
 ```jldoctest
 julia> a = [1, 2, 3, 4, 5]
 julia> b = [3, 4, 1]
-julia> overlap_indices👎(a, b)
+julia> overlap_indices(a, b)
 3-element Vector{Int}:
  1
  3
@@ -91,12 +94,12 @@ function overlap_indices(a, b::AbstractArray)
 end
 
 """
-    overlap_indices🚀(a::AbstractArray, b::AbstractArray)
-    overlap_indices🚀(a::AbstractArray, b::Set)
+    overlap_indices_fast(a::AbstractArray, b::AbstractArray)
+    overlap_indices_fast(a::AbstractArray, b::Set)
 
-Similar to `overlap_indices`, but parallelized using `Threads.@threads`.
+Parallelized version of `overlap_indices` using `Threads.@threads`.
 """
-function overlap_indices🚀(a::AbstractArray, b::Set)
+function overlap_indices_fast(a::AbstractArray, b::Set)
     num_threads = Threads.nthreads()
     # Chunk `a` into `num_threads` number of chunks (might be less)
     bounds = find_chunk_bounds(; nelems=length(a), ndivs=num_threads)
@@ -119,8 +122,8 @@ function overlap_indices🚀(a::AbstractArray, b::Set)
     return vcat(thread_indices...)
 end
 
-function overlap_indices🚀(a::AbstractArray, b::AbstractArray)
-    return overlap_indices🚀(a, Set(b))
+function overlap_indices_fast(a::AbstractArray, b::AbstractArray)
+    return overlap_indices_fast(a, Set(b))
 end
 
 """

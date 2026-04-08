@@ -56,7 +56,8 @@ function compute_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
     else
         D1 = selectdim(D, ax, ind)
         D2 = selectdim(D, ax, ind + 1)
-        D_eff = @. (2 * D1 * D2) / (D1 + D2 + eps())
+        denom = @. D1 + D2
+        D_eff = @. ifelse(denom == 0, zero(denom), 2 * D1 * D2 / denom)
     end
 
     return nansum(D_eff .* ΔC) / dx / length(C1)
@@ -66,11 +67,28 @@ function compute_flux(Cs::AbstractVector{<:Array}, D, dx, img, axis; ind=:end, g
 end
 
 """
-    compute_mass_intake(C_hist, img)
+    compute_mass_uptake(C_hist, img)
 
-Total mass intake per unit volume relative to the initial concentration field.
+Change in mean pore concentration from the initial state at each timestep.
+This is the numerical counterpart of `slab_mass_uptake()`.
 """
-function compute_mass_intake(C_hist, img::AbstractArray)
+function compute_mass_uptake(C_hist, img::AbstractArray)
+    # FIXME: Divides by length(img) (total voxels) not count(img) (pore voxels).
+    #  This gives volume-averaged uptake, not mean pore concentration change.
+    #  May be intentional to match the analytical model scaling in
+    #  fit_effective_diffusivity (which multiplies by φ), but the docstring
+    #  is misleading if so. Needs clarification.
     C0_total = nansum(C_hist[1])
     return [(nansum(C) - C0_total) / length(img) for C in C_hist]
 end
+
+# --- Convenience wrappers that unpack TransientProblem ---
+
+get_slice_conc(C, prob::TransientProblem, ind; pore_only::Bool=false) =
+    get_slice_conc(C, prob.img, prob.axis, ind; grid_to_vec=prob.grid_to_vec, pore_only=pore_only)
+
+compute_flux(C, prob::TransientProblem; ind=:end) =
+    compute_flux(C, prob.D, prob.dx, prob.img, prob.axis; ind=ind, grid_to_vec=prob.grid_to_vec)
+
+compute_mass_uptake(C_hist, prob::TransientProblem) =
+    compute_mass_uptake(C_hist, prob.img)
