@@ -82,6 +82,13 @@ function TransientProblem(
     gpu=nothing,
 )
     img = atleast_3d(img)
+    # Struct holds `img` on CPU; copy back from GPU if the caller passed a
+    # device array (same convention as TortuositySimulation).
+    if _on_gpu(img)
+        @warn "`img` was passed on GPU; copying to CPU so the struct holds a CPU mask. \
+               Pass `gpu=true` if you want the solver kernels to run on GPU." maxlog = 1
+        img = Array(img)
+    end
     img = BitArray(img .!= 0)
     @assert D isa Number || size(img) == size(D) "For scalar field D, size should match img size"
     D = D isa Number ? dtype(D) : dtype.(D)
