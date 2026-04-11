@@ -54,7 +54,8 @@ julia = "1.10"
 [extras]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["CUDA", "JLD2", "Test"]
+test = ["CUDA", "JLD2", "Pkg", "Test"]
