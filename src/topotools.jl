@@ -1,18 +1,12 @@
+# Graph topology tools: connectivity lists, adjacency matrices, boundary detection.
+
 """
     spdiagm(v)
 
 Construct a sparse diagonal matrix from vector `v`. Dispatches to
-`SparseArrays.spdiagm` on CPU and builds a `CuSparseMatrixCSC` directly on GPU.
+`SparseArrays.spdiagm` on CPU.
 """
 spdiagm(v::AbstractVector) = SparseArrays.spdiagm(0 => v)
-function spdiagm(v::CuArray)
-    nnz = length(v)
-    colPtr = cu(collect(1:(nnz + 1)))
-    rowVal = cu(collect(1:nnz))
-    nzVal = v
-    dims = (nnz, nnz)
-    return CUSPARSE.CuSparseMatrixCSC(colPtr, rowVal, nzVal, dims)
-end
 
 """
     laplacian(am)
@@ -25,19 +19,35 @@ function laplacian(am)
     degree_matrix = spdiagm(degrees)
     return degree_matrix - am
 end
+# NOTE: laplacian(am::PortableSparseCSC) is defined in sparse_type.jl
 
 """
     create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
 
-Build an `nedges × 2` connectivity matrix listing all face-connected neighbor
+Build an `nedges x 2` connectivity matrix listing all face-connected neighbor
 pairs in the 3D boolean image `img`. Each row `[i, j]` indicates that pore
 voxels `i` and `j` share a face. Connections are listed in both directions.
+
+Uses CPU loops for standard arrays, KA kernels for GPU arrays.
 
 # Keyword Arguments
 - `inds`: pre-computed index array mapping grid positions to sequential pore
   indices. Default: computed internally.
 """
 function create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
+    if _on_gpu(img)
+        return _create_connectivity_list_ka(img; inds=inds)
+    end
+    return _create_connectivity_list_cpu(img; inds=inds)
+end
+
+# Handle 2D input by promoting to 3D
+function create_connectivity_list(img::AbstractArray{Bool}; inds=nothing)
+    img3d = ndims(img) == 2 ? reshape(img, size(img)..., 1) : img
+    return create_connectivity_list(img3d; inds=inds)
+end
+
+function _create_connectivity_list_cpu(img::AbstractArray{Bool,3}; inds=nothing)
     nx, ny, nz = size(img)
 
     if isnothing(inds)
@@ -81,98 +91,71 @@ function create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
         end
     end
 
-    # Resize the connections matrix
     return conns[1:row, :]
 end
 
 """
-    create_connectivity_list(img::CuArray{Bool}; inds=nothing)
-
-GPU implementation of [`create_connectivity_list`](@ref). Uses a two-pass
-histogram strategy: pass 1 counts connections per node, pass 2 writes them
-into pre-allocated sorted positions via exclusive scan offsets.
+GPU implementation using a two-pass histogram strategy with KA kernels.
 """
-function create_connectivity_list(img::CuArray{Bool}; inds=nothing)
-    # --- Preprocessing & Data Transfer ---
+function _create_connectivity_list_ka(img; inds=nothing)
     img = ndims(img) == 2 ? reshape(img, size(img)..., 1) : img
     nx, ny, nz = size(img)
     N = length(img)
-    img = cu(img)
+    backend = get_backend(img)
 
     idx_gpu = nothing
     num_true = 0
 
-    # --- Determine num_true and create idx_gpu ---
     if isnothing(inds)
-        linear_indices_gpu = findall(img) # Potentially expensive?
+        linear_indices_gpu = findall(img)
         num_true = length(linear_indices_gpu)
-        if num_true == 0
-            return Matrix{Int}(undef, 0, 2)
-        end
-        idx_gpu = CUDA.zeros(Int, size(img)...)
-        threads_fill = min(num_true, 256)
-        blocks_fill = cld(num_true, threads_fill)
-        CUDA.@sync @cuda threads = threads_fill blocks = blocks_fill fill_idx_kernel!(
-            idx_gpu, linear_indices_gpu, num_true
-        )
-        # Consider freeing linear_indices_gpu if memory is tight
+        num_true == 0 && return Matrix{Int}(undef, 0, 2)
+        idx_gpu = fill!(similar(img, Int32), Int32(0))
+        wg = min(num_true, 256)
+        fill_idx_kernel!(backend, wg)(idx_gpu, linear_indices_gpu, num_true; ndrange=num_true)
+        # No sync — next kernel on same stream waits automatically
     else
         if size(inds) != size(img)
-            error("Provided `inds` array must have the same dimensions as `im`")
+            error("Provided `inds` array must have the same dimensions as `img`")
         end
-        idx_gpu = CuArray(inds)
-        # Need num_true to size histogram. Finding max index is needed.
-        # This could be slow if inds is large and not dense.
-        @warn "Warning: Calculating max index from provided 'inds' on GPU..."
-        num_true = Int(maximum(idx_gpu)) # Assumes indices are 1 to num_true
-        @info "Inferred num_true: ", num_true
-        if num_true == 0
-            return Matrix{Int}(undef, 0, 2)
-        end
+        idx_gpu = _on_gpu(inds) ? inds : _gpu_adapt[](inds)
+        num_true = Int(maximum(idx_gpu))
+        num_true == 0 && return Matrix{Int}(undef, 0, 2)
     end
 
-    # --- Kernel Launch Setup ---
-    threads = 256
-    blocks = cld(N, threads)
-
-    # --- Pass 1: Calculate Histogram ---
-    d_histogram = CUDA.zeros(Int, num_true) # One counter per possible index value
-    d_total_conn_count = CUDA.zeros(Int, 1) # To get total count easily
-    CUDA.@sync @cuda threads = threads blocks = blocks histogram_connections_kernel!(
-        d_histogram, d_total_conn_count, img, idx_gpu, nx, ny, nz
+    # Pass 1: histogram. Use Int32 buckets — half the memory traffic.
+    d_histogram = fill!(similar(idx_gpu, Int32, num_true), Int32(0))
+    d_total_conn_count = fill!(similar(idx_gpu, Int32, 1), Int32(0))
+    histogram_connections_kernel!(backend, 256)(
+        d_histogram, d_total_conn_count, img, idx_gpu, nx, ny, nz; ndrange=N,
     )
-
+    # We need total_conns on the host before allocating conns_gpu, so this
+    # implicit sync via Array() is unavoidable.
     total_conns = Int(Array(d_total_conn_count)[1])
-    # total_conns = Int(sum(d_histogram)) # Alternative way to get count
-    if total_conns == 0
-        return Matrix{Int}(undef, 0, 2)
-    end
+    total_conns == 0 && return Matrix{Int}(undef, 0, 2)
 
-    # --- Calculate Exclusive Scan (Write Offsets) ---
-    d_bucket_write_counters = CUDA.zeros(Int, num_true) # Initialize counters for atomic adds
-    exclusive_scan!(d_bucket_write_counters, d_histogram) # Computes offsets in-place
+    # Exclusive scan for write offsets
+    d_bucket_write_counters = similar(idx_gpu, Int32, num_true)
+    exclusive_scan!(d_bucket_write_counters, d_histogram)
 
-    # --- Allocate Final Array ---
-    conns_gpu = CuArray{Int32}(undef, total_conns, 2)
-
-    # --- Pass 2: Write Connections using Offsets ---
-    # d_bucket_write_counters now holds the starting offset for each bucket
-    CUDA.@sync @cuda threads = threads blocks = blocks write_connections_offset_kernel!(
-        conns_gpu, d_bucket_write_counters, img, idx_gpu, nx, ny, nz
+    # Pass 2: write connections
+    conns_gpu = similar(idx_gpu, Int32, total_conns, 2)
+    write_connections_offset_kernel!(backend, 256)(
+        conns_gpu, d_bucket_write_counters, img, idx_gpu, nx, ny, nz; ndrange=N,
     )
+    KernelAbstractions.synchronize(backend)
 
     return conns_gpu
 end
 
 """
-    create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
+    create_adjacency_matrix(conns; n, weights=1)
 
-Build a sparse adjacency matrix in CSC format from an `nedges × 2` connectivity
-list. Constructs `colPtr` directly from the sorted connectivity, avoiding the
-overhead of `sparse()`.
+Build a sparse adjacency matrix in CSC format from an `nedges x 2` connectivity
+list. Returns `SparseMatrixCSC` for CPU arrays, `PortableSparseCSC` for GPU arrays.
 
 # Keyword Arguments
-- `n`: number of nodes (determines matrix size `n × n`).
+- `n`: number of nodes (determines matrix size `n x n`).
 - `weights`: scalar weight for all edges, or a vector of per-edge weights.
 """
 function create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
@@ -191,120 +174,59 @@ function create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
     return SparseMatrixCSC(n, n, colPtr, rowVal, w)
 end
 
-"""
-    create_adjacency_matrix_slow(conns::CuArray{Int64,2}; n, weights=1)
-
-Reference GPU implementation using COO → CSC conversion. Simpler than the
-optimized [`create_adjacency_matrix`](@ref) but slower. Kept as a readable
-baseline for verification.
-"""
-function create_adjacency_matrix_slow(conns::CuArray{Int64,2}; n, weights=1)
-    dims = (n, n)
-    nedges = size(conns, 1)
-    # NOTE: Promoting to Cint makes creating COO non-allocating and faster, but slower for CSC
-    # I, J, V = CuVector{Cint}(conns[:, 1]), CuVector{Cint}(conns[:, 2]), CUDA.ones(Float32, nedges)
-    I, J, V = conns[:, 1], conns[:, 2], CUDA.ones(Float32, nedges)
-    am = CUSPARSE.CuSparseMatrixCOO(I, J, V, dims, nedges)
-    am = CUDA.CUSPARSE.CuSparseMatrixCSC(am)
-    return am
-end
-
-"""
-    create_adjacency_matrix(conns::CuArray{Ti, 2}; n::Integer,
-                            weights = 1.0f0) where {Ti<:Integer}
-
-Creates a sparse adjacency matrix `A` in CSC format on the GPU from a list of connections.
-
-Given a list of connections where `conns[k, 1]` is the source node `i` and `conns[k, 2]`
-is the target node `j` for the k-th connection, the function constructs a sparse
-matrix `A` of size `n x n` such that `A[i, j] = weight`.
-The value type (`Tv`) of the matrix is inferred directly from the `weights` argument.
-
-If multiple connections exist between the same `(i, j)` pair, their weights are summed.
-
-Arguments:
-- `conns::CuArray{Ti, 2}`: A `nedges x 2` GPU array containing connection pairs.
-                          `conns[:, 1]` are row indices (sources), `conns[:, 2]` are
-                          column indices (targets). Assumed to be 1-based indices.
-                          Ti is the integer type (e.g., Int32, Int64).
-- `n::Integer`: The number of nodes in the graph, determining the matrix size (`n x n`).
-
-Keyword Arguments:
-- `weights`: The weights for the connections. Determines the value type (`Tv`) of the
-            resulting matrix. Can be:
-            - A scalar value (Number): All connections will have this weight. Defaults to
-              `1.0f0` (resulting in `Float32` matrix). Passing `1` results in `Int`,
-              `1.0` results in `Float64`, etc.
-            - A `CuVector{<:Real}`: A GPU vector of length `nedges` specifying the weight
-              for each connection in `conns`. The element type determines the matrix `Tv`.
-
-Returns:
-- `CUDA.CUSPARSE.CuSparseMatrixCSC{Tv, Ti}`: The resulting adjacency matrix on the GPU,
-                                             where `Tv` is inferred from `weights`.
-"""
 function create_adjacency_matrix(
-    conns::CuArray{Ti,2}; n::Integer, weights=1.0f0
-) where {Ti<:Integer}
-
-    # Check input shape consistency (allow empty connections)
-    if size(conns, 2) != 2 && size(conns, 1) != 0
-        throw(ArgumentError("`conns` must have exactly 2 columns. Found $(size(conns))."))
-    end
-    if n <= 0
-        throw(ArgumentError("Number of nodes `n` must be positive."))
-    end
-
+    conns::AbstractMatrix{<:Integer}; n::Integer, weights=1.0f0,
+)
+    backend = get_backend(conns)
     nedges = size(conns, 1)
 
-    # Determine Value Type (ActualTv) and prepare Value Vector (V) based *only* on weights
-    local V::CuVector
-    local ActualTv::Type
+    Tv = weights isa Number ? typeof(weights) : eltype(weights)
+    # Infer index type from the input — Int32 keeps GPU memory traffic minimal
+    # and is what CUSPARSE expects.
+    Ti = eltype(conns)
 
-    if weights isa CuVector
-        # Check length only if there are connections to match
-        if nedges > 0 && length(weights) != nedges
-            msg = "Length of `weights` ($(length(weights))) must match `conns` ($size(conns))."
-            throw(DimensionMismatch(msg))
-        end
-        ActualTv = eltype(weights) # Infer type from vector
-        V = weights # Use the vector directly
-
-    elseif weights isa Number
-        ActualTv = typeof(weights) # Infer type directly from scalar
-    # We will create V later, only if nedges > 0
-    else
-        throw(ArgumentError("`weights` must be a Number (scalar) or a CuVector."))
-    end
-
-    # Handle empty connections case gracefully
     if nedges == 0
-        I = CUDA.zeros(Ti, 0)
-        J = CUDA.zeros(Ti, 0)
-        V_empty = CUDA.zeros(ActualTv, 0) # Use the inferred ActualTv
-        coo = CuSparseMatrixCOO{ActualTv,Ti}(I, J, V_empty, (n, n))
-        csc = CuSparseMatrixCSC{ActualTv,Ti}(coo)
-        return csc
+        colptr = fill!(similar(conns, Ti, n + 1), one(Ti))
+        rowval = similar(conns, Ti, 0)
+        nzval = similar(conns, Tv, 0)
+        return PortableSparseCSC(n, n, colptr, rowval, nzval)
     end
 
-    # Create V for scalar case (now that nedges > 0 is confirmed)
-    if weights isa Number
-        # Fill with the scalar 'weights', CUDA.fill infers type correctly
-        V = CUDA.fill(weights, nedges)
+    # Create value vector
+    V = if weights isa Number
+        fill!(similar(conns, Tv, nedges), weights)
+    else
+        weights
     end
-    # V is already assigned if weights was a CuVector
 
-    # Extract Row (I) and Column (J) indices from columns
-    I = conns[:, 1]
-    J = conns[:, 2]
+    I = conns[:, 1]  # row indices
+    J = conns[:, 2]  # column indices
 
-    # Step 1: Create COO matrix - this handles summing duplicates
-    # Explicitly specify ActualTv and Ti
-    coo = CuSparseMatrixCOO{ActualTv,Ti}(I, J, V, (n, n), nedges)
+    # Step 1: histogram of column indices
+    col_counts = fill!(similar(conns, Ti, n), zero(Ti))
+    _histogram_cols_kernel!(backend)(col_counts, J, nedges; ndrange=nedges)
+    KernelAbstractions.synchronize(backend)
 
-    # Step 2: Convert COO to CSC - uses efficient CUSPARSE routines
-    csc = CuSparseMatrixCSC(coo)
+    # Step 2: build colptr from cumulative sum
+    colptr = fill!(similar(conns, Ti, n + 1), zero(Ti))
+    temp_scan = accumulate(+, col_counts)
+    _build_colptr_kernel!(backend)(colptr, temp_scan, n; ndrange=max(n, 1))
+    KernelAbstractions.synchronize(backend)
 
-    return csc
+    # Step 3: scatter COO entries into CSC position using atomic counters
+    # Initialize write offsets from colptr[1:n]
+    write_offsets = similar(conns, Ti, n)
+    copyto!(write_offsets, colptr[1:n])
+
+    rowval = similar(conns, Ti, nedges)
+    nzval = similar(conns, Tv, nedges)
+
+    _scatter_coo_to_csc_kernel!(backend)(
+        rowval, nzval, write_offsets, I, J, V, nedges; ndrange=nedges,
+    )
+    KernelAbstractions.synchronize(backend)
+
+    return PortableSparseCSC(n, n, colptr, rowval, nzval)
 end
 
 """
@@ -312,11 +234,14 @@ end
 
 Return the pore-voxel indices on a given `face` of the 3D image `img`.
 `face` is one of `:left`, `:right`, `:front`, `:back`, `:bottom`, `:top`.
+Operates on CPU; call before transferring `img` to GPU.
 """
 function find_boundary_nodes(img, face)
-    nnodes = sum(img)
-    indices = fill(-1, size(img))
-    indices[img] .= 1:nnodes
+    # Transfer to CPU if on GPU (boundary detection is cheap, avoid GPU indexing issues)
+    img_cpu = _on_gpu(img) ? Array(img) : img
+    nnodes = sum(img_cpu)
+    indices = fill(-1, size(img_cpu))
+    indices[img_cpu] .= 1:nnodes
 
     face_dict = Dict(
         :left => indices[1, :, :],
