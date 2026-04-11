@@ -5,12 +5,13 @@
 # intermediate is correct but the struct has a stale device array, or a
 # postprocessing helper can't cope with a GPU mask.
 #
-# Caller (runtests.jl) must ensure CUDA is loaded and functional.
+# Backend-agnostic: caller (runtests.jl) must ensure *some* GPU backend is
+# loaded and functional (CUDA on Linux x64, Metal on macOS arm64, etc.).
+# We never reference a concrete device array type here.
 
 using Test
-using CUDA
 using Tortuosity
-using Tortuosity: PortableSparseCSC, Imaginator
+using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu
 
 # ---------------------------------------------------------------------------
 # Steady-state
@@ -74,7 +75,7 @@ end
 
     prob = TransientProblem(img, 0.05; axis=:z, gpu=true, dtype=Float32)
     @test prob.img isa AbstractArray{Bool}
-    @test !(prob.img isa CuArray)
+    @test !_on_gpu(prob.img)
     @test prob.A isa PortableSparseCSC
 
     state = init_state(prob)

@@ -25,6 +25,14 @@ jobs:
           - ubuntu-latest
         arch:
           - x64
+        include:
+          # Apple Silicon runner exercises the Metal backend via
+          # KernelAbstractions. Metal.jl is installed at runtime by
+          # test/runtests.jl since its Apple-only artifacts can't live
+          # in [extras]. Only Julia 1 — LTS on a second OS is overkill.
+          - version: '1'
+            os: macos-latest
+            arch: aarch64
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
