@@ -89,20 +89,22 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     inlet_nodes = find_boundary_nodes(img, inlet)
     outlet_nodes = find_boundary_nodes(img, outlet)
 
-    # Move to GPU if needed
+    # Move to GPU if needed. Keep `img` on CPU for the struct (postprocessing
+    # helpers like tortuosity() expect a CPU mask); `img_dev` is the copy
+    # handed to the kernels.
     verbose && gpu && @info "Using GPU..."
     T = gpu ? Float32 : Float64
-    img = gpu ? _gpu_adapt[](img) : img
-    D = isnothing(D) ? nothing : (gpu ? _gpu_adapt[](D) : D)
+    img_dev = gpu ? _gpu_adapt[](img) : img
+    D_dev = isnothing(D) ? nothing : (gpu ? _gpu_adapt[](D) : D)
     b = gpu ? fill!(_gpu_adapt[](zeros(T, nnodes)), zero(T)) : zeros(T, nnodes)
     D0 = T(1)
 
     verbose && @info "Creating connectivity list and adjacency matrices..."
-    conns = create_connectivity_list(img)
+    conns = create_connectivity_list(img_dev)
 
     # Voxel size = 1 => gd = D*A/l = D (since D is at nodes -> interpolate to edges)
     # NOTE: D[img] since D might contain non-conducting values (e.g., when using a subdomain)
-    gd = isnothing(D) ? D0 : interpolate_edge_values(D[img], conns)
+    gd = isnothing(D_dev) ? D0 : interpolate_edge_values(D_dev[img_dev], conns)
     am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
     # For diffusion, L of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
