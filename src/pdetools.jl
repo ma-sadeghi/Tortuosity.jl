@@ -31,7 +31,7 @@ end
 Apply Dirichlet boundary conditions to the linear system `A x = b` in place.
 Zeroes out rows and columns of `A` for boundary `nodes`, preserves the original
 diagonal, and adjusts `b` so that `x[nodes] .= vals` upon solve. Uses
-multi-threaded `overlap_indices_fast` on CPU and custom CUDA kernels on GPU.
+multi-threaded `overlap_indices_fast` on CPU and KA kernels on GPU.
 
 # Keyword Arguments
 - `nodes`: vector of node indices where Dirichlet conditions are applied.
@@ -62,17 +62,25 @@ function apply_dirichlet_bc_fast!(A::SparseMatrixCSC, b; nodes, vals)
     dropzeros!(A)
 end
 
-function apply_dirichlet_bc_fast!(A::CUDA.CUSPARSE.CuSparseMatrixCSC, b; nodes, vals)
+function apply_dirichlet_bc_fast!(A::PortableSparseCSC, b; nodes, vals)
     # NOTE: This is the standard way to apply Dirichlet BCs:
     #  - Add contribution from BCs to the non-BC nodes in the RHS
     #  - Zero out rows and columns corresponding to BC nodes to keep A symmetric
     #  - Modify diagonal and RHS corresponding to BC nodes to satisfy Dirichlet BCs
     diag_vals = get_diag(A)  # Fetch the diagonal before it's zeroed out
-    x_bc = Tortuosity.multihotvec(nodes, length(b); vals=cu(vals), gpu=true)
+    # Transfer vals to GPU if needed, using b as template
+    gpu_vals = vals
+    if _on_gpu(b) && !(vals isa typeof(b))
+        gpu_vals = similar(b, eltype(vals), length(vals))
+        copyto!(gpu_vals, vals)
+    end
+    x_bc = multihotvec(nodes, length(b); vals=gpu_vals, template=b)
     b .-= A * x_bc
     zero_rows_cols!(A, nodes)
     # Apply BCs x[i] = vals[i] via diag[i] * x[i] = diag[i] * vals[i]
     set_diag!(A, diag_vals)
-    b[nodes] .= vals .* diag_vals[nodes]
+    gpu_nodes = similar(A.rowval, eltype(nodes), length(nodes))
+    copyto!(gpu_nodes, nodes)
+    b[gpu_nodes] .= gpu_vals .* diag_vals[gpu_nodes]
     dropzeros!(A)
 end

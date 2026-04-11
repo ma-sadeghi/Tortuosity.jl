@@ -1,8 +1,7 @@
 module Tortuosity
 
-using CUDA
-using CUDA.CUSPARSE
 using HDF5
+using KernelAbstractions
 using LinearAlgebra
 using LinearSolve
 using NaNStatistics
@@ -10,9 +9,17 @@ using SparseArrays
 using OrdinaryDiffEq
 using LsqFit
 
+# GPU backend registration (populated by package extensions)
+const _preferred_gpu_backend = Ref{Any}(nothing)
+const _gpu_adapt = Ref{Any}(identity)
+
+"""True for GPU arrays; extensions override for CuArray, MtlArray, etc."""
+_on_gpu(::AbstractArray) = false
+
 include("utils.jl")
 include("geometry.jl")
 include("imgen.jl")
+include("sparse_type.jl")
 include("kernels/graph.jl")
 include("kernels/sparse.jl")
 include("topotools.jl")

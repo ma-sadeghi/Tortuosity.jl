@@ -4,7 +4,7 @@
 (constant Dirichlet), or `Function` (time-dependent Dirichlet)."""
 const BoundValue = Union{Nothing, Number, Function}
 
-struct TransientProblem{T,DType}
+struct TransientProblem{T,DType,MatType<:AbstractMatrix{T}}
     dx::Float64
     dt::Float64
     D::DType
@@ -13,7 +13,7 @@ struct TransientProblem{T,DType}
     axis::Symbol
     bc_inlet::BoundValue
     bc_outlet::BoundValue
-    A::Union{SparseMatrixCSC{T,Int},CUDA.CUSPARSE.CuSparseMatrixCSC{T,Int32}}
+    A::MatType
 end
 
 """
@@ -68,7 +68,7 @@ conditions applied along one axis.
 - `dtype`: numeric type used for the operator and solution arrays
            (e.g., `Float32` or `Float64`). Defaults to `Float32`.
 - `gpu`: whether to run solver on the GPU. If `nothing`, uses GPU when the
-         image has ≥100,000 pore voxels and CUDA is available. Defaults to `nothing`.
+         image has ≥100,000 pore voxels and a GPU backend is available. Defaults to `nothing`.
 """
 function TransientProblem(
     img,
@@ -91,7 +91,12 @@ function TransientProblem(
     bc_outlet = _validate_bc(bc_outlet, dtype, "bc_outlet")
 
     nnodes = count(img)
-    gpu = !isnothing(gpu) ? gpu : (nnodes >= 100_000) && CUDA.functional()
+    if isnothing(gpu)
+        gpu = !isnothing(_preferred_gpu_backend[]) && nnodes >= 100_000
+    elseif gpu && isnothing(_preferred_gpu_backend[])
+        error("`gpu=true` was requested but no GPU backend is registered. \
+               Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
+    end
 
     @assert size(img, axis_dim(axis)) > 1 "Image must have at least 2 voxels along the chosen axis"
     isnothing(dx) && (dx = 1 / (size(img, axis_dim(axis)) - 1))
@@ -142,9 +147,9 @@ function init_state(
     apply_boundaries!(C0, prob)
     C0 = C0[prob.img]
 
-    gpu = prob.A isa CUDA.CUSPARSE.CuSparseMatrixCSC
+    gpu = prob.A isa PortableSparseCSC
     if gpu
-        C0 = cu(C0)
+        C0 = _gpu_adapt[](C0)
     end
 
     dC! = make_dC_function(prob)
@@ -208,7 +213,17 @@ pore-voxel concentration vector. Dirichlet boundary rows are zeroed so that
 boundary values remain constant during integration.
 """
 function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
-    gpu && (img = cu(img))
+    # Compute boundary nodes BEFORE GPU transfer (cheap CPU operation)
+    inlet_face, outlet_face = axis_faces(axis)
+    bc_nodes = Int[]
+    if !isnothing(bc_inlet)
+        append!(bc_nodes, find_boundary_nodes(img, inlet_face))
+    end
+    if !isnothing(bc_outlet)
+        append!(bc_nodes, find_boundary_nodes(img, outlet_face))
+    end
+
+    gpu && (img = _gpu_adapt[](img))
 
     nnodes = sum(img)
 
@@ -216,7 +231,7 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
 
     if !(D isa Number)
         D_local = atleast_3d(D)
-        gpu && (D_local = cu(D_local))
+        gpu && (D_local = _gpu_adapt[](D_local))
     end
 
     gd = D isa Number ? D : interpolate_edge_values(D_local[img], conns)
@@ -227,17 +242,6 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
 
     nonzeros(A) .= nonzeros(A) ./ (-dx^2)
 
-    # Collect Dirichlet boundary nodes; faces default to insulated (Neumann)
-    inlet_face, outlet_face = axis_faces(axis)
-    bc_nodes = Int[]
-    if !isnothing(bc_inlet)
-        append!(bc_nodes, find_boundary_nodes(img, inlet_face))
-    end
-    if !isnothing(bc_outlet)
-        append!(bc_nodes, find_boundary_nodes(img, outlet_face))
-    end
-    bc_nodes = gpu ? Int32.(bc_nodes) : bc_nodes
-
     # Zero rows so Dirichlet values remain constant during integration
     zero_rows!(A, bc_nodes)
 
@@ -246,7 +250,7 @@ end
 
 """
     zero_rows!(A::SparseMatrixCSC, rows)
-    zero_rows!(A::CuSparseMatrixCSC, rows)
+    zero_rows!(A::PortableSparseCSC, rows)
 
 Zero out all entries in the specified `rows` of sparse matrix `A`, then drop
 the resulting structural zeros. Used to enforce Dirichlet boundary conditions
