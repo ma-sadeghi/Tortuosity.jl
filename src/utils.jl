@@ -48,9 +48,12 @@ The element type of the output matches `eltype(u)`.
 """
 function vec_to_grid(u, img::AbstractArray{Bool})
     @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
+    # Logical-indexing a CPU Array with a GPU Bool mask triggers scalar
+    # iteration, so pull img to CPU when it isn't already there.
+    img_cpu = img isa Array ? img : Array(img)
     T = eltype(u)
-    c = fill(T(NaN), size(img))
-    c[img] = Array(u)
+    c = fill(T(NaN), size(img_cpu))
+    c[img_cpu] = Array(u)
     return c
 end
 
