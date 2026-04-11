@@ -31,7 +31,10 @@ end
         @testset verbose = true "GPU parity vs old CUDA baseline" begin
             include("test_gpu_parity.jl")
         end
+        @testset verbose = true "GPU end-to-end pipeline" begin
+            include("test_gpu_e2e.jl")
+        end
     else
-        @info "Skipping GPU parity tests (CUDA not functional)"
+        @info "Skipping GPU parity + end-to-end tests (CUDA not functional)"
     end
 end
