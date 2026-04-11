@@ -65,6 +65,14 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
     @assert img isa AbstractArray{Bool} "Image must be a boolean array"
+    # The struct holds `img` on CPU so postprocessing helpers (tortuosity,
+    # effective_diffusivity, ...) work against a GPU-built sim. If the caller
+    # handed us a GPU array, copy it back and warn once.
+    if _on_gpu(img)
+        @warn "`img` was passed on GPU; copying to CPU so the struct holds a CPU mask. \
+               Pass `gpu=true` if you want the solver kernels to run on GPU." maxlog = 1
+        img = Array(img)
+    end
     D = isnothing(D) ? nothing : atleast_3d(D)
 
     # Deal with variable diffusivity
