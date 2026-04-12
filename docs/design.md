@@ -98,11 +98,13 @@ extension*, leaving the portable KA fallback for everything else.
 **Data.** With the fast-path, SpMV is at **0.99-1.02× of the old CUDA-specific
 code** at all sizes. Without it, we'd be at 0.47-0.56×.
 
-**Known cost.** Each `mul!` call rebuilds the `CuSparseMatrixCSC` wrapper
-(~80 bytes Julia heap). Over a 500-iteration Krylov solve that's ~40 KB of
-GC pressure. Acceptable; documented but not yet fixed. A potential fix is to
-add a `_csc_cache::Any` field to `PortableSparseCSC` and reuse the wrapper
-when the storage hasn't changed. Deferred until profiling shows it matters.
+**Wrapper reuse.** `PortableSparseCSC` carries an opaque `_cache::Ref{Any}`
+slot that the CUDA extension uses to memoise the `CuSparseMatrixCSC`
+wrapper. On each `mul!`, we validate the cache by comparing the
+wrapper's `nzVal`/`rowVal`/`colPtr` pointers against `A`'s fields — a
+mutator like `dropzeros!` that reassigns `A.nzval` automatically
+invalidates the cache. Over a Krylov CG solve this eliminates the
+per-iteration wrapper allocation entirely.
 
 **Alternatives considered.**
 
@@ -258,21 +260,20 @@ asked for GPU. That's a footgun.
 These are tracked here to avoid losing them. Not actionable now; revisit
 when relevant.
 
-- **`solve!` (transient) has no GPU correctness test.** The 374 GPU parity
-  tests cover assembly equivalence (matrices and RHS) but not the actual
-  ODE integration loop. If `OrdinaryDiffEq`'s integrator subtly disagrees
-  between `CuSparseMatrixCSC`-backed and `PortableSparseCSC`-backed problems,
-  we won't catch it. Adding a parity test for `solve!` is straightforward
-  but not prioritised.
+- **`dropzeros!` algorithm is counter-intuitive but benchmark-validated.**
+  The compact-and-count kernel launches over nnz and calls
+  `searchsortedlast(colPtr, k)` per entry to find the owning column.
+  "Obvious" refactor: launch over `num_cols` and walk each column's nnz
+  range inline — no binary search, no atomics, asymptotically better. We
+  implemented and benchmarked it: on realistic porous Laplacians at
+  100K/250K/1M voxels the per-column variant was **9–24% slower** because
+  the uniform 7-point stencil gives each column only ≈7 entries, so the
+  per-nnz launch has higher GPU occupancy and better coalescing than the
+  per-column launch. If this workload ever shifts to matrices with
+  long-tail column lengths (e.g. multi-physics couplings), revisit.
 
-- **CPU benchmark suite is missing.** `bench/gpu_bench.jl` is GPU-only.
-  When we eventually optimise the CPU path, we'll want a parallel
-  `bench/cpu_bench.jl` using the same harness pattern (operation registry,
-  JSON baselines, regression compare) but with CPU fixtures and
-  CPU-specific operations.
-
-- **The CUSPARSE wrapper rebuild on every `mul!` call** allocates ~80 bytes
-  of Julia heap per call. Negligible per call, ~40 KB per Krylov solve.
-  Fix: add a `_csc_cache` field to `PortableSparseCSC` and reuse the
-  wrapper when storage is unchanged. Deferred until profiling shows it
-  matters in a real workflow.
+- **Matrix construction uses `Int32` indices throughout.** This is mandated
+  by the CUSPARSE fast-path (CUSPARSE expects Int32). If someone ever
+  constructs a `PortableSparseCSC` manually with Int64 indices the fallback
+  `_as_cusparse` will quietly convert, allocating on every `mul!`. A warning
+  on that path would be nice but hasn't been prioritised.
