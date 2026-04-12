@@ -2,6 +2,42 @@
 using KernelAbstractions
 using Atomix
 
+# -----------------------------------------------------------------------------
+# Shared function docstrings.
+#
+# `laplacian` and `zero_rows!` each have multiple methods across files. Per the
+# Julia manual's "Functions and Methods" recommendation, attach a single
+# docstring to a function stub and leave the individual method definitions
+# undocumented — that way `?laplacian` shows one authoritative description
+# rather than Julia concatenating duplicated docstrings.
+# -----------------------------------------------------------------------------
+
+"""
+    laplacian(am)
+
+Compute the graph Laplacian `L = D - A`, where `D = diag(row_sums(A))` is the
+degree matrix and `A` is an adjacency matrix.
+
+Dispatches on the type of `am`:
+
+- Generic `AbstractMatrix` (including `SparseMatrixCSC`) → builds `D` via
+  `spdiagm` and returns `D - A`.
+- [`PortableSparseCSC`](@ref) → assembled in a single pass with KA kernels;
+  no intermediate matrices.
+"""
+function laplacian end
+
+"""
+    zero_rows!(A, rows)
+
+Zero out all entries in the specified `rows` of sparse matrix `A` in place,
+then drop the resulting structural zeros. Used to enforce Dirichlet boundary
+conditions in the transient operator.
+
+Supports `SparseMatrixCSC` (CPU) and [`PortableSparseCSC`](@ref) (any backend).
+"""
+function zero_rows! end
+
 """
     PortableSparseCSC{T,Ti,V,Vi} <: AbstractMatrix{T}
 
@@ -11,6 +47,12 @@ Works with any array backend — `Vector` (CPU), `CuVector` (CUDA),
 
 Implements `mul!(y, A, x)` via a KA SpMV kernel, enabling use with
 Krylov.jl and LinearSolve.jl solvers.
+
+The `_cache` field is an opaque slot reserved for backend extensions to store
+reusable artifacts (e.g. `TortuosityCUDAExt` caches a `CuSparseMatrixCSC`
+wrapper there so each `mul!` call does not rebuild it). Extensions must
+validate the cache is fresh before using it — `A.colptr`, `A.rowval`, or
+`A.nzval` may be reassigned by in-place mutators like [`dropzeros!`](@ref).
 """
 mutable struct PortableSparseCSC{
     T,Ti<:Integer,V<:AbstractVector{T},Vi<:AbstractVector{Ti}
@@ -20,6 +62,19 @@ mutable struct PortableSparseCSC{
     colptr::Vi
     rowval::Vi
     nzval::V
+    _cache::Base.RefValue{Any}
+
+    function PortableSparseCSC{T,Ti,V,Vi}(
+        m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V
+    ) where {T,Ti<:Integer,V<:AbstractVector{T},Vi<:AbstractVector{Ti}}
+        return new{T,Ti,V,Vi}(Int(m), Int(n), colptr, rowval, nzval, Base.RefValue{Any}(nothing))
+    end
+end
+
+function PortableSparseCSC(
+    m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V
+) where {T,V<:AbstractVector{T},Ti<:Integer,Vi<:AbstractVector{Ti}}
+    return PortableSparseCSC{T,Ti,V,Vi}(m, n, colptr, rowval, nzval)
 end
 
 Base.size(A::PortableSparseCSC) = (A.m, A.n)
@@ -126,12 +181,6 @@ end
     end
 end
 
-"""
-    laplacian(am::PortableSparseCSC)
-
-Compute the graph Laplacian `L = D - A` where `D = diag(A * 1)`.
-Builds `L` in a single pass using KA kernels — no intermediate matrices.
-"""
 function laplacian(am::PortableSparseCSC{T}) where {T}
     m, n = size(am)
     @assert m == n "Adjacency matrix must be square"

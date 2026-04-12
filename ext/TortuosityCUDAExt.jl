@@ -21,19 +21,33 @@ Tortuosity._on_gpu(::CuArray) = true
 Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrixCSC) = true
 
 # --- Fast path: wrap PortableSparseCSC as CuSparseMatrixCSC for CUSPARSE SpMV ---
-# CUSPARSE expects Int32 indices. Constructing the wrapper is cheap (just
-# stores pointers); the cost is dominated by SpMV itself.
+# CUSPARSE expects Int32 indices. Wrapping is cheap (just stores pointers), but
+# within a Krylov solve `mul!` is called hundreds of times so even cheap
+# allocations accumulate. We cache the wrapper in `A._cache` and invalidate via
+# a pointer check — if any of `A`'s underlying vectors has been reassigned
+# (e.g. by `dropzeros!`) the cached wrapper's fields point to stale buffers
+# and we rebuild.
 
 @inline function _as_cusparse(
     A::PortableSparseCSC{Tv,Int32,V,Vi}
 ) where {Tv,V<:CuVector,Vi<:CuVector{Int32}}
-    return CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
+    cached = A._cache[]
+    if cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} &&
+       pointer(cached.nzVal) == pointer(A.nzval) &&
+       pointer(cached.rowVal) == pointer(A.rowval) &&
+       pointer(cached.colPtr) == pointer(A.colptr)
+        return cached
+    end
+    wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
         A.colptr, A.rowval, A.nzval, (A.m, A.n)
     )
+    A._cache[] = wrapped
+    return wrapped
 end
 
 # Fallback when index type is not Int32 — convert. This path allocates so should
 # be avoided in the hot loop by constructing PortableSparseCSC with Int32 indices.
+# Not cached: this path is only hit on misconfiguration.
 function _as_cusparse(
     A::PortableSparseCSC{Tv,Ti,V,Vi}
 ) where {Tv,Ti,V<:CuVector,Vi<:CuVector}
@@ -57,36 +71,6 @@ function LinearAlgebra.mul!(
     alpha::Number, beta::Number,
 ) where {Tv,Ti,V<:CuVector,Vi<:CuVector}
     return mul!(y, _as_cusparse(A), x, alpha, beta)
-end
-
-# --- get_diag fast path: raw @cuda kernel avoids KA wrapper overhead ---
-function _get_diag_cuda_kernel!(diag_vals, nzVal, rowVal, colPtr, N_diag)
-    k = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    if k <= N_diag && k > 0
-        @inbounds idx_start = colPtr[k]
-        @inbounds idx_end = colPtr[k + 1] - 1
-        result = zero(eltype(diag_vals))
-        @inbounds for idx in idx_start:idx_end
-            if rowVal[idx] == k
-                result = nzVal[idx]
-                break
-            end
-        end
-        @inbounds diag_vals[k] = result
-    end
-    return nothing
-end
-
-function Tortuosity.get_diag(A::PortableSparseCSC{Tv,Ti,V,Vi}) where {Tv,Ti,V<:CuVector,Vi<:CuVector}
-    N_diag = min(A.m, A.n)
-    N_diag == 0 && return similar(A.nzval, Tv, 0)
-    diag_vals = similar(A.nzval, Tv, N_diag)
-    threads = min(N_diag, 256)
-    blocks = cld(N_diag, threads)
-    @cuda threads=threads blocks=blocks _get_diag_cuda_kernel!(
-        diag_vals, A.nzval, A.rowval, A.colptr, N_diag
-    )
-    return diag_vals
 end
 
 end
