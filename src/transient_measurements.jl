@@ -2,10 +2,30 @@
 
 """
     get_slice_conc(C, img, axis, ind; grid_to_vec=nothing, pore_only=false)
+    get_slice_conc(Cs::AbstractVector{<:Array}, img, axis, ind; kwargs...)
+    get_slice_conc(C, prob::TransientProblem, ind; pore_only=false)
 
-Average concentration of a 2D slice perpendicular to `axis` at index `ind`.
-Obstacle voxels are treated as NaN. When `pore_only=true`, the average is taken
-over pore voxels only; otherwise over the full slice area.
+Average concentration of a 2D slice perpendicular to `axis` at voxel index
+`ind`. Obstacle voxels are treated as NaN.
+
+`C` may be either a full 3D concentration grid (same shape as `img`) or a
+1D pore-only vector; in the latter case `grid_to_vec` must be provided so
+the vector can be mapped back to grid coordinates.
+
+# Method overloads
+
+- `(C::AbstractArray, img, axis, ind; ...)` — one snapshot, explicit geometry.
+- `(Cs::AbstractVector{<:Array}, img, axis, ind; ...)` — maps the scalar
+  computation over a vector of snapshots (e.g. `state.C`) and returns a
+  `Vector{Float64}` of per-snapshot slice averages.
+- `(C, prob::TransientProblem, ind; pore_only=false)` — convenience wrapper
+  that unpacks `prob.img`, `prob.axis`, and `prob.grid_to_vec`.
+
+# Keyword Arguments
+
+- `grid_to_vec`: required if `C` is a pore-only vector; ignored otherwise.
+- `pore_only`: when `true`, the average is taken over pore voxels only;
+  otherwise the full slice area is used (solid voxels count as zero).
 """
 function get_slice_conc(C, img, axis, ind; grid_to_vec=nothing, pore_only::Bool=false)
     full_grid = size(C) == size(img)
@@ -26,8 +46,29 @@ end
 
 """
     compute_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
+    compute_flux(Cs::AbstractVector{<:Array}, D, dx, img, axis; kwargs...)
+    compute_flux(C, prob::TransientProblem; ind=:end)
 
-Flux per unit area between slices at `ind` and `ind + 1` along `axis`.
+Diffusive flux per unit face area between voxel slices `ind` and `ind + 1`
+along `axis`. Computed as `mean(D_eff * ΔC) / dx`, where `ΔC` is the
+concentration difference across the pair of slices and `D_eff` is the
+face-centered diffusivity (harmonic mean of `D` at the two adjacent voxels).
+
+# Method overloads
+
+- `(C::AbstractArray, D, dx, img, axis; ...)` — one snapshot. `C` may be a
+  full 3D grid or a pore-only 1D vector; in the latter case `grid_to_vec`
+  is required.
+- `(Cs::AbstractVector{<:Array}, D, dx, img, axis; ...)` — maps the flux
+  computation over a vector of snapshots, returning a `Vector{Float64}`.
+- `(C, prob::TransientProblem; ind=:end)` — convenience wrapper that unpacks
+  `prob.D`, `prob.dx`, `prob.img`, `prob.axis`, and `prob.grid_to_vec`.
+
+# Keyword Arguments
+
+- `ind`: index at which flux is measured. `:end` (default) maps to
+  `size(img, axis) - 1`, i.e. the flux across the outlet face.
+- `grid_to_vec`: required if `C` is a pore-only vector; ignored otherwise.
 """
 function compute_flux(C, D, dx, img, axis; ind=:end, grid_to_vec=nothing)
     full_grid = size(C) == size(img)
@@ -68,16 +109,32 @@ end
 
 """
     compute_mass_uptake(C_hist, img)
+    compute_mass_uptake(C_hist, prob::TransientProblem)
 
-Change in mean pore concentration from the initial state at each timestep.
-This is the numerical counterpart of `slab_mass_uptake()`.
+Change in **volume-averaged** concentration from the initial state at each
+timestep. For each snapshot `C` in `C_hist`, returns
+`(Σ C - Σ C_hist[1]) / length(img)` — i.e. the difference between total
+concentration summed over all voxels (solid contributions are `NaN`-safe
+via `nansum` and therefore treated as zero) divided by the **total** number
+of voxels, not the pore count.
+
+This is the discrete counterpart of [`slab_mass_uptake`](@ref), which is
+defined as `M_t / M_∞` for a homogeneous slab and therefore
+porosity-weighted. The `fit_effective_diffusivity` routine multiplies the
+analytical `slab_mass_uptake(D, t)` by `φ` to match the volume-averaged
+convention used here.
+
+# Arguments
+- `C_hist`: a vector of concentration snapshots. Each entry may be a full
+  3D grid or, via the `TransientProblem` overload, a pore-only vector that
+  is mapped back via `prob.img`.
+- `img`: boolean pore mask matching the full-grid shape.
+
+# Returns
+`Vector{Float64}` of volume-averaged mass uptake, one entry per snapshot.
+Entry 1 is always zero.
 """
 function compute_mass_uptake(C_hist, img::AbstractArray)
-    # FIXME: Divides by length(img) (total voxels) not count(img) (pore voxels).
-    #  This gives volume-averaged uptake, not mean pore concentration change.
-    #  May be intentional to match the analytical model scaling in
-    #  fit_effective_diffusivity (which multiplies by φ), but the docstring
-    #  is misleading if so. Needs clarification.
     C0_total = nansum(C_hist[1])
     return [(nansum(C) - C0_total) / length(img) for C in C_hist]
 end

@@ -4,6 +4,14 @@ using Tortuosity
 ENV["GKSwstype"] = "100"
 const buildpath = haskey(ENV, "CI") ? ".." : ""
 
+# Run docstring-level jldoctests as a separate step. We don't pass `modules`
+# to `makedocs` because that would also turn on the "docstring not referenced"
+# check, which would flood CI with warnings — api.md is hand-curated markdown
+# rather than `@docs` blocks, so most docstrings are technically "unreferenced"
+# from Documenter's point of view. Calling `doctest(Tortuosity)` separately
+# runs the in-source jldoctests and nothing else.
+doctest(Tortuosity; manual=false)
+
 format = Documenter.HTML(;
     edit_link="main",
     prettyurls=get(ENV, "CI", nothing) == "true",
