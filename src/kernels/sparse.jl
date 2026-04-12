@@ -1,500 +1,311 @@
-import SparseArrays: dropzeros!  # Needed for extending for CUDA.CUSPARSE.CuSparseMatrixCSC
+# KernelAbstractions-based sparse matrix kernels for PortableSparseCSC operations.
+import SparseArrays: dropzeros!
+
+using KernelAbstractions
+using Atomix
+
+# --- Diagonal operations ---
 
 """
     set_diag_kernel!(nzVal, rowVal, colPtr, vals, N_diag)
 
-CUDA kernel: set existing non-zero diagonal elements in a CSC sparse matrix.
+KA kernel: set existing non-zero diagonal elements in a CSC sparse matrix.
 Each thread handles one column/diagonal index `k` and searches for `rowVal[idx] == k`.
 """
-function set_diag_kernel!(
-    nzVal::CuDeviceVector{Tv},
-    rowVal::CuDeviceVector{Ti},
-    colPtr::CuDeviceVector{Ti},
-    vals::CuDeviceVector{Tv},
-    N_diag::Ti,
-) where {Tv,Ti}
-    k = Ti((blockIdx().x - 1) * blockDim().x + threadIdx().x) # This thread handles column/diagonal k (1-based)
-
-    if k <= N_diag && k > 0 # Check if k is within the valid diagonal range
-        # Get the range of indices in rowVal/nzVal for column k
-        # Note: colPtr uses 1-based indexing in Julia/CUDA.jl
+@kernel function set_diag_kernel!(nzVal, @Const(rowVal), @Const(colPtr), @Const(vals), N_diag)
+    k = @index(Global)
+    if k <= N_diag && k > 0
         @inbounds idx_start = colPtr[k]
-        @inbounds idx_end = colPtr[k + 1] - 1 # End index is inclusive
-
-        # Search within column k's entries for row k (the diagonal element)
+        @inbounds idx_end = colPtr[k + 1] - 1
         for idx in idx_start:idx_end
             @inbounds if rowVal[idx] == k
-                @inbounds nzVal[idx] = vals[k] # Update the value if diagonal element exists
-                break # Found the diagonal element for this column, move to next thread
+                @inbounds nzVal[idx] = vals[k]
+                break
             end
         end
     end
-    return nothing
 end
 
 """
-    set_diag!(A::CuSparseMatrixCSC, vals::AbstractVector)
+    set_diag!(A::PortableSparseCSC, vals)
 
 Set the values of *existing* non-zero diagonal elements of `A` in place.
-Diagonal elements `A[k,k]` that are structurally zero are not inserted.
-
-# Arguments
-- `A`: the `CuSparseMatrixCSC` to modify.
-- `vals`: vector of length `min(size(A)...)` with desired diagonal values.
-  CPU vectors are transferred to the GPU automatically.
 """
-function set_diag!(
-    A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}, vals::AbstractVector
-) where {Tv,Ti}
-    num_rows, num_cols = size(A)
-    N_diag = min(num_rows, num_cols)
-
-    if length(vals) != N_diag
-        throw(
-            DimensionMismatch(
-                "Length of `vals` ($(length(vals))) must match min(size(A)...) ($N_diag)"
-            ),
-        )
+function set_diag!(A::PortableSparseCSC{Tv}, vals::AbstractVector) where {Tv}
+    N_diag = min(A.m, A.n)
+    length(vals) != N_diag && throw(
+        DimensionMismatch("Length of vals ($(length(vals))) must match min(size(A)...) ($N_diag)")
+    )
+    # Ensure vals is on the same backend as A and has element type Tv
+    cu_vals = if vals isa typeof(A.nzval) && eltype(vals) === Tv
+        vals
+    else
+        v = similar(A.nzval, Tv, N_diag)
+        copyto!(v, Tv.(vals))
+        v
     end
 
-    # Ensure vals is a CuVector of the correct type
-    # Convert element type first to avoid potential intermediate allocation of wrong type
-    vals_typed = convert.(Tv, vals)
-    cu_vals = CuArray(vals_typed) # Transfer to GPU if it wasn't already
-
-    # Get pointers to the matrix data on GPU
-    nzVal = A.nzVal
-    rowVal = A.rowVal
-    colPtr = A.colPtr
-
-    # Determine kernel launch configuration
-    # Launch one thread per diagonal element we need to check
-    threads = min(N_diag, 256) # Common thread block size, capped by N_diag
-    blocks = cld(N_diag, threads) # Ceiling division to ensure enough blocks
-
-    # Launch the kernel
-    CUDA.@sync @cuda threads = threads blocks = blocks set_diag_kernel!(
-        nzVal, rowVal, colPtr, cu_vals, Ti(N_diag)
-    )
-
-    return nothing # Modified A in place
+    backend = get_backend(A.nzval)
+    wg = min(N_diag, 256)
+    set_diag_kernel!(backend, wg)(A.nzval, A.rowval, A.colptr, cu_vals, N_diag; ndrange=N_diag)
+    KernelAbstractions.synchronize(backend)
+    return nothing
 end
 
 """
     get_diag_kernel!(diag_vals, nzVal, rowVal, colPtr, N_diag)
 
-CUDA kernel: extract diagonal elements from a CSC sparse matrix. Each thread
-handles one column `k` and writes the found diagonal value to `diag_vals[k]`.
+KA kernel: extract diagonal elements from a CSC sparse matrix. Each thread
+unconditionally writes its result slot (so the caller does not need fill!),
+using a local accumulator to avoid an unnecessary zero write to global memory.
 """
-function get_diag_kernel!(
-    diag_vals::CuDeviceVector{Tv},
-    nzVal::CuDeviceVector{Tv},
-    rowVal::CuDeviceVector{Ti},
-    colPtr::CuDeviceVector{Ti},
-    N_diag::Ti,
-) where {Tv,Ti}
-    k = Ti((blockIdx().x - 1) * blockDim().x + threadIdx().x) # This thread handles column/diagonal k (1-based)
-
-    if k <= N_diag && k > 0 # Check if k is within the valid diagonal range
-        # Get the range of indices in rowVal/nzVal for column k
+@kernel function get_diag_kernel!(diag_vals, @Const(nzVal), @Const(rowVal), @Const(colPtr), N_diag)
+    k = @index(Global)
+    if k <= N_diag && k > 0
         @inbounds idx_start = colPtr[k]
-        @inbounds idx_end = colPtr[k + 1] - 1 # End index is inclusive
-
-        # Search within column k's entries for row k (the diagonal element)
-        for idx in idx_start:idx_end
-            @inbounds if rowVal[idx] == k
-                @inbounds diag_vals[k] = nzVal[idx] # Store the found diagonal value
-                break # Found the diagonal element for this column, move to next thread
+        @inbounds idx_end = colPtr[k + 1] - 1
+        result = zero(eltype(diag_vals))
+        @inbounds for idx in idx_start:idx_end
+            if rowVal[idx] == k
+                result = nzVal[idx]
+                break
             end
         end
-        # If the loop completes without finding rowVal[idx] == k,
-        # diag_vals[k] remains 0 (due to pre-initialization).
+        @inbounds diag_vals[k] = result
     end
-    return nothing
 end
 
 """
-    get_diag(A::CuSparseMatrixCSC) -> CuVector
+    get_diag(A::PortableSparseCSC) -> AbstractVector
 
-Extract the diagonal elements of `A` on the GPU. Returns a `CuVector` where
-structurally absent diagonal entries are zero.
+Extract the diagonal elements of `A`. Structurally absent diagonal entries are zero.
 """
-function get_diag(A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}) where {Tv,Ti}
-    num_rows, num_cols = size(A)
-    N_diag = min(num_rows, num_cols)
-
-    if N_diag == 0
-        return CUDA.zeros(Tv, 0) # Return empty CuVector if matrix is empty or has 0 rows/cols
-    end
-
-    # Get pointers to the matrix data on GPU
-    nzVal = A.nzVal
-    rowVal = A.rowVal
-    colPtr = A.colPtr
-
-    # Allocate output vector on GPU, initialized to zeros
-    diag_vals = CUDA.zeros(Tv, N_diag)
-
-    # Determine kernel launch configuration
-    # Launch one thread per diagonal element we need to extract
-    threads = min(N_diag, 256) # Common thread block size, capped by N_diag
-    blocks = cld(N_diag, threads) # Ceiling division to ensure enough blocks
-
-    # Launch the kernel
-    CUDA.@sync @cuda threads = threads blocks = blocks get_diag_kernel!(
-        diag_vals, nzVal, rowVal, colPtr, Ti(N_diag)
-    )
-
+function get_diag(A::PortableSparseCSC{Tv}) where {Tv}
+    N_diag = min(A.m, A.n)
+    N_diag == 0 && return similar(A.nzval, Tv, 0)
+    # Kernel writes unconditionally, so we don't need fill!
+    diag_vals = similar(A.nzval, Tv, N_diag)
+    backend = get_backend(A.nzval)
+    wg = min(N_diag, 256)
+    get_diag_kernel!(backend, wg)(diag_vals, A.nzval, A.rowval, A.colptr, N_diag; ndrange=N_diag)
+    KernelAbstractions.synchronize(backend)
     return diag_vals
 end
 
-"""
-    zero_rows_kernel!(nzVal, rowVal, is_target_row, nnz)
+# --- Row/column zeroing ---
 
-CUDA kernel: zero out nonzero values whose row index is flagged in `is_target_row`.
 """
-function zero_rows_kernel!(
-    nzVal::CuDeviceVector{Tv},
-    rowVal::CuDeviceVector{Ti},
-    is_target_row::CuDeviceVector{Bool},
-    nnz::Ti,
-) where {Tv,Ti}
-    k = Ti((blockIdx().x - 1) * blockDim().x + threadIdx().x) # Global index for k-th non-zero element
+    zero_rows_kernel!(nzVal, rowVal, is_target_row, nnz_val)
 
-    if k <= nnz && k > 0
+KA kernel: zero out nonzero values whose row index is flagged in `is_target_row`.
+"""
+@kernel function zero_rows_kernel!(nzVal, @Const(rowVal), @Const(is_target_row), nnz_val)
+    k = @index(Global)
+    if k <= nnz_val && k > 0
         @inbounds r = rowVal[k]
-        # Check row index bounds before accessing lookup table
         if r > 0 && r <= length(is_target_row)
             @inbounds if is_target_row[r]
-                @inbounds nzVal[k] = zero(Tv)
+                @inbounds nzVal[k] = zero(eltype(nzVal))
             end
         end
     end
-    return nothing
 end
 
 """
     zero_cols_kernel!(nzVal, colPtr, target_cols, num_target_cols)
 
-CUDA kernel: zero out all nonzero values in the specified target columns.
+KA kernel: zero out all nonzero values in the specified target columns.
 """
-function zero_cols_kernel!(
-    nzVal::CuDeviceVector{Tv},
-    colPtr::CuDeviceVector{Ti},
-    target_cols::CuDeviceVector{Ti}, # Vector of unique column indices to zero
-    num_target_cols::Ti,
-) where {Tv,Ti}
-    idx_in_target = Ti((blockIdx().x - 1) * blockDim().x + threadIdx().x) # Index into target_cols vector
-
+@kernel function zero_cols_kernel!(nzVal, @Const(colPtr), @Const(target_cols), num_target_cols)
+    idx_in_target = @index(Global)
     if idx_in_target <= num_target_cols && idx_in_target > 0
-        @inbounds target_c = target_cols[idx_in_target] # The actual column index to zero
-
-        # Get the range of indices in nzVal for this target column
-        # Assuming target_c is valid (1 <= target_c <= num_cols)
+        @inbounds target_c = target_cols[idx_in_target]
         @inbounds col_start = colPtr[target_c]
-        @inbounds col_end = colPtr[target_c + 1] - 1 # Inclusive end index
-
-        # Loop through all elements in this column and zero them
+        @inbounds col_end = colPtr[target_c + 1] - 1
         for k in col_start:col_end
-            # Check k bounds just in case colPtr gives invalid range (should not happen in valid CSC)
             if k > 0 && k <= length(nzVal)
-                @inbounds nzVal[k] = zero(Tv)
+                @inbounds nzVal[k] = zero(eltype(nzVal))
             end
         end
     end
-    return nothing
 end
 
 """
-    zero_rows_cols!(A::CuSparseMatrixCSC, idxs)
+    zero_rows_cols!(A::PortableSparseCSC, idxs)
 
-Zero out all entries `A[i, j]` where `i ∈ idxs` or `j ∈ idxs`, in place.
-Out-of-bounds indices are silently ignored.
-
-# Arguments
-- `A`: the `CuSparseMatrixCSC` to modify.
-- `idxs`: vector of row/column indices to zero.
+Zero out all entries `A[i, j]` where `i in idxs` or `j in idxs`, in place.
 """
-function zero_rows_cols!(
-    A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}, idxs::AbstractVector{<:Integer}
-) where {Tv,Ti}
+function zero_rows_cols!(A::PortableSparseCSC, idxs::AbstractVector{<:Integer})
     num_rows, num_cols = size(A)
-    nnz = length(A.nzVal)
-    if nnz == 0 || isempty(idxs)
-        return nothing # Nothing to do
+    nnz_val = nnz(A)
+    (nnz_val == 0 || isempty(idxs)) && return nothing
+
+    Ti = eltype(A.rowval)
+    idxs_Ti = Ti.(idxs)
+    valid_rows = filter(i -> 1 <= i <= num_rows, idxs_Ti)
+    valid_cols = filter(i -> 1 <= i <= num_cols, idxs_Ti)
+
+    backend = get_backend(A.nzval)
+
+    # Zero rows
+    unique_rows = unique(valid_rows)
+    if !isempty(unique_rows)
+        is_target_row = fill!(similar(A.nzval, Bool, num_rows), false)
+        gpu_rows = similar(A.rowval, length(unique_rows))
+        copyto!(gpu_rows, unique_rows)
+        is_target_row[gpu_rows] .= true
+
+        zero_rows_kernel!(backend)(A.nzval, A.rowval, is_target_row, nnz_val; ndrange=nnz_val)
+        KernelAbstractions.synchronize(backend)
     end
 
-    # --- Preprocessing ---
-    # Filter indices based on matrix dimensions and ensure unique indices on GPU
-    # Convert idxs to the matrix's index type Ti early on
-    idxs_Ti = convert.(Ti, idxs)
-
-    valid_rows_idx = filter(i -> 1 <= i <= num_rows, idxs_Ti)
-    valid_cols_idx = filter(i -> 1 <= i <= num_cols, idxs_Ti)
-
-    # Use unique directly on filtered vectors before converting to CuArray
-    cu_target_rows = CuArray(unique(valid_rows_idx))
-    cu_target_cols = CuArray(unique(valid_cols_idx))
-
-    num_target_rows = length(cu_target_rows)
-    num_target_cols = length(cu_target_cols)
-
-    # Get matrix data
-    nzVal = A.nzVal
-    rowVal = A.rowVal
-    colPtr = A.colPtr
-
-    # --- Pass 1: Zero Rows ---
-    if num_target_rows > 0
-        # Create boolean lookup table for rows
-        is_target_row = CUDA.zeros(Bool, num_rows)
-        # Check is needed before indexing if num_target_rows could be 0 after unique/filtering
-        if num_target_rows > 0
-            is_target_row[cu_target_rows] .= true # Efficiently mark target rows
-        end
-
-        threads_k1 = min(nnz, 256)
-        blocks_k1 = cld(nnz, threads_k1)
-        CUDA.@sync @cuda threads = threads_k1 blocks = blocks_k1 zero_rows_kernel!(
-            nzVal, rowVal, is_target_row, Ti(nnz)
-        )
-        # Allow GC to collect lookup table
-        is_target_row = nothing
-        # CUDA.unsafe_free!(is_target_row) # Optional: explicit free
+    # Zero columns
+    unique_cols = unique(valid_cols)
+    if !isempty(unique_cols)
+        gpu_cols = similar(A.rowval, length(unique_cols))
+        copyto!(gpu_cols, unique_cols)
+        num_tc = length(unique_cols)
+        zero_cols_kernel!(backend)(A.nzval, A.colptr, gpu_cols, num_tc; ndrange=num_tc)
+        KernelAbstractions.synchronize(backend)
     end
-
-    # --- Pass 2: Zero Columns ---
-    if num_target_cols > 0
-        threads_k2 = min(num_target_cols, 256)
-        blocks_k2 = cld(num_target_cols, threads_k2)
-        CUDA.@sync @cuda threads = threads_k2 blocks = blocks_k2 zero_cols_kernel!(
-            nzVal, colPtr, cu_target_cols, Ti(num_target_cols)
-        )
-    end
-
-    # Allow GC to collect temporary index arrays
-    cu_target_rows = nothing
-    cu_target_cols = nothing
 
     return nothing
 end
 
-"""
-    zero_rows!(A::CuSparseMatrixCSC, rows)
-
-Zero out all entries in the specified `rows` of `A` in place, then drop
-structural zeros. Out-of-bounds indices are silently ignored.
-"""
-function zero_rows!(
-    A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti},
-    rows::AbstractVector{<:Integer}
-) where {Tv,Ti}
-
+# Docstring lives on the stub in sparse_type.jl (shared with the SparseMatrixCSC method).
+function zero_rows!(A::PortableSparseCSC, rows::AbstractVector{<:Integer})
     num_rows, _ = size(A)
-    nnz = length(A.nzVal)
-    if nnz == 0 || isempty(rows)
-        return nothing
-    end
+    nnz_val = nnz(A)
+    (nnz_val == 0 || isempty(rows)) && return nothing
 
-    # Convert to matrix index type early
-    rows_Ti = convert.(Ti, rows)
+    Ti = eltype(A.rowval)
+    rows_Ti = Ti.(rows)
+    valid_rows = unique(filter(i -> 1 <= i <= num_rows, rows_Ti))
+    isempty(valid_rows) && return nothing
 
-    # Filter valid rows
-    valid_rows = filter(i -> 1 <= i <= num_rows, rows_Ti)
+    backend = get_backend(A.nzval)
+    is_target_row = fill!(similar(A.nzval, Bool, num_rows), false)
+    gpu_rows = similar(A.rowval, length(valid_rows))
+    copyto!(gpu_rows, valid_rows)
+    is_target_row[gpu_rows] .= true
 
-    # Move to GPU and unique
-    cu_rows = CuArray(unique(valid_rows))
-    num_target_rows = length(cu_rows)
-
-    if num_target_rows == 0
-        return nothing
-    end
-
-    # Build boolean lookup table (GPU)
-    is_target_row = CUDA.zeros(Bool, num_rows)
-    is_target_row[cu_rows] .= true
-
-    # Launch kernel
-    nzVal = A.nzVal
-    rowVal = A.rowVal
-
-    threads = min(nnz, 256)
-    blocks  = cld(nnz, threads)
-
-    CUDA.@sync @cuda threads=threads blocks=blocks zero_rows_kernel!(
-        nzVal, rowVal, is_target_row, Ti(nnz)
-    )
-
-    # Cleanup
-    is_target_row = nothing
-    cu_rows = nothing
+    zero_rows_kernel!(backend)(A.nzval, A.rowval, is_target_row, nnz_val; ndrange=nnz_val)
+    KernelAbstractions.synchronize(backend)
 
     dropzeros!(A)
     return nothing
 end
+
+# --- Sparse compaction (dropzeros) ---
 
 """
     compact_and_count_kernel!(new_nzVal, new_rowVal, new_col_counts,
                               nzVal_old, rowVal_old, colPtr_old,
                               flags, scan_output, nnz_old)
 
-CUDA kernel: compact nonzero values (flagged for retention) into new arrays
+KA kernel: compact nonzero values (flagged for retention) into new arrays
 and atomically count entries per column for CSC `colPtr` reconstruction.
 """
-function compact_and_count_kernel!(
-    new_nzVal::CuDeviceVector{Tv},
-    new_rowVal::CuDeviceVector{Ti},
-    new_col_counts::CuDeviceVector{Ti}, # Atomic counts per column
-    nzVal_old::CuDeviceVector{Tv},
-    rowVal_old::CuDeviceVector{Ti},
-    colPtr_old::CuDeviceVector{Ti},
-    flags::CuDeviceVector{Bool},        # flags[k] is true if nzVal_old[k] should be kept
-    scan_output::CuDeviceVector{Ti},   # Exclusive scan of flags (Ti type)
-    nnz_old::Ti,
-) where {Tv,Ti}
-    k = Ti((blockIdx().x - 1) * blockDim().x + threadIdx().x) # Global index for old element k (1-based)
-
+@kernel function compact_and_count_kernel!(
+    new_nzVal, new_rowVal, new_col_counts,
+    @Const(nzVal_old), @Const(rowVal_old), @Const(colPtr_old),
+    @Const(flags), @Const(scan_output), nnz_old,
+)
+    k = @index(Global)
     if k <= nnz_old && k > 0
-        @inbounds if flags[k] # Check if this element should be kept
-            # Calculate new index using exclusive scan result
-            @inbounds new_idx = scan_output[k] + Ti(1) # 1-based index for new arrays
-
-            # Copy data to compacted arrays
+        @inbounds if flags[k]
+            @inbounds new_idx = scan_output[k] + 1
             @inbounds val = nzVal_old[k]
             @inbounds row = rowVal_old[k]
-            # Ensure indices are within bounds before writing (robustness check)
             if new_idx > 0 && new_idx <= length(new_nzVal)
                 @inbounds new_nzVal[new_idx] = val
                 @inbounds new_rowVal[new_idx] = row
             end
-
-            # Find the original column 'c' for element 'k'
-            # searchsortedlast(colPtr, k) finds the largest index `c` such that colPtr[c] <= k.
-            # This corresponds to the 1-based column index.
-            # Assumes CUDA.searchsortedlast works efficiently on CuDeviceVector inside kernel.
             @inbounds c = searchsortedlast(colPtr_old, k)
-
-            # Atomically increment the count for this column `c`
-            # Ensure column index c is valid before atomic operation
             if c > 0 && c <= length(new_col_counts)
-                CUDA.@atomic new_col_counts[c] += Ti(1)
-                # else
-                # Handle error or unexpected column index 'c' if necessary,
-                # though valid k should yield valid c for well-formed CSC.
+                Atomix.@atomic new_col_counts[c] += 1
             end
         end
     end
-    return nothing
 end
 
+_drop_tol(::Type{T}) where {T<:AbstractFloat} = eps(real(T))
+_drop_tol(::Type{Complex{T}}) where {T<:AbstractFloat} = eps(real(T))
+_drop_tol(::Type{T}) where {T} = zero(T)
+
 """
-    dropzeros!(A::CuSparseMatrixCSC; tol=eps(real(Tv)))
+    dropzeros!(A::PortableSparseCSC; tol=_drop_tol(Tv))
 
-Remove explicit zeros (values with `abs(v) ≤ tol`) from `A` by rebuilding
-the CSC structure on the GPU. Modifies `A` in place.
-
-# Keyword Arguments
-- `tol`: tolerance for treating a value as zero. Default: `eps` of the value type.
+Remove explicit zeros (values with `abs(v) <= tol`) from `A` by rebuilding
+the CSC structure. Modifies `A` in place.
 """
-function dropzeros!(
-    A::CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}; tol=eps(real(Tv))
-) where {Tv,Ti}
-    nnz_old = A.nnz
-    num_rows, num_cols = size(A)
+function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
+    nnz_old = nnz(A)
+    _, num_cols = size(A)
+    nnz_old == 0 && return nothing
 
-    if nnz_old == 0
-        return nothing # Nothing to drop
-    end
+    Ti = eltype(A.rowval)
+    backend = get_backend(A.nzval)
 
-    nzVal_old = A.nzVal
-    rowVal_old = A.rowVal
-    colPtr_old = A.colPtr
+    # Phase 1: flag elements to keep
+    flags = abs.(A.nzval) .> tol
+    flags_Ti = similar(A.rowval, length(flags))
+    flags_Ti .= Ti.(flags)
+    scan_inclusive = accumulate(+, flags_Ti)
 
-    # --- Phase 1: Compaction Prep & New NNZ ---
-    # Create flags: true if element's absolute value > tol
-    flags = abs.(nzVal_old) .> tol # Boolean CuVector
+    # Last element of an inclusive prefix sum equals the total count of kept
+    # entries. Reading one slot is much cheaper than a GPU reduction via
+    # `maximum` (which also triggers a host-side scalar pull).
+    nnz_new = nnz_old > 0 ? Int(Array(@view scan_inclusive[end:end])[1]) : 0
 
-    # Calculate inclusive prefix sum of flags, converting flags to the index type Ti first
-    # This gives the running count of elements to keep.
-    scan_inclusive = CUDA.accumulate(+, convert(CuArray{Ti}, flags))
-
-    # Get the total count of non-zeros to keep (the last element of the inclusive scan)
-    nnz_new =
-        (nnz_old > 0 && length(scan_inclusive) > 0) ? Ti(maximum(scan_inclusive)) : Ti(0)
-
-    # Check if anything needs to be dropped
+    # Nothing to drop
     if nnz_new == nnz_old
-        # Clean up intermediate arrays even if no change
-        flags = nothing
-        scan_inclusive = nothing
-        CUDA.synchronize()
-        return nothing # No zeros (within tolerance) found
-    end
-
-    # Handle case where all elements become zero
-    if nnz_new == 0
-        A.nzVal = CUDA.zeros(Tv, 0)
-        A.rowVal = CUDA.zeros(Ti, 0)
-        A.colPtr = CUDA.ones(Ti, num_cols + 1) # Point all columns to index 1
-        A.nnz = 0
-        # Clean up intermediate arrays
-        flags = nothing
-        scan_inclusive = nothing
-        CUDA.synchronize()
         return nothing
     end
 
-    # Calculate exclusive scan needed for kernel indexing (scan_output[k] = count before k)
-    scan_output = CUDA.zeros(Ti, nnz_old)      # Allocate space for exclusive scan result
-    scan_output[2:end] .= scan_inclusive[1:(end - 1)]
-    # scan_output[1] remains 0
-
-    # --- Phase 2: Allocate Outputs ---
-    new_nzVal = CUDA.CuArray{Tv}(undef, nnz_new)
-    new_rowVal = CUDA.CuArray{Ti}(undef, nnz_new)
-    new_col_counts = CUDA.zeros(Ti, num_cols) # For atomic increments
-
-    # --- Phase 3: Combined Kernel (Compact nzVal/rowVal & Count Columns) ---
-    threads_k1 = 256 # Typical block size
-    blocks_k1 = cld(nnz_old, threads_k1)
-    CUDA.@sync @cuda threads = threads_k1 blocks = blocks_k1 compact_and_count_kernel!(
-        new_nzVal,
-        new_rowVal,
-        new_col_counts,
-        nzVal_old,
-        rowVal_old,
-        colPtr_old,
-        flags,
-        scan_output,
-        Ti(nnz_old),
-    )
-
-    # Free intermediate arrays no longer needed
-    flags = nothing
-    scan_output = nothing
-    scan_inclusive = nothing # Already used to calculate scan_output
-
-    # --- Phase 4: Calculate New colPtr from Counts ---
-    new_colPtr = CUDA.CuArray{Ti}(undef, num_cols + 1)
-    # Compute inclusive scan of counts to get the end+1 position for each column pointer
-    inclusive_scan_counts = CUDA.accumulate(+, new_col_counts)
-    new_colPtr[1:1] .= 1 # First pointer is always 1
-    # Check if num_cols > 0 before indexing new_colPtr[2:end] and inclusive_scan_counts
-    if num_cols > 0
-        new_colPtr[2:end] .= inclusive_scan_counts .+ 1 # Add 1 for 1-based indexing start
+    # All zeros
+    if nnz_new == 0
+        A.nzval = similar(A.nzval, Tv, 0)
+        A.rowval = similar(A.rowval, Ti, 0)
+        A.colptr = fill!(similar(A.colptr, num_cols + 1), one(Ti))
+        return nothing
     end
 
-    # Free intermediate count arrays
-    new_col_counts = nothing
-    inclusive_scan_counts = nothing
+    # Exclusive scan for kernel indexing
+    scan_output = fill!(similar(A.rowval, nnz_old), zero(Ti))
+    scan_output_view = @view scan_output[2:end]
+    scan_inclusive_view = @view scan_inclusive[1:(end - 1)]
+    copyto!(scan_output_view, scan_inclusive_view)
 
-    # --- Phase 5: Update Matrix A in place ---
-    # Replace the fields of the mutable struct A
-    A.nzVal = new_nzVal
-    A.rowVal = new_rowVal
-    A.colPtr = new_colPtr
-    A.nnz = nnz_new # Update nnz count
+    # Phase 2: allocate outputs
+    new_nzVal = similar(A.nzval, Tv, nnz_new)
+    new_rowVal = similar(A.rowval, Ti, nnz_new)
+    new_col_counts = fill!(similar(A.rowval, num_cols), zero(Ti))
 
-    CUDA.synchronize() # Ensure all GPU work is done before function returns
+    # Phase 3: compact and count
+    compact_and_count_kernel!(backend)(
+        new_nzVal, new_rowVal, new_col_counts,
+        A.nzval, A.rowval, A.colptr,
+        flags, scan_output, nnz_old; ndrange=nnz_old,
+    )
+    KernelAbstractions.synchronize(backend)
+
+    # Phase 4: build new colptr
+    new_colPtr = similar(A.colptr, num_cols + 1)
+    inclusive_scan_counts = accumulate(+, new_col_counts)
+    fill_val = one(Ti)
+    new_colPtr_view1 = @view new_colPtr[1:1]
+    fill!(new_colPtr_view1, fill_val)
+    if num_cols > 0
+        new_colPtr_view2 = @view new_colPtr[2:end]
+        new_colPtr_view2 .= inclusive_scan_counts .+ one(Ti)
+    end
+
+    # Phase 5: update A in place
+    A.nzval = new_nzVal
+    A.rowval = new_rowVal
+    A.colptr = new_colPtr
+    KernelAbstractions.synchronize(backend)
+
     return nothing
 end
