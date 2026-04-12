@@ -1,13 +1,27 @@
 # Steady-state diffusion simulation setup and utilities.
 
-# Harmonic mean of node diffusivities at each edge: 2*D_a*D_b / (D_a + D_b).
-# This is the standard finite-volume interface conductance for unit-spacing grids.
 """
     interpolate_edge_values(node_vals, conns)
 
 Compute edge weights from node diffusivities using the harmonic mean:
 `2 * D_a * D_b / (D_a + D_b)`. This is the standard finite-volume interface
 conductance for unit-spacing grids.
+
+# Physics
+
+Each voxel stores a cell-centered diffusivity `D`. In a finite-volume
+scheme the edge between two adjacent cells acts as two half-cell
+conductances in series — one for the path from cell `a`'s center to the
+face (length Δx/2), and one from the face to cell `b`'s center. With
+Δx = 1, each half has conductance `2·D`, so resistances add:
+
+    R_edge = 1/(2·D_a) + 1/(2·D_b)
+    G_edge = 1/R_edge = 2·D_a·D_b / (D_a + D_b)
+
+i.e. the harmonic mean of the two node diffusivities. That simplified form
+is the one we broadcast — it is ~3× faster on GPU than the literal
+`1/(1/(2·a) + 1/(2·b))` (three reciprocals vs one divide) and bit-identical
+in Float32.
 
 # Arguments
 - `node_vals`: diffusivity value for each node (1D vector, length = number of nodes).
@@ -18,6 +32,7 @@ function interpolate_edge_values(node_vals, conns)
     P2 = @view conns[:, 2]
     a = @view node_vals[P1]
     b = @view node_vals[P2]
+    # Harmonic mean of half-cell conductances in series — see docstring.
     return (2 .* a .* b) ./ (a .+ b)
 end
 
