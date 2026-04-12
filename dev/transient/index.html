@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Transient Solver · Tortuosity.jl</title><meta name="title" content="Transient Solver · Tortuosity.jl"/><meta property="og:title" content="Transient Solver · Tortuosity.jl"/><meta property="twitter:title" content="Transient Solver · Tortuosity.jl"/><meta name="description" content="Documentation for Tortuosity.jl."/><meta property="og:description" content="Documentation for Tortuosity.jl."/><meta property="twitter:description" content="Documentation for Tortuosity.jl."/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script><link href="../assets/style.css" rel="stylesheet" type="text/css"/></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../"><img src="../assets/logo.png" alt="Tortuosity.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../">Tortuosity.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Tutorials</span><ul><li><a class="tocitem" href="../tutorials/steady_state/">Steady-State Tortuosity</a></li><li><a class="tocitem" href="../tutorials/variable_diffusivity/">Variable Diffusivity</a></li><li><a class="tocitem" href="../tutorials/transient/">Transient Diffusion</a></li><li><a class="tocitem" href="../tutorials/advanced_transient/">Advanced Transient</a></li></ul></li><li><a class="tocitem" href="../imaginator/">Imaginator</a></li><li><a class="tocitem" href="../api/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Transient Solver</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Transient Solver</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/ma-sadeghi/Tortuosity.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/ma-sadeghi/Tortuosity.jl/blob/main/docs/src/transient.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Transient-Solver"><a class="docs-heading-anchor" href="#Transient-Solver">Transient Solver</a><a id="Transient-Solver-1"></a><a class="docs-heading-anchor-permalink" href="#Transient-Solver" title="Permalink"></a></h1><p><code>Tortuosity.jl</code> includes a transient diffusion solver for computing concentration distributions over time in porous materials. It supports Dirichlet and insulated (zero-flux Neumann) boundary conditions, and provides functions to extract observables such as the flux between voxel planes perpendicular to the concentration gradient axis.</p><p>Porous features like dead-end channels and bottlenecks can produce transient behavior that deviates from homogeneous predictions and cannot be captured by steady-state tortuosity alone. The transient solver can quantify these effects.</p><h2 id="Boundary-condition-types"><a class="docs-heading-anchor" href="#Boundary-condition-types">Boundary condition types</a><a id="Boundary-condition-types-1"></a><a class="docs-heading-anchor-permalink" href="#Boundary-condition-types" title="Permalink"></a></h2><p><code>TransientProblem</code> accepts the following boundary condition types for <code>bc_inlet</code> and <code>bc_outlet</code>:</p><table><tr><th style="text-align: right">Type</th><th style="text-align: right">Meaning</th><th style="text-align: right">Example</th></tr><tr><td style="text-align: right"><code>Number</code></td><td style="text-align: right">Dirichlet (fixed concentration)</td><td style="text-align: right"><code>bc_inlet=1.0</code></td></tr><tr><td style="text-align: right"><code>nothing</code></td><td style="text-align: right">Insulated (zero-flux Neumann)</td><td style="text-align: right"><code>bc_outlet=nothing</code></td></tr><tr><td style="text-align: right"><code>Function</code></td><td style="text-align: right">Time-dependent Dirichlet</td><td style="text-align: right"><code>bc_inlet=t -&gt; sin(2π*t)</code></td></tr></table><h2 id="Comparing-to-homogeneous-solutions"><a class="docs-heading-anchor" href="#Comparing-to-homogeneous-solutions">Comparing to homogeneous solutions</a><a id="Comparing-to-homogeneous-solutions-1"></a><a class="docs-heading-anchor-permalink" href="#Comparing-to-homogeneous-solutions" title="Permalink"></a></h2><p>The example below runs a transient simulation on a porous image and compares the outlet flux to the analytical solution for a homogeneous slab with diffusivity <span>$D_\text{eff} = 1/\tau_\text{ss}$</span>.</p><pre><code class="language-julia hljs">using Tortuosity
+
+USE_GPU = false
+
+axis = :x
+
+# Generate a test image
+img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
+φ = Imaginator.phase_fraction(img, true)
+
+# Steady-state solution for reference tortuosity
+sim_ss = TortuositySimulation(img; axis=axis, gpu=USE_GPU);
+sol_ss = solve(sim_ss.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
+
+C_ss = vec_to_grid(sol_ss.u, img)
+τ_ss = tortuosity(C_ss, img; axis=:x)
+
+# Transient solution
+# dt is the snapshot interval (not the internal ODE timestep)
+dt = 0.05
+
+prob = TransientProblem(img, dt; bc_inlet=1, bc_outlet=0, axis=axis, gpu=USE_GPU)
+sim = init_state(prob);
+
+# Stop when inlet and outlet fluxes converge (near steady state)
+stop_condition = stop_at_delta_flux(0.005, prob)
+solve!(sim, prob, stop_condition)
+
+# Outlet flux at each snapshot
+flux_out = map(C -&gt; compute_flux(C, prob.D, prob.dx, prob.img, prob.axis; ind=:end, grid_to_vec=prob.grid_to_vec), sim.C)
+
+# Analytical outlet flux for a homogeneous slab with D_eff = 1/τ_ss
+t_ana = range(0, 1.5*sim.t[end], 200)[2:end]
+J_ana = φ .* slab_flux(1/τ_ss, 1, t_ana)  # x=1 is the outlet face of a unit-length slab
+
+# Visualize
+using Plots
+
+heatmap(img[:, :, 1]; aspect_ratio=:equal, clim=(0, 1))
+
+plot(sim.t, flux_out,
+    title = &quot;Outlet Flux over Time&quot;, xlabel = &quot;time&quot;, ylabel = &quot;flux&quot;,
+    seriestype = :scatter, label = &quot;transient data for image&quot;,
+    legend = :bottomright
+)
+
+plot!(t_ana, J_ana,
+    label = &quot;homogeneous solution with D = 1/τ_ss \n τ_ss = $(round(τ_ss, digits = 2))&quot;
+)</code></pre><figure><img src=../img-plot.svg><figcaption>Original binary image</figcaption></figure><figure><img src=../outlet_flux.svg><figcaption>Comparison of porous material transient data with analytical homogeneous solution</figcaption></figure><div class="admonition is-info" id="Note-e7fae858f3ae4a18"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-e7fae858f3ae4a18" title="Permalink"></a></header><div class="admonition-body"><p>The difference between the porous and homogeneous solutions may be exaggerated for low-resolution images or images with a low domain-to-pore size ratio.</p></div></div><h2 id="Stop-conditions"><a class="docs-heading-anchor" href="#Stop-conditions">Stop conditions</a><a id="Stop-conditions-1"></a><a class="docs-heading-anchor-permalink" href="#Stop-conditions" title="Permalink"></a></h2><p>The transient <code>solve!()</code> function steps the <code>TransientState</code> forward in time, appending a concentration vector to <code>state.C</code> every <code>dt</code> time units and evaluating a stop condition. Stop conditions have the signature <code>f(t_hist, C_hist) -&gt; Bool</code>. When the return is <code>true</code>, <code>solve!()</code> terminates.</p><p>Built-in stop condition constructors:</p><ul><li><strong><code>stop_at_time(t)</code></strong> — stops once the solver reaches time <code>t</code>.</li><li><strong><code>stop_at_delta_flux(delta, prob)</code></strong> — stops when the absolute difference between inlet and outlet flux falls below <code>delta</code>. Useful for detecting steady state under time-independent boundary conditions.</li><li><strong><code>stop_at_avg_concentration(c, prob)</code></strong> — stops when the average pore concentration reaches <code>c</code>. For example, with <code>bc_inlet=1</code> and <code>bc_outlet=nothing</code>, stop at <code>c_avg=0.99</code>.</li><li><strong><code>stop_at_periodic(freq, prob; reltol=1e-2, Nphase=4, frac_period=0.3, depth=1.0)</code></strong> — stops when <code>Nphase</code> phase points are within <code>reltol</code> of the previous period. Intended for problems with time-periodic boundary conditions.</li></ul><p>Custom stop conditions can be any function with the right signature:</p><pre><code class="language-julia hljs">my_stop = (t_hist, C_hist) -&gt; t_hist[end] &gt; 5.0</code></pre><h2 id="Tortuosity-distribution"><a class="docs-heading-anchor" href="#Tortuosity-distribution">Tortuosity distribution</a><a id="Tortuosity-distribution-1"></a><a class="docs-heading-anchor-permalink" href="#Tortuosity-distribution" title="Permalink"></a></h2><p>One indicator of how a porous material deviates from homogeneous behavior is the distribution of tortuosity across individual pore paths. <code>fit_voxel_diffusivity()</code> samples voxel concentration histories at a cross-sectional plane and fits each to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate via least-squares regression.</p><pre><code class="language-julia hljs">using Tortuosity
+
+USE_GPU = false
+
+axis = :z
+
+# Generate a 3D test image and trim isolated pores (porosity 0.4 has many dead ends)
+img = Imaginator.blobs(; shape=(64, 64, 32), porosity=0.4, blobiness=0.5, seed=3)
+img = Imaginator.trim_nonpercolating_paths(img; axis=axis)
+φ = Imaginator.phase_fraction(img, true)
+
+# Transient solution: C=1 at inlet, insulated at outlet
+dt = 0.1
+
+prob = TransientProblem(img, dt; bc_inlet=1, bc_outlet=nothing, axis=axis, gpu=USE_GPU)
+sim = init_state(prob);
+
+stop_condition = stop_at_avg_concentration(0.98, prob)
+solve!(sim, prob, stop_condition)
+
+# Fit tortuosity at a sample of voxels at the outlet (depth=1.0)
+tau_vals, SE_tau, voxel_inds_1d = fit_voxel_diffusivity(sim, prob; depth=1.0, n_samples=400)
+
+# Plot a histogram of the tortuosity values
+using Plots
+
+histogram(tau_vals,
+    xlabel = &quot;Tortuosity&quot;,
+    ylabel = &quot;Bin Count&quot;,
+    title = &quot;Tortuosity Distribution&quot;,
+    legend = false
+)</code></pre><figure><img src=../tortuosity_histogram.svg><figcaption>Histogram of fitted tortuosity at the outlet (depth = 1.0)</figcaption></figure><h2 id="Time-dependent-boundary"><a class="docs-heading-anchor" href="#Time-dependent-boundary">Time-dependent boundary</a><a id="Time-dependent-boundary-1"></a><a class="docs-heading-anchor-permalink" href="#Time-dependent-boundary" title="Permalink"></a></h2><p><code>TransientProblem</code> supports boundary conditions that are functions of time. This is useful for:</p><ul><li><strong>Smoother startup</strong> — ramp the boundary to reduce numerical error from large initial concentration gradients.</li><li><strong>Periodic probing</strong> — a sine wave inlet at periodic steady state produces an outlet wave with decayed amplitude and phase offset, which can reveal dead-end channels and other structural features.</li></ul><pre><code class="language-julia hljs">using Tortuosity
+
+USE_GPU = false
+axis = :z
+
+# 1D homogeneous image
+N = 64
+img = trues(1,1,N)
+
+# Parameters
+freq = 0.5
+T = 1/freq
+dt = T/30  # ~30 snapshots per period
+
+# Sine wave inlet (varying from 0 to 1) with insulated outlet
+prob = TransientProblem(img, dt; bc_inlet=t -&gt; (sin(2π*freq*t)+1)/2, bc_outlet=nothing, axis=axis, gpu=USE_GPU)
+# Initial condition at the time-averaged value of the BC (faster convergence to periodic steady state)
+sim = init_state(prob; C0=0.5 .* ones(size(img)))
+
+# Run to periodic steady state
+stop_condition = stop_at_periodic(freq, prob; reltol=1e-3)
+solve!(sim, prob, stop_condition)
+
+# Run for one more period to capture the steady-state waveform
+stop_condition = stop_at_time(sim.t[end] + T)
+solve!(sim, prob, stop_condition)
+
+# Animate the concentration distribution over the last period
+using Plots
+
+start_ind = searchsortedfirst(sim.t, sim.t[end] - T)
+anim = @animate for k in start_ind:length(sim.t)
+    C_grid = vec_to_grid(sim.C[k], img)
+    plot(range(0, 1, N), C_grid[:, 1, :][1, :],
+        title = &quot;Concentration With Sine Wave Inlet&quot;,
+        ylim = (0, 1), legend = false,
+        ylabel = &quot;Concentration&quot;,
+        xlabel = &quot;Depth&quot;,
+        linewidth = 2
+    )
+end</code></pre><figure><img src=../sin_inlet.gif><figcaption>Concentration distribution at periodic steady state with a sine wave inlet</figcaption></figure></article><nav class="docs-footer"><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 8 April 2026 09:00">Wednesday 8 April 2026</span>. Using Julia version 1.12.5.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
