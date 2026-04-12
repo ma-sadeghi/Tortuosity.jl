@@ -5,6 +5,11 @@ using Pkg
 # [extras] unconditionally (Pkg resolution would fail on Linux/Windows).
 # On Apple Silicon, install it into the active test environment at runtime.
 # This matches the pattern used by NonlinearSolve.jl and LinearSolve.jl.
+#
+# CUDA.jl stays in [extras] because it installs cleanly on every supported
+# platform (including macOS-arm64 — it just reports `functional() == false`
+# there). Running `Pkg.add` on CUDA would silently promote it from [weakdeps]
+# to [deps], breaking the extension-loading model.
 if Sys.isapple() && Sys.ARCH === :aarch64
     try
         Pkg.add("Metal"; preserve=Pkg.PRESERVE_ALL)
@@ -51,6 +56,14 @@ const _has_gpu = _has_cuda || _has_metal
 
     @testset verbose = true "Transient" begin
         include("test_transient.jl")
+    end
+
+    @testset verbose = true "PortableSparseCSC operations" begin
+        include("test_sparse_ops.jl")
+    end
+
+    @testset verbose = true "Cross-implementation parity" begin
+        include("test_impl_parity.jl")
     end
 
     if _has_cuda
