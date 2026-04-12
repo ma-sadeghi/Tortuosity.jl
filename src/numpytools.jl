@@ -63,11 +63,9 @@ in ascending order, not the order in which they appear in `a`.
 - `Vector{Int}`: The indices of elements in `a` that are also in `b`.
 
 # Example
-```jldoctest
-julia> a = [1, 2, 3, 4, 5]
-julia> b = [3, 4, 1]
-julia> overlap_indices(a, b)
-3-element Vector{Int}:
+```jldoctest; setup = :(using Tortuosity: overlap_indices)
+julia> overlap_indices([1, 2, 3, 4, 5], [3, 4, 1])
+3-element Vector{Int64}:
  1
  3
  4
@@ -124,7 +122,7 @@ end
     find_chunk_bounds(; nelems::Int, ndivs::Int)
 
 Returns an array of tuples where each tuple represents the start and end
-indices of a chunk when dividing an array of length `n` into `divisions`
+indices of a chunk when dividing an array of length `nelems` into `ndivs`
 number of chunks.
 
 # Arguments
@@ -135,9 +133,9 @@ number of chunks.
 - `Vector{Tuple{Int, Int}}`: An array of tuples representing the start and end indices of each chunk.
 
 # Example
-```jldoctest
-julia> find_chunk_bounds(nelems=10, ndivs=3)
-3-element Vector{Tuple{Int, Int}}:
+```jldoctest; setup = :(using Tortuosity: find_chunk_bounds)
+julia> find_chunk_bounds(; nelems=10, ndivs=3)
+3-element Vector{Tuple{Int64, Int64}}:
  (1, 4)
  (5, 8)
  (9, 10)
@@ -150,23 +148,31 @@ function find_chunk_bounds(; nelems::Int, ndivs::Int)
 end
 
 """
-    multihotvec(indices::AbstractArray, n::Int; vals::Number=1.0)
-    multihotvec(indices::AbstractArray, n::Int; vals::AbstractArray)
+    multihotvec(indices::AbstractArray, n::Int; vals=1.0, template=nothing)
 
-Returns a vector of length `n` with `vals` at the indices specified
-in `indices`.
+Build a length-`n` vector whose entries at positions `indices` are `vals`,
+and which is zero everywhere else. If `vals` is a scalar, every flagged
+position receives that scalar; if `vals` is an array, `length(indices)` must
+equal `length(vals)` and each index gets the corresponding element.
+
+`template` exists to support GPU backends: when supplied, the output vector
+is allocated on the same device (and with element type matching `vals`),
+so downstream GPU kernels can broadcast against it without an implicit
+host→device copy. When `template === nothing` the output is a plain
+`Vector{eltype(vals)}`.
 
 # Arguments
-- `indices::AbstractArray`: The indices to set to `vals`.
-- `n::Int`: The length of the vector.
-- `vals::Number=1.0`: The value to set at the indices.
-- `vals::AbstractArray`: The values to set at the indices.
+- `indices::AbstractArray`: positions to set.
+- `n::Int`: length of the output vector (must be `≥ maximum(indices)`).
 
-# Returns
-- `Vector{Number}`: A vector of length `n` with `vals` at the specified indices.
+# Keyword Arguments
+- `vals`: scalar or array of values to place at `indices`. Default: `1.0`.
+- `template`: optional array whose storage type (CPU/GPU) and shape API is
+  used to allocate the output via `similar(template, eltype, n)`. Default:
+  `nothing` (allocate on CPU).
 
 # Example
-```jldoctest
+```jldoctest; setup = :(using Tortuosity: multihotvec)
 julia> multihotvec([1, 3, 4], 6)
 6-element Vector{Float64}:
  1.0
@@ -175,7 +181,8 @@ julia> multihotvec([1, 3, 4], 6)
  1.0
  0.0
  0.0
-julia> multihotvec([1, 3, 4], 6, vals=[0.1, 0.3, 0.2])
+
+julia> multihotvec([1, 3, 4], 6; vals=[0.1, 0.3, 0.2])
 6-element Vector{Float64}:
  0.1
  0.0
