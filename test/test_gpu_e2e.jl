@@ -10,6 +10,7 @@
 # We never reference a concrete device array type here.
 
 using Test
+using Random
 using Tortuosity
 using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu
 
@@ -61,6 +62,31 @@ end
     @test isfinite(tau_gpu)
     @test tau_gpu > 1
     @test tau_cpu ≈ tau_gpu rtol = 1e-3
+end
+
+@testset "CPU/GPU parity with variable D (seed=$(seed))" for seed in (3, 17)
+    img = Array{Bool}(
+        Imaginator.blobs(; shape=(24, 24, 24), porosity=0.6f0, blobiness=1, seed=seed)
+    )
+    (any(img[1, :, :]) && any(img[end, :, :])) || return
+
+    # Spatially-varying diffusivity over [0.5, 1.5] inside pores; zero in
+    # solid voxels so the constructor's subdomain-count assertion holds.
+    rng = Random.MersenneTwister(seed)
+    D = zeros(Float32, size(img))
+    D[img] .= 0.5f0 .+ rand(rng, Float32, count(img))
+
+    sim_cpu = TortuositySimulation(img; axis=:x, gpu=false, D=Float64.(D))
+    sol_cpu = solve(sim_cpu.prob, KrylovJL_CG(); reltol=1.0e-8)
+    tau_cpu = tortuosity(vec_to_grid(sol_cpu.u, sim_cpu.img), sim_cpu.img; axis=:x)
+
+    sim_gpu = TortuositySimulation(img; axis=:x, gpu=true, D=D)
+    sol_gpu = solve(sim_gpu.prob, KrylovJL_CG(); reltol=1.0f-6)
+    tau_gpu = tortuosity(vec_to_grid(sol_gpu.u, sim_gpu.img), sim_gpu.img; axis=:x)
+
+    @test isfinite(tau_gpu)
+    @test tau_gpu > 1
+    @test tau_cpu ≈ tau_gpu rtol = 2e-3
 end
 
 # ---------------------------------------------------------------------------
