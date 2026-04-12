@@ -8,18 +8,13 @@ Construct a sparse diagonal matrix from vector `v`. Dispatches to
 """
 spdiagm(v::AbstractVector) = SparseArrays.spdiagm(0 => v)
 
-"""
-    laplacian(am)
-
-Compute the graph Laplacian `L = D - A` where `D` is the degree matrix and
-`A` is the adjacency matrix `am`.
-"""
+# Docstring for `laplacian` lives on the stub in sparse_type.jl; the
+# PortableSparseCSC-specific method is also in sparse_type.jl.
 function laplacian(am)
     degrees = vec(sum(am; dims=2))
     degree_matrix = spdiagm(degrees)
     return degree_matrix - am
 end
-# NOTE: laplacian(am::PortableSparseCSC) is defined in sparse_type.jl
 
 """
     create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)

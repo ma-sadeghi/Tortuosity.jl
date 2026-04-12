@@ -68,11 +68,16 @@ function apply_dirichlet_bc_fast!(A::PortableSparseCSC, b; nodes, vals)
     #  - Zero out rows and columns corresponding to BC nodes to keep A symmetric
     #  - Modify diagonal and RHS corresponding to BC nodes to satisfy Dirichlet BCs
     diag_vals = get_diag(A)  # Fetch the diagonal before it's zeroed out
-    # Transfer vals to GPU if needed, using b as template
-    gpu_vals = vals
-    if _on_gpu(b) && !(vals isa typeof(b))
-        gpu_vals = similar(b, eltype(vals), length(vals))
-        copyto!(gpu_vals, vals)
+    # Transfer/convert `vals` so it lives on the same device and has the same
+    # eltype as `b`. Previously this checked `vals isa typeof(b)`, which was
+    # brittle to CuArray/MtlArray buffer parameters and didn't cover the
+    # eltype case.
+    gpu_vals = if _on_gpu(b) == _on_gpu(vals) && eltype(vals) === eltype(b)
+        vals
+    else
+        v = similar(b, eltype(b), length(vals))
+        copyto!(v, vals)
+        v
     end
     x_bc = multihotvec(nodes, length(b); vals=gpu_vals, template=b)
     b .-= A * x_bc

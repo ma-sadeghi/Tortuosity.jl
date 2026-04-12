@@ -98,6 +98,7 @@ function TransientProblem(
     bc_outlet = _validate_bc(bc_outlet, dtype, "bc_outlet")
 
     nnodes = count(img)
+    @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
     if isnothing(gpu)
         gpu = !isnothing(_preferred_gpu_backend[]) && nnodes >= 100_000
     elseif gpu && isnothing(_preferred_gpu_backend[])
@@ -230,18 +231,21 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
         append!(bc_nodes, find_boundary_nodes(img, outlet_face))
     end
 
-    gpu && (img = _gpu_adapt[](img))
+    # Keep the CPU `img` available for any downstream CPU-only work. `img_dev`
+    # is the copy actually handed to the GPU kernels.
+    img_dev = gpu ? _gpu_adapt[](img) : img
 
-    nnodes = sum(img)
+    nnodes = sum(img_dev)
 
-    conns = create_connectivity_list(img)
+    conns = create_connectivity_list(img_dev)
 
+    D_dev = D
     if !(D isa Number)
         D_local = atleast_3d(D)
-        gpu && (D_local = _gpu_adapt[](D_local))
+        D_dev = gpu ? _gpu_adapt[](D_local) : D_local
     end
 
-    gd = D isa Number ? D : interpolate_edge_values(D_local[img], conns)
+    gd = D isa Number ? D : interpolate_edge_values(D_dev[img_dev], conns)
 
     am = create_adjacency_matrix(conns; n=nnodes, weights=gd)
 
@@ -255,14 +259,7 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, dx, gpu)
     return A
 end
 
-"""
-    zero_rows!(A::SparseMatrixCSC, rows)
-    zero_rows!(A::PortableSparseCSC, rows)
-
-Zero out all entries in the specified `rows` of sparse matrix `A`, then drop
-the resulting structural zeros. Used to enforce Dirichlet boundary conditions
-in the transient operator.
-"""
+# Docstring lives on the stub in sparse_type.jl (shared with the PortableSparseCSC method).
 function zero_rows!(A::SparseMatrixCSC, rows)
     target = Set(rows)
     @inbounds for i in eachindex(A.rowval)

@@ -14,11 +14,11 @@ conductance for unit-spacing grids.
 - `conns`: `nedges x 2` connectivity matrix where each row is a `(source, target)` pair.
 """
 function interpolate_edge_values(node_vals, conns)
-    @assert length(node_vals) == maximum(conns)
     P1 = @view conns[:, 1]
     P2 = @view conns[:, 2]
-    edge_vals = 1 ./ (1 ./ node_vals[P1] / 2 .+ 1 ./ node_vals[P2] / 2)
-    return edge_vals
+    a = @view node_vals[P1]
+    b = @view node_vals[P2]
+    return (2 .* a .* b) ./ (a .+ b)
 end
 
 """
@@ -83,6 +83,7 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     end
 
     nnodes = sum(img)
+    @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
     # Auto-detect GPU: use if backend is available and image is large enough
     if isnothing(gpu)
         gpu = !isnothing(_preferred_gpu_backend[]) && nnodes >= 100_000

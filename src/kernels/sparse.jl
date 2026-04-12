@@ -48,6 +48,7 @@ function set_diag!(A::PortableSparseCSC{Tv}, vals::AbstractVector) where {Tv}
     backend = get_backend(A.nzval)
     wg = min(N_diag, 256)
     set_diag_kernel!(backend, wg)(A.nzval, A.rowval, A.colptr, cu_vals, N_diag; ndrange=N_diag)
+    KernelAbstractions.synchronize(backend)
     return nothing
 end
 
@@ -87,7 +88,7 @@ function get_diag(A::PortableSparseCSC{Tv}) where {Tv}
     backend = get_backend(A.nzval)
     wg = min(N_diag, 256)
     get_diag_kernel!(backend, wg)(diag_vals, A.nzval, A.rowval, A.colptr, N_diag; ndrange=N_diag)
-    # No explicit sync — downstream consumers (or CUDA.@sync wrappers) handle ordering
+    KernelAbstractions.synchronize(backend)
     return diag_vals
 end
 
@@ -171,12 +172,7 @@ function zero_rows_cols!(A::PortableSparseCSC, idxs::AbstractVector{<:Integer})
     return nothing
 end
 
-"""
-    zero_rows!(A::PortableSparseCSC, rows)
-
-Zero out all entries in the specified `rows` of `A` in place, then drop
-structural zeros.
-"""
+# Docstring lives on the stub in sparse_type.jl (shared with the SparseMatrixCSC method).
 function zero_rows!(A::PortableSparseCSC, rows::AbstractVector{<:Integer})
     num_rows, _ = size(A)
     nnz_val = nnz(A)
@@ -257,7 +253,10 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
     flags_Ti .= Ti.(flags)
     scan_inclusive = accumulate(+, flags_Ti)
 
-    nnz_new = nnz_old > 0 ? Int(maximum(scan_inclusive)) : 0
+    # Last element of an inclusive prefix sum equals the total count of kept
+    # entries. Reading one slot is much cheaper than a GPU reduction via
+    # `maximum` (which also triggers a host-side scalar pull).
+    nnz_new = nnz_old > 0 ? Int(Array(@view scan_inclusive[end:end])[1]) : 0
 
     # Nothing to drop
     if nnz_new == nnz_old
