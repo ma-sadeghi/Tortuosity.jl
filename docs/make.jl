@@ -4,14 +4,6 @@ using Tortuosity
 ENV["GKSwstype"] = "100"
 const buildpath = haskey(ENV, "CI") ? ".." : ""
 
-# Run docstring-level jldoctests as a separate step. We don't pass `modules`
-# to `makedocs` because that would also turn on the "docstring not referenced"
-# check, which would flood CI with warnings — api.md is hand-curated markdown
-# rather than `@docs` blocks, so most docstrings are technically "unreferenced"
-# from Documenter's point of view. Calling `doctest(Tortuosity)` separately
-# runs the in-source jldoctests and nothing else.
-doctest(Tortuosity; manual=false)
-
 format = Documenter.HTML(;
     edit_link="main",
     prettyurls=get(ENV, "CI", nothing) == "true",
@@ -21,6 +13,16 @@ format = Documenter.HTML(;
 makedocs(;
     sitename="Tortuosity.jl",
     format=format,
+    # `modules` is what teaches Documenter which docstrings the `@docs` blocks
+    # in api.md should resolve against, and it's also what enables jldoctests
+    # embedded in those docstrings to run. `checkdocs=:exports` tells
+    # Documenter to only warn about unreferenced *exported* symbols (internal
+    # helpers are fine). `warnonly=[:missing_docs]` keeps the build green if
+    # an export is added without a corresponding `@docs` block — the CI log
+    # still shows the warning so we don't forget to wire it up.
+    modules=[Tortuosity, Tortuosity.Imaginator],
+    checkdocs=:exports,
+    warnonly=[:missing_docs],
     pages=[
         "Home" => "index.md",
         "Tutorials" => [

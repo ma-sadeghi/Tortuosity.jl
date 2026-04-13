@@ -2,7 +2,7 @@
 
 `Tortuosity.jl` is a GPU-accelerated Julia package for computing the tortuosity factor ($\tau$) of voxel images of porous media. The tortuosity factor quantifies how much a porous microstructure slows down diffusive transport relative to free diffusion — $\tau = 1$ means no hindrance, higher values mean slower transport.
 
-The package supports both **steady-state** and **transient** diffusion, uniform or spatially varying diffusivity, and runs on CPU or CUDA GPU.
+The package supports both **steady-state** and **transient** diffusion, uniform or spatially varying diffusivity, and runs on CPU or any of the supported GPU backends: NVIDIA (CUDA), Apple Silicon (Metal), and AMD (ROCm/AMDGPU).
 
 It is similar to [TauFactor](https://www.mathworks.com/matlabcentral/fileexchange/57956-taufactor) in MATLAB and [taufactor](https://github.com/tldr-group/taufactor) in Python.
 
@@ -13,7 +13,7 @@ using Pkg
 Pkg.add("Tortuosity")
 ```
 
-**Requirements:** Julia 1.10+. For GPU acceleration, a CUDA-capable GPU is needed.
+**Requirements:** Julia 1.10+. GPU acceleration is optional — load the corresponding package (`CUDA.jl`, `Metal.jl`, or `AMDGPU.jl`) to activate it. See [GPU backends](@ref) below.
 
 ## Quick example
 
@@ -27,6 +27,34 @@ sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5)
 τ = tortuosity(vec_to_grid(sol.u, img), img; axis=:x)
 println("τ = $τ")
 ```
+
+## GPU backends
+
+Tortuosity ships CPU kernels unconditionally. GPU kernels live in package extensions — one for each supported backend, loaded lazily when the backend package is imported:
+
+| Backend | Package | Hardware |
+|---------|---------|----------|
+| CUDA    | [`CUDA.jl`](https://github.com/JuliaGPU/CUDA.jl)   | NVIDIA GPUs |
+| Metal   | [`Metal.jl`](https://github.com/JuliaGPU/Metal.jl) | Apple Silicon |
+| AMDGPU  | [`AMDGPU.jl`](https://github.com/JuliaGPU/AMDGPU.jl) | AMD GPUs (ROCm) |
+
+To activate a backend, load the corresponding package **before** constructing a simulation:
+
+```julia
+using CUDA      # or: using Metal  / using AMDGPU
+using Tortuosity
+
+sim = TortuositySimulation(img; axis=:x)     # auto-detects the loaded backend
+```
+
+The `gpu` keyword of [`TortuositySimulation`](@ref) and [`TransientProblem`](@ref) controls whether solver kernels run on GPU:
+
+- **`gpu=nothing`** (default) — auto-detect. Uses GPU when a backend package is loaded *and* the image has at least 100,000 pore voxels; otherwise runs on CPU. If you pass a large image but have not loaded a backend package, you'll see a one-time `@info` message pointing back to this section.
+- **`gpu=true`** — force GPU. Errors immediately if no backend is loaded.
+- **`gpu=false`** — force CPU, even when a backend is available.
+
+!!! warning "Silent CPU fallback"
+    The auto-detect mode will run on CPU without erroring if no backend package has been loaded — the intent is to never force `using CUDA` on users who don't need it. If you're expecting GPU performance, either pass `gpu=true` (which errors on a missing backend) or make sure one of `CUDA.jl`, `Metal.jl`, or `AMDGPU.jl` is imported before constructing the simulation.
 
 ## Learn more
 

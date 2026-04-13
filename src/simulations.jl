@@ -73,7 +73,8 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
 - `D`: diffusivity. `nothing` for uniform (default), or an array matching `img` shape
   for spatially variable diffusivity.
 - `gpu`: `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect
-  (uses GPU when >= 100k pore voxels and a GPU backend is available).
+  (uses GPU when a backend package is loaded *and* the image has ≥100k pore
+  voxels). See [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
 - `verbose`: print progress messages. Default: `false`.
 """
 function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
@@ -99,9 +100,20 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
 
     nnodes = sum(img)
     @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
-    # Auto-detect GPU: use if backend is available and image is large enough
+    # Auto-detect GPU: use if backend is available and image is large enough.
+    # When the image is big enough to benefit from GPU but no backend has been
+    # loaded, nudge the user once — the alternative is a silent CPU fallback
+    # where the caller thinks they're getting GPU performance but aren't.
     if isnothing(gpu)
-        gpu = !isnothing(_preferred_gpu_backend[]) && nnodes >= 100_000
+        has_backend = !isnothing(_preferred_gpu_backend[])
+        if !has_backend && nnodes >= 100_000
+            @warn "Image has $(nnodes) pore voxels but no GPU backend is loaded; \
+                   running on CPU. To enable GPU kernels, load a backend package \
+                   (`using CUDA`, `using Metal`, or `using AMDGPU`) before \
+                   constructing the simulation. Pass `gpu=false` explicitly to \
+                   silence this message." maxlog = 1
+        end
+        gpu = has_backend && nnodes >= 100_000
     elseif gpu && isnothing(_preferred_gpu_backend[])
         error("`gpu=true` was requested but no GPU backend is registered. \
                Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
