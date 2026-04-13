@@ -37,8 +37,8 @@ export Imaginator
 export KrylovJL_CG
 
 # Structs
-export TortuositySimulation
-export TransientProblem
+export SteadyDiffusionProblem
+export TransientDiffusionProblem
 export TransientState
 
 # Steady-state analysis
@@ -46,20 +46,20 @@ export solve
 export tortuosity
 export effective_diffusivity
 export formation_factor
-export vec_to_grid
+export reconstruct_field
 
 # Transient solver
 export solve!
 export init_state
 export stop_at_time
 export stop_at_avg_concentration
-export stop_at_delta_flux
+export stop_at_flux_balance
 export stop_at_periodic
 
 # Transient measurements
-export compute_flux
-export get_slice_conc
-export compute_mass_uptake
+export flux
+export slice_concentration
+export mass_uptake
 
 # Transient fitting
 export fit_effective_diffusivity

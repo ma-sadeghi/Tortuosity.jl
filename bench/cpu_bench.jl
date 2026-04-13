@@ -129,7 +129,7 @@ end
 # 1.  OVERALL WORKFLOW
 # ---------------------------------------------------------------------------
 println("\n>>> Warming up (first call)...")
-warmup_sim = TortuositySimulation(img_small; axis=:x, gpu=false)
+warmup_sim = SteadyDiffusionProblem(img_small; axis=:x, gpu=false)
 solve(warmup_sim.prob, KrylovJL_CG(); reltol=1e-6)
 
 println(">>> Benchmarking overall workflow...")
@@ -138,7 +138,7 @@ workflow_rows = BenchRow[]
 
 for (label, img) in [("16^3 open", img_small), ("32^3 open", img_medium), ("32^3 blob (eps=0.6)", img_blob)]
     b = @benchmark begin
-        sim = TortuositySimulation($img; axis=:x, gpu=false)
+        sim = SteadyDiffusionProblem($img; axis=:x, gpu=false)
         solve(sim.prob, KrylovJL_CG(); reltol=1e-6)
     end
     t = median(b).time  # nanoseconds

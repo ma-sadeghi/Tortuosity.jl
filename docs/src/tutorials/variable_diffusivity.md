@@ -21,10 +21,10 @@ D = rand(Float64, size(img))
 D[.!img] .= 0
 domain = D .> 0  # conducting voxels
 
-sim = TortuositySimulation(domain; axis=:x, D=D, gpu=false)
+sim = SteadyDiffusionProblem(domain; axis=:x, D=D, gpu=false)
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5)
 
-c = vec_to_grid(sol.u, domain)
+c = reconstruct_field(sol.u, domain)
 τ = tortuosity(c, domain; axis=:x, D=D)
 println("τ = $τ")
 
@@ -36,7 +36,7 @@ savefig("c-vardiff.svg"); nothing # hide
 HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-vardiff.svg"))><figcaption>Concentration field with spatially varying diffusivity</figcaption></figure>""") # hide
 ```
 
-The key difference from the uniform case: we pass `D=D` to both `TortuositySimulation` and `tortuosity()`.
+The key difference from the uniform case: we pass `D=D` to both `SteadyDiffusionProblem` and `tortuosity()`.
 
 ## Example: bubbly mixture
 
@@ -52,10 +52,10 @@ D[img] .= 1.0    # Liquid phase (fast diffusion)
 D[.!img] .= 0.2  # Gas bubbles (slower diffusion)
 domain = D .> 0   # Everything is conducting
 
-sim = TortuositySimulation(domain; axis=:x, D=D, gpu=false)
+sim = SteadyDiffusionProblem(domain; axis=:x, D=D, gpu=false)
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5)
 
-c = vec_to_grid(sol.u, domain)
+c = reconstruct_field(sol.u, domain)
 τ = tortuosity(c, domain; axis=:x, D=D)
 println("τ = $τ")
 ```

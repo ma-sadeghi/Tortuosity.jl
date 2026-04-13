@@ -40,13 +40,13 @@ function export_to_hdf5(fname; kwargs...)
 end
 
 """
-    vec_to_grid(u, img::AbstractArray{Bool})
+    reconstruct_field(u, img::AbstractArray{Bool})
 
 Expand a pore-only solution vector `u` into a full-sized array matching `img`.
 Pore voxels receive values from `u`; solid voxels are filled with `NaN`.
 The element type of the output matches `eltype(u)`.
 """
-function vec_to_grid(u, img::AbstractArray{Bool})
+function reconstruct_field(u, img::AbstractArray{Bool})
     @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
     # Logical-indexing a CPU Array with a GPU Bool mask triggers scalar
     # iteration, so pull img to CPU when it isn't already there.
@@ -62,7 +62,7 @@ end
 
 Build a lookup array mapping each pore voxel in `img` to its 1D index in the
 pore-only vector. Solid voxels are mapped to `0`. This is the inverse of
-[`vec_to_grid`](@ref).
+[`reconstruct_field`](@ref).
 """
 function grid_to_vec(img::BitArray)
     g = zeros(Int, size(img))

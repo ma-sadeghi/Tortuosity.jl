@@ -50,11 +50,11 @@ function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, rel
     for i= 1:iter
         filled_img[caverns] .= false
 
-        sim = TortuositySimulation(filled_img; axis=axis, gpu=gpu)
+        sim = SteadyDiffusionProblem(filled_img; axis=axis, gpu=gpu)
         #scale 'flux' to be resolution independent, maybe better if this could be applied as boundary condition directly
-        C  = N.*vec_to_grid(solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=reltol).u, filled_img)
+        C  = N.*reconstruct_field(solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=reltol).u, filled_img)
 
-        #C is always on CPU from vec_to_grid, but this shouldn't be a bottleneck
+        #C is always on CPU from reconstruct_field, but this shouldn't be a bottleneck
         flux = flux_out(C, filled_img)
 
         caverns[(log10.(flux) .< vmin) .& filled_img] .= true

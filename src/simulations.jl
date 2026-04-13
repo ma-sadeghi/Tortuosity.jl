@@ -37,7 +37,7 @@ function interpolate_edge_values(node_vals, conns)
 end
 
 """
-    TortuositySimulation{A}
+    SteadyDiffusionProblem{A}
 
 Holds the data for a steady-state diffusion problem on a binary pore image.
 
@@ -46,22 +46,22 @@ Holds the data for a steady-state diffusion problem on a binary pore image.
 - `axis::Symbol`: transport direction (`:x`, `:y`, or `:z`).
 - `prob::LinearProblem`: the assembled linear system ready for `solve(sim.prob, alg)`.
 """
-struct TortuositySimulation{A<:AbstractArray{Bool}}
+struct SteadyDiffusionProblem{A<:AbstractArray{Bool}}
     img::A
     axis::Symbol
     prob::LinearProblem
 end
 
-function Base.show(io::IO, ts::TortuositySimulation)
+function Base.show(io::IO, ts::SteadyDiffusionProblem)
     gpu = _on_gpu(ts.prob.b)
-    msg = "TortuositySimulation(shape=$(size(ts.img)), axis=$(ts.axis), gpu=$(gpu))"
+    msg = "SteadyDiffusionProblem(shape=$(size(ts.img)), axis=$(ts.axis), gpu=$(gpu))"
     return print(io, msg)
 end
 
 """
-    TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
+    SteadyDiffusionProblem(img; axis, D=nothing, gpu=nothing, verbose=false)
 
-Construct a `TortuositySimulation` for steady-state diffusion on a binary pore
+Construct a `SteadyDiffusionProblem` for steady-state diffusion on a binary pore
 image. Builds the graph Laplacian, applies Dirichlet boundary conditions
 (`c = 1` at inlet, `c = 0` at outlet), and returns a ready-to-solve `LinearProblem`.
 
@@ -77,7 +77,7 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
   voxels). See [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
 - `verbose`: print progress messages. Default: `false`.
 """
-function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
+function SteadyDiffusionProblem(img; axis, D=nothing, gpu=nothing, verbose=false)
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
     @assert img isa AbstractArray{Bool} "Image must be a boolean array"
@@ -154,5 +154,5 @@ function TortuositySimulation(img; axis, D=nothing, gpu=nothing, verbose=false)
     end
     apply_dirichlet_bc_fast!(A, b; nodes=bc_nodes, vals=bc_vals)
 
-    return TortuositySimulation(img, axis, LinearProblem(A, b))
+    return SteadyDiffusionProblem(img, axis, LinearProblem(A, b))
 end

@@ -22,7 +22,7 @@ Pkg.add("Tortuosity")
 
 ```julia
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
+using Tortuosity: tortuosity, reconstruct_field
 
 USE_GPU = false
 
@@ -31,13 +31,13 @@ img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2
 img = Imaginator.trim_nonpercolating_paths(img, axis=:x)
 
 # Define the simulation
-sim = TortuositySimulation(img; axis=:x, gpu=USE_GPU);
+sim = SteadyDiffusionProblem(img; axis=:x, gpu=USE_GPU);
 
 # Solve the system of equations
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 
 # Convert the solution vector to an Nd grid
-c = vec_to_grid(sol.u, img)
+c = reconstruct_field(sol.u, img)
 # Compute the tortuosity factor
 τ = tortuosity(c; axis=:x)
 println("τ = $τ")

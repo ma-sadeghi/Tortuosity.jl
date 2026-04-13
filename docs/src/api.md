@@ -9,14 +9,14 @@ For how to enable a GPU backend, see [GPU backends](@ref).
 ## Types
 
 ```@docs
-TortuositySimulation
-TransientProblem
+SteadyDiffusionProblem
+TransientDiffusionProblem
 TransientState
 ```
 
 ## Steady-state solvers and analysis
 
-The linear system assembled by [`TortuositySimulation`](@ref) is a standard
+The linear system assembled by [`SteadyDiffusionProblem`](@ref) is a standard
 [LinearSolve.jl](https://docs.sciml.ai/LinearSolve/) `LinearProblem`, so the
 `solve` function and any compatible algorithm from that package apply. For
 diffusion Laplacians the Krylov conjugate-gradient method
@@ -33,7 +33,7 @@ helpers derive the usual transport descriptors.
 tortuosity
 effective_diffusivity
 formation_factor
-vec_to_grid
+reconstruct_field
 ```
 
 ## Transient solver
@@ -50,7 +50,7 @@ package ships four built-in constructors:
 
 ```@docs
 stop_at_time
-stop_at_delta_flux
+stop_at_flux_balance
 stop_at_avg_concentration
 stop_at_periodic
 ```
@@ -58,9 +58,9 @@ stop_at_periodic
 ## Measurements on transient fields
 
 ```@docs
-compute_flux
-get_slice_conc
-compute_mass_uptake
+flux
+slice_concentration
+mass_uptake
 ```
 
 ## Fitting

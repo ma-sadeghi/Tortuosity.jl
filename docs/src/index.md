@@ -22,9 +22,9 @@ using Tortuosity
 
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 img = Imaginator.trim_nonpercolating_paths(img, axis=:x)
-sim = TortuositySimulation(img; axis=:x, gpu=false)
+sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5)
-τ = tortuosity(vec_to_grid(sol.u, img), img; axis=:x)
+τ = tortuosity(reconstruct_field(sol.u, img), img; axis=:x)
 println("τ = $τ")
 ```
 
@@ -44,10 +44,10 @@ To activate a backend, load the corresponding package **before** constructing a 
 using CUDA      # or: using Metal  / using AMDGPU
 using Tortuosity
 
-sim = TortuositySimulation(img; axis=:x)     # auto-detects the loaded backend
+sim = SteadyDiffusionProblem(img; axis=:x)     # auto-detects the loaded backend
 ```
 
-The `gpu` keyword of [`TortuositySimulation`](@ref) and [`TransientProblem`](@ref) controls whether solver kernels run on GPU:
+The `gpu` keyword of [`SteadyDiffusionProblem`](@ref) and [`TransientDiffusionProblem`](@ref) controls whether solver kernels run on GPU:
 
 - **`gpu=nothing`** (default) — auto-detect. Uses GPU when a backend package is loaded *and* the image has at least 100,000 pore voxels; otherwise runs on CPU. If you pass a large image but have not loaded a backend package, you'll see a one-time `@info` message pointing back to this section.
 - **`gpu=true`** — force GPU. Errors immediately if no backend is loaded.

@@ -28,8 +28,8 @@ using CUDA
 using Tortuosity:
     Tortuosity,
     PortableSparseCSC,
-    TortuositySimulation,
-    TransientProblem,
+    SteadyDiffusionProblem,
+    TransientDiffusionProblem,
     create_connectivity_list,
     create_adjacency_matrix,
     laplacian,
@@ -222,14 +222,14 @@ end
 
 _setup_solve_steady(f) = let
     A_old, b_old = OldBaseline.tortuosity_simulation_old(f.img_gpu)
-    ts_new = TortuositySimulation(f.img_gpu; axis=:x, gpu=true)
+    ts_new = SteadyDiffusionProblem(f.img_gpu; axis=:x, gpu=true)
     prob_old = LinearProblem(A_old, b_old)
     (; prob_old, prob_new = ts_new.prob)
 end
 
 _setup_solve_transient(f) = let
     prob_old = OldBaseline.transient_problem_old(f.img_cpu, 0.01; axis=:z, dtype=Float32)
-    prob_new = TransientProblem(f.img_cpu, 0.01; axis=:z, dtype=Float32, gpu=true)
+    prob_new = TransientDiffusionProblem(f.img_cpu, 0.01; axis=:z, dtype=Float32, gpu=true)
     state_old = OldBaseline.init_state_old(prob_old)
     state_new = init_state(prob_new)
     (; prob_old, prob_new, state_old, state_new)
@@ -309,18 +309,18 @@ const OPERATIONS = Op[
        new = (s, f) -> apply_dirichlet_bc_fast!(s.L_new, s.b_new; nodes=f.bc_nodes, vals=s.bc_vals)),
 
     # ---------- Integration / workflow ----------
-    Op("TortuositySimulation", :integration;
+    Op("SteadyDiffusionProblem", :integration;
        old = (s, f) -> OldBaseline.tortuosity_simulation_old(f.img_gpu),
-       new = (s, f) -> TortuositySimulation(f.img_gpu; axis=:x, gpu=true)),
+       new = (s, f) -> SteadyDiffusionProblem(f.img_gpu; axis=:x, gpu=true)),
 
     Op("solve (steady-state Krylov)", :integration;
        setup = _setup_solve_steady,
        old = (s, f) -> solve(s.prob_old, KrylovJL_CG(); reltol=1e-6),
        new = (s, f) -> solve(s.prob_new, KrylovJL_CG(); reltol=1e-6)),
 
-    Op("TransientProblem", :integration;
+    Op("TransientDiffusionProblem", :integration;
        old = (s, f) -> OldBaseline.transient_problem_old(f.img_cpu, 0.01; axis=:z, dtype=Float32),
-       new = (s, f) -> TransientProblem(f.img_cpu, 0.01; axis=:z, dtype=Float32, gpu=true)),
+       new = (s, f) -> TransientDiffusionProblem(f.img_cpu, 0.01; axis=:z, dtype=Float32, gpu=true)),
 
     Op("solve! (transient, 5 dt-steps)", :integration;
        setup = _setup_solve_transient,

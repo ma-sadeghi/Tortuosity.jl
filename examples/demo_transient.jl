@@ -4,7 +4,7 @@
 using Plots
 using Printf
 using Tortuosity
-using Tortuosity: Imaginator, stop_at_delta_flux, fit_effective_diffusivity
+using Tortuosity: Imaginator, stop_at_flux_balance, fit_effective_diffusivity
 
 PLOT = true
 USE_GPU = false
@@ -22,9 +22,9 @@ PLOT && display(heatmap(img[:, :, shape[3] ÷ 2]; aspect_ratio=:equal, clim=(0, 
 
 dt = 0.1
 
-problem = TransientProblem(img, dt; axis=:x, gpu=USE_GPU, bc_inlet=1, bc_outlet=0)
+problem = TransientDiffusionProblem(img, dt; axis=:x, gpu=USE_GPU, bc_inlet=1, bc_outlet=0)
 sim = init_state(problem);
-stop_condition = stop_at_delta_flux(1.0, problem)
+stop_condition = stop_at_flux_balance(1.0, problem)
 @time solve!(sim, problem, stop_condition)
 
 # %%

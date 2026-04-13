@@ -2,7 +2,7 @@ using JLD2
 using Statistics
 using Test
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
+using Tortuosity: tortuosity, reconstruct_field
 using Tortuosity.Imaginator: phase_fraction
 
 # ---------------------------------------- #
@@ -46,22 +46,22 @@ D[img] .= 1.0               # Fluid phase
 D[.!img] .= 1e-4            # Solid phase
 
 @testset "Blobs 3D, $(ax)-axis" for ax in (:x, :y, :z)
-    sim = TortuositySimulation(img; axis=ax, gpu=false)
+    sim = SteadyDiffusionProblem(img; axis=ax, gpu=false)
     sol = solve(sim.prob, KrylovJL_CG(); reltol=1e-6)
     c̄ = mean(sol.u)
     @test c̄ ≈ c̄_gt[ax] atol = 1e-4
-    c_grid = vec_to_grid(sol.u, img)
+    c_grid = reconstruct_field(sol.u, img)
     tau = tortuosity(c_grid, img; axis=ax)
     @test tau ≈ tau_gt[ax] atol = 1e-4
 end
 
 @testset "Blobs 3D, variable diffusivity, $(ax)-axis" for ax in (:x, :y, :z)
     domain = ones(Bool, size(img))
-    sim = TortuositySimulation(domain; axis=ax, gpu=false, D=D)
+    sim = SteadyDiffusionProblem(domain; axis=ax, gpu=false, D=D)
     sol = solve(sim.prob, KrylovJL_CG(); reltol=1e-6)
     c̄ = mean(sol.u[img[:]])
     @test c̄ ≈ c̄_gt[ax] atol = 1e-2
-    c_grid = vec_to_grid(sol.u, domain)
+    c_grid = reconstruct_field(sol.u, domain)
     tau = tortuosity(c_grid, domain; axis=ax, ε=ε, D=D)
     @test tau ≈ tau_gt[ax] atol = 1e-2
 end

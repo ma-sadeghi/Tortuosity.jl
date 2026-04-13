@@ -39,10 +39,10 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"img-ss.svg"))><figcaption>Bi
 
 ## Step 2: Set up the simulation
 
-`TortuositySimulation` discretizes the Laplacian on the pore space and builds a linear system $Ax = b$ with Dirichlet boundary conditions ($c = 1$ at the inlet, $c = 0$ at the outlet).
+`SteadyDiffusionProblem` discretizes the Laplacian on the pore space and builds a linear system $Ax = b$ with Dirichlet boundary conditions ($c = 1$ at the inlet, $c = 0$ at the outlet).
 
 ```@example steady
-sim = TortuositySimulation(img; axis=:x, gpu=false)
+sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
 ```
 
 Key parameters:
@@ -63,10 +63,10 @@ nothing # hide
 
 ## Step 4: Extract results
 
-The solution `sol.u` is a 1D vector containing concentrations at pore voxels only (solid voxels are excluded to save memory). Use `vec_to_grid` to reconstruct the full 3D concentration field, with `NaN` for solid voxels.
+The solution `sol.u` is a 1D vector containing concentrations at pore voxels only (solid voxels are excluded to save memory). Use `reconstruct_field` to reconstruct the full 3D concentration field, with `NaN` for solid voxels.
 
 ```@example steady
-c = vec_to_grid(sol.u, img)
+c = reconstruct_field(sol.u, img)
 
 heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1), title="Concentration field")
 savefig("c-ss.svg"); nothing # hide

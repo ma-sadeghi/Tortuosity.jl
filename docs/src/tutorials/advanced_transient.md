@@ -9,7 +9,7 @@ The transient `solve!` function accepts any function with signature `f(t_hist, C
 | Constructor | Stops when... | Typical use case |
 |-------------|--------------|------------------|
 | `stop_at_time(t)` | Simulation time reaches `t` | Fixed-duration runs |
-| `stop_at_delta_flux(delta, prob)` | Inlet–outlet flux difference ≤ `delta` | Steady-state detection |
+| `stop_at_flux_balance(delta, prob)` | Inlet–outlet flux difference ≤ `delta` | Steady-state detection |
 | `stop_at_avg_concentration(c, prob)` | Mean pore concentration reaches `c` | Insulated-outlet saturation |
 | `stop_at_periodic(freq, prob; reltol=1e-2, ...)` | Periodic steady state detected | Oscillating boundary conditions |
 
@@ -43,7 +43,7 @@ img = Imaginator.blobs(; shape=(64, 64, 32), porosity=0.4, blobiness=0.5, seed=3
 img = Imaginator.trim_nonpercolating_paths(img; axis=:z)
 
 # C=1 at inlet, insulated at outlet — concentration fills the pore space over time
-prob = TransientProblem(img, 0.1; bc_inlet=1, bc_outlet=nothing, axis=:z, gpu=false)
+prob = TransientDiffusionProblem(img, 0.1; bc_inlet=1, bc_outlet=nothing, axis=:z, gpu=false)
 sim = init_state(prob)
 
 solve!(sim, prob, stop_at_avg_concentration(0.98, prob))
@@ -69,7 +69,7 @@ Key parameters of `fit_voxel_diffusivity`:
 
 ## Time-dependent boundaries
 
-`TransientProblem` supports boundary conditions that are functions of time. Two common use cases:
+`TransientDiffusionProblem` supports boundary conditions that are functions of time. Two common use cases:
 
 **Smoother startup** — ramp the boundary to reduce numerical error from the large initial concentration jump.
 
@@ -88,7 +88,7 @@ T = 1 / freq
 dt = T / 30  # ~30 snapshots per period
 
 # Sine wave inlet (0 to 1), insulated outlet
-prob = TransientProblem(img, dt;
+prob = TransientDiffusionProblem(img, dt;
     bc_inlet = t -> (sin(2π * freq * t) + 1) / 2,
     bc_outlet = nothing, axis=:z, gpu=false
 )
@@ -104,7 +104,7 @@ solve!(sim, prob, stop_at_time(sim.t[end] + T))
 # Animate the last period
 start_ind = searchsortedfirst(sim.t, sim.t[end] - T)
 anim = @animate for k in start_ind:length(sim.t)
-    C_grid = vec_to_grid(sim.C[k], img)
+    C_grid = reconstruct_field(sim.C[k], img)
     plot(range(0, 1, N), C_grid[:, 1, :][1, :],
         title = "Sine Wave Inlet — Periodic Steady State",
         ylim = (0, 1), legend = false,

@@ -539,11 +539,11 @@ function transient_problem_old(
     g2v = Tortuosity.grid_to_vec(img)
     A = build_transient_operator_old(img, D, bc_inlet, bc_outlet; axis=axis, dx=dx)
 
-    return Tortuosity.TransientProblem(dx, dt, D, img, g2v, axis, bc_inlet, bc_outlet, A)
+    return Tortuosity.TransientDiffusionProblem(dx, dt, D, img, g2v, axis, bc_inlet, bc_outlet, A)
 end
 
 function init_state_old(
-    prob::Tortuosity.TransientProblem{T}; C0=nothing, alg=ROCK4(),
+    prob::Tortuosity.TransientDiffusionProblem{T}; C0=nothing, alg=ROCK4(),
     reltol=1e-3, abstol=1e-6,
 ) where {T}
     if C0 === nothing

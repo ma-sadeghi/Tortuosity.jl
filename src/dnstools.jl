@@ -33,7 +33,7 @@ function effective_diffusivity(c, img; axis, ind=1, D=1.0, dx=1.0, L=nothing, Δ
     N = size(img, ax)
     L = isnothing(L) ? (N - 1) * dx : L
     Δc = isnothing(Δc) ? nanmean(selectdim(c, ax, 1)) - nanmean(selectdim(c, ax, N)) : Δc
-    J = compute_flux(c, D, dx, img, axis; ind=ind)
+    J = flux(c, D, dx, img, axis; ind=ind)
     return J * L / Δc
 end
 
