@@ -85,7 +85,7 @@ function TransientProblem(
 )
     img = atleast_3d(img)
     # Struct holds `img` on CPU; copy back from GPU if the caller passed a
-    # device array (same convention as TortuositySimulation).
+    # device array (same convention as SteadyDiffusionProblem).
     if _on_gpu(img)
         @warn "`img` was passed on GPU; copying to CPU so the struct holds a CPU mask. \
                Pass `gpu=true` if you want the solver kernels to run on GPU." maxlog = 1
@@ -101,7 +101,7 @@ function TransientProblem(
 
     nnodes = count(img)
     @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
-    # Auto-detect GPU: see the matching block in TortuositySimulation for the
+    # Auto-detect GPU: see the matching block in SteadyDiffusionProblem for the
     # rationale behind the one-time warning on silent CPU fallback.
     if isnothing(gpu)
         has_backend = !isnothing(_preferred_gpu_backend[])
@@ -198,7 +198,7 @@ of whether the solver runs on GPU.
 - `prob`: the `TransientProblem` matching `state`.
 - `stop_condition`: a function `(t_hist, C_hist) -> Bool`. Built-in options include
   [`stop_at_time`](@ref), [`stop_at_avg_concentration`](@ref), and
-  [`stop_at_delta_flux`](@ref). Note that `C_hist` entries are 1D pore-voxel vectors.
+  [`stop_at_flux_balance`](@ref). Note that `C_hist` entries are 1D pore-voxel vectors.
 
 # Keyword Arguments
 - `max_iter`: maximum number of `dt`-sized steps before stopping. Defaults to `500`.
@@ -318,9 +318,23 @@ function make_dC_function(prob)
     in_is_func = prob.bc_inlet isa Function
     out_is_func = prob.bc_outlet isa Function
 
-    inlet_inds = slice_vec_indices(prob, 1)
+    inlet_inds_host = slice_vec_indices(prob, 1)
     N_axis = size(prob.img, axis_dim(prob.axis))
-    outlet_inds = slice_vec_indices(prob, N_axis)
+    outlet_inds_host = slice_vec_indices(prob, N_axis)
+
+    # When A is on GPU and the BC is time-varying, the closure scatter
+    # `C[inds] .= value` mixes a GPU `C` with CPU `inds`, which forces an
+    # implicit H2D copy of the index vector on every ODE step. Move the
+    # indices onto the device once at construction time instead. The
+    # constant-BC fast path never touches the indices and is unaffected.
+    gpu = prob.A isa PortableSparseCSC
+    to_device = v -> begin
+        d = similar(prob.A.rowval, eltype(v), length(v))
+        copyto!(d, v)
+        d
+    end
+    inlet_inds = (gpu && in_is_func) ? to_device(inlet_inds_host) : inlet_inds_host
+    outlet_inds = (gpu && out_is_func) ? to_device(outlet_inds_host) : outlet_inds_host
 
     T = eltype(nonzeros(prob.A))
 
@@ -372,17 +386,17 @@ function stop_at_avg_concentration(C_final, problem::TransientProblem)
 end
 
 """
-    stop_at_delta_flux(delta, prob::TransientProblem)
+    stop_at_flux_balance(delta, prob::TransientProblem)
 
 Create a stop condition that returns `true` when the absolute difference between
 inlet and outlet flux falls at or below `delta`. A smaller `delta` drives the
 simulation closer to steady state before stopping.
 """
-function stop_at_delta_flux(delta, prob::TransientProblem)
+function stop_at_flux_balance(delta, prob::TransientProblem)
     D, dx, img, axis, g2v = prob.D, prob.dx, prob.img, prob.axis, prob.grid_to_vec
     return (t_hist, C_hist) ->
-        abs(compute_flux(C_hist[end], D, dx, img, axis; ind=:end, grid_to_vec=g2v) -
-            compute_flux(C_hist[end], D, dx, img, axis; ind=1, grid_to_vec=g2v)) <= delta
+        abs(flux(C_hist[end], D, dx, img, axis; ind=:end, grid_to_vec=g2v) -
+            flux(C_hist[end], D, dx, img, axis; ind=1, grid_to_vec=g2v)) <= delta
 end
 
 """
@@ -439,7 +453,7 @@ function stop_at_periodic(
 
     return (t_hist, C_hist) -> begin
         t_end = t_hist[end]
-        push!(slice_hist, get_slice_conc(C_hist[end], img, axis, depth_ind; grid_to_vec=g2v))
+        push!(slice_hist, slice_concentration(C_hist[end], img, axis, depth_ind; grid_to_vec=g2v))
 
         tmin = t_end - (1 + frac_period) * period
         if tmin < 0

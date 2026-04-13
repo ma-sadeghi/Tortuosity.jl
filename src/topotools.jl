@@ -234,19 +234,38 @@ Operates on CPU; call before transferring `img` to GPU.
 function find_boundary_nodes(img, face)
     # Transfer to CPU if on GPU (boundary detection is cheap, avoid GPU indexing issues)
     img_cpu = _on_gpu(img) ? Array(img) : img
-    nnodes = sum(img_cpu)
-    indices = fill(-1, size(img_cpu))
-    indices[img_cpu] .= 1:nnodes
+    nx, ny, nz = size(img_cpu)
 
-    face_dict = Dict(
-        :left => indices[1, :, :],
-        :right => indices[end, :, :],
-        :bottom => indices[:, :, 1],
-        :top => indices[:, :, end],
-        :front => indices[:, 1, :],
-        :back => indices[:, end, :],
-    )
+    dim, fidx = if face === :left
+        (1, 1)
+    elseif face === :right
+        (1, nx)
+    elseif face === :front
+        (2, 1)
+    elseif face === :back
+        (2, ny)
+    elseif face === :bottom
+        (3, 1)
+    elseif face === :top
+        (3, nz)
+    else
+        error("unknown face :$face")
+    end
 
-    nodes = face_dict[face][:]
-    return nodes[nodes .> 0]
+    # Single column-major walk: track the running pore-voxel ordinal and record it
+    # whenever the current cell sits on the target face. The previous implementation
+    # allocated a full `Int` array the size of `img` plus a `Dict` of 6 slice copies,
+    # which dominated transient setup at large sizes (see design.md).
+    nodes = Int[]
+    ordinal = 0
+    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
+        if img_cpu[i, j, k]
+            ordinal += 1
+            on_face = (dim == 1 && i == fidx) ||
+                      (dim == 2 && j == fidx) ||
+                      (dim == 3 && k == fidx)
+            on_face && push!(nodes, ordinal)
+        end
+    end
+    return nodes
 end
