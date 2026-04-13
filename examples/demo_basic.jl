@@ -4,7 +4,7 @@
 using Plots
 using Printf
 using Tortuosity
-using Tortuosity: Imaginator, TortuositySimulation, tortuosity, vec_to_grid
+using Tortuosity: Imaginator, SteadyDiffusionProblem, tortuosity, reconstruct_field
 
 PLOT = false
 USE_GPU = true
@@ -20,13 +20,13 @@ PLOT && display(heatmap(img[:, :, shape[3] ÷ 2]; aspect_ratio=:equal, clim=(0, 
 # %%
 # Build Ax = b on CPU/GPU and solve the system
 
-sim = TortuositySimulation(img; axis=:x, gpu=USE_GPU);
+sim = SteadyDiffusionProblem(img; axis=:x, gpu=USE_GPU);
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 
 # %%
 # Compute the tortuosity factor and visualize the solution
 
-c = vec_to_grid(sol.u, img);
+c = reconstruct_field(sol.u, img);
 τ = tortuosity(c, img; axis=:x);
 @info "τ: $(@sprintf("%.5f", τ))"
 PLOT && display(heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)));

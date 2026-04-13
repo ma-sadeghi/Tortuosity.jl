@@ -4,7 +4,7 @@
 (constant Dirichlet), or `Function` (time-dependent Dirichlet)."""
 const BoundValue = Union{Nothing, Number, Function}
 
-struct TransientProblem{T,DType,MatType<:AbstractMatrix{T}}
+struct TransientDiffusionProblem{T,DType,MatType<:AbstractMatrix{T}}
     dx::Float64
     dt::Float64
     D::DType
@@ -35,10 +35,10 @@ struct TransientState{T,I}
 end
 
 """
-    TransientProblem(img, dt; axis=:z, bc_inlet=1, bc_outlet=0,
+    TransientDiffusionProblem(img, dt; axis=:z, bc_inlet=1, bc_outlet=0,
                      D=1.0, dx=nothing, dtype=Float32, gpu=nothing)
 
-Construct a `TransientProblem` describing transient diffusion through a
+Construct a `TransientDiffusionProblem` describing transient diffusion through a
 3D voxelized porous material. The input `img` defines which voxels are
 pore space (nonzero) and which are solid (zero). A finite‑difference
 operator is built on this mask, with Dirichlet or insulated boundary
@@ -72,7 +72,7 @@ conditions applied along one axis.
          ≥100,000 pore voxels. See [GPU backends](@ref) for how to activate
          CUDA, Metal, or AMDGPU.
 """
-function TransientProblem(
+function TransientDiffusionProblem(
     img,
     dt;
     axis::Symbol=:z,
@@ -124,7 +124,7 @@ function TransientProblem(
     g2v = grid_to_vec(img)
     A = build_transient_operator(img, D, bc_inlet, bc_outlet; axis=axis, dx=dx, gpu=gpu)
 
-    return TransientProblem(dx, dt, D, img, g2v, axis, bc_inlet, bc_outlet, A)
+    return TransientDiffusionProblem(dx, dt, D, img, g2v, axis, bc_inlet, bc_outlet, A)
 end
 
 function _validate_bc(bc, dtype, name)
@@ -140,10 +140,10 @@ function _validate_bc(bc, dtype, name)
 end
 
 """
-    init_state(prob::TransientProblem; C0=nothing, alg=ROCK4(),
+    init_state(prob::TransientDiffusionProblem; C0=nothing, alg=ROCK4(),
                reltol=1e-3, abstol=1e-6)
 
-Initialize a `TransientState` for the given `TransientProblem`, applying boundary
+Initialize a `TransientState` for the given `TransientDiffusionProblem`, applying boundary
 conditions to `C0` and setting up the ODE integrator.
 
 # Keyword Arguments
@@ -154,7 +154,7 @@ conditions to `C0` and setting up the ODE integrator.
 - `abstol`: absolute tolerance for the ODE solver. Defaults to `1e-6`.
 """
 function init_state(
-    prob::TransientProblem{T}; C0=nothing, alg=ROCK4(), reltol=1e-3, abstol=1e-6
+    prob::TransientDiffusionProblem{T}; C0=nothing, alg=ROCK4(), reltol=1e-3, abstol=1e-6
 ) where {T}
     if C0 === nothing
         C0 = zeros(T, size(prob.img))
@@ -186,7 +186,7 @@ function init_state(
 end
 
 """
-    solve!(state::TransientState, prob::TransientProblem, stop_condition;
+    solve!(state::TransientState, prob::TransientDiffusionProblem, stop_condition;
            max_iter=500, verbose=false)
 
 Step the simulation forward by increments of `prob.dt` until `stop_condition(t_hist, C_hist)`
@@ -195,7 +195,7 @@ of whether the solver runs on GPU.
 
 # Arguments
 - `state`: a `TransientState` from [`init_state`](@ref).
-- `prob`: the `TransientProblem` matching `state`.
+- `prob`: the `TransientDiffusionProblem` matching `state`.
 - `stop_condition`: a function `(t_hist, C_hist) -> Bool`. Built-in options include
   [`stop_at_time`](@ref), [`stop_at_avg_concentration`](@ref), and
   [`stop_at_flux_balance`](@ref). Note that `C_hist` entries are 1D pore-voxel vectors.
@@ -206,7 +206,7 @@ of whether the solver runs on GPU.
 """
 function solve!(
     state::TransientState,
-    prob::TransientProblem,
+    prob::TransientDiffusionProblem,
     stop_condition;
     max_iter=500,
     verbose=false,
@@ -284,7 +284,7 @@ function zero_rows!(A::SparseMatrixCSC, rows)
 end
 
 """
-    apply_boundaries!(C0, prob::TransientProblem)
+    apply_boundaries!(C0, prob::TransientDiffusionProblem)
 
 Set Dirichlet boundary values on the faces of `C0` along `prob.axis`. Each face
 whose boundary condition is not `nothing` is overwritten with that value. For
@@ -307,7 +307,7 @@ function apply_boundaries!(C0, prob)
 end
 
 """
-    make_dC_function(prob::TransientProblem)
+    make_dC_function(prob::TransientDiffusionProblem)
 
 Build the ODE right-hand side `dC!(dC, C, p, t)`. For problems with
 time-dependent (Function) boundaries, the closure updates boundary node
@@ -381,18 +381,18 @@ function stop_at_avg_concentration(C_final, img)
     num_active = sum(img)
     return (t_hist, C_hist) -> sum(C_hist[end]) / num_active >= C_final
 end
-function stop_at_avg_concentration(C_final, problem::TransientProblem)
+function stop_at_avg_concentration(C_final, problem::TransientDiffusionProblem)
     return stop_at_avg_concentration(C_final, problem.img)
 end
 
 """
-    stop_at_flux_balance(delta, prob::TransientProblem)
+    stop_at_flux_balance(delta, prob::TransientDiffusionProblem)
 
 Create a stop condition that returns `true` when the absolute difference between
 inlet and outlet flux falls at or below `delta`. A smaller `delta` drives the
 simulation closer to steady state before stopping.
 """
-function stop_at_flux_balance(delta, prob::TransientProblem)
+function stop_at_flux_balance(delta, prob::TransientDiffusionProblem)
     D, dx, img, axis, g2v = prob.D, prob.dx, prob.img, prob.axis, prob.grid_to_vec
     return (t_hist, C_hist) ->
         abs(flux(C_hist[end], D, dx, img, axis; ind=:end, grid_to_vec=g2v) -
@@ -414,7 +414,7 @@ period matches the previous period within `reltol` scaled by the amplitude.
 
 # Arguments
 - `freq`: driving frequency (Hz).
-- `prob`: `TransientProblem` defining geometry and slice axis.
+- `prob`: `TransientDiffusionProblem` defining geometry and slice axis.
 
 # Keyword Arguments
 - `reltol`: relative tolerance for periodicity (default `1e-2`).
@@ -423,7 +423,7 @@ period matches the previous period within `reltol` scaled by the amplitude.
 - `depth`: normalized depth in `(0,1]` at which concentration is evaluated.
 """
 function stop_at_periodic(
-    freq, prob::TransientProblem;
+    freq, prob::TransientDiffusionProblem;
     reltol=1e-2, Nphase::Int=4, frac_period=0.3, depth=1.0,
 )
     @assert 0 < frac_period <= 1 "frac_period must be in (0, 1]."
@@ -481,10 +481,10 @@ function stop_at_periodic(
     end
 end
 
-# Convenience wrappers that unpack TransientProblem fields
-function slice_vec_indices(prob::TransientProblem, idx::Int)
+# Convenience wrappers that unpack TransientDiffusionProblem fields
+function slice_vec_indices(prob::TransientDiffusionProblem, idx::Int)
     return slice_vec_indices(prob.img, prob.grid_to_vec, prob.axis, idx)
 end
-function vec_to_slice(u, prob::TransientProblem, idx::Int)
+function vec_to_slice(u, prob::TransientDiffusionProblem, idx::Int)
     return vec_to_slice(u, prob.img, prob.grid_to_vec, prob.axis, idx)
 end

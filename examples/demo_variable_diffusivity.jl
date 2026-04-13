@@ -4,7 +4,7 @@
 using Plots
 using Printf
 using Tortuosity
-using Tortuosity: tortuosity, vec_to_grid
+using Tortuosity: tortuosity, reconstruct_field
 using HDF5
 
 PLOT = false
@@ -34,7 +34,7 @@ domain = D .> 0             # Define domain as only-conducting voxels
 # Build Ax = b on CPU/GPU and solve the system of equations
 
 @info "Setting up τ simulation (assembling Ax = b)"
-sim = TortuositySimulation(domain; axis=:x, D=D, gpu=USE_GPU);
+sim = SteadyDiffusionProblem(domain; axis=:x, D=D, gpu=USE_GPU);
 @info "Solving the system of equations"
 sol = solve(sim.prob, KrylovJL_CG())
 @info "Average concentration: $(mean(sol.u))"
@@ -42,7 +42,7 @@ sol = solve(sim.prob, KrylovJL_CG())
 # %% ------------------------------------------------------
 # Compute the tortuosity factor and visualize the solution
 
-c = vec_to_grid(sol.u, domain)
+c = reconstruct_field(sol.u, domain)
 PLOT && display(heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)))
 tau = tortuosity(c, domain; axis=:x, D=D)
 @info "τ (variable diffusivity): $(@sprintf("%.5f", tau))"
@@ -50,9 +50,9 @@ tau = tortuosity(c, domain; axis=:x, D=D)
 # %% ------------------------------------------------------
 # Compare with the ground truth (solid is non-conducting)
 
-sim_gt = TortuositySimulation(img; axis=:x)
+sim_gt = SteadyDiffusionProblem(img; axis=:x)
 sol_gt = solve(sim_gt.prob, KrylovJL_CG())
-c_gt = vec_to_grid(sol_gt.u, img)
+c_gt = reconstruct_field(sol_gt.u, img)
 tau_gt = tortuosity(c_gt, img; axis=:x)
 PLOT && display(heatmap(c_gt[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)))
 @info "τ (ground truth): $(@sprintf("%.5f", tau_gt))"

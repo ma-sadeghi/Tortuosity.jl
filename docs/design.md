@@ -157,7 +157,7 @@ that range.
 
 ## 5. Float32 on GPU, Float64 on CPU
 
-**Decision.** `TortuositySimulation` and `TransientProblem` use
+**Decision.** `SteadyDiffusionProblem` and `TransientDiffusionProblem` use
 `Float32` for all arrays when `gpu=true` and `Float64` when `gpu=false`.
 
 **Rationale.** Inherited from the pre-refactor code intentionally:
@@ -242,8 +242,8 @@ test environment doesn't pull `BenchmarkTools` either.
 
 ## 8. `gpu=true` guards against silent CPU fallback
 
-**Decision.** `TortuositySimulation(...; gpu=true)` and
-`TransientProblem(...; gpu=true)` explicitly `error(...)` if no GPU backend
+**Decision.** `SteadyDiffusionProblem(...; gpu=true)` and
+`TransientDiffusionProblem(...; gpu=true)` explicitly `error(...)` if no GPU backend
 extension has been loaded.
 
 **Rationale.** Without this check, `gpu=true` silently falls back to CPU

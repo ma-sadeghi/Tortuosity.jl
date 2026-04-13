@@ -31,7 +31,7 @@ the effective diffusivity. If `prob.D` is a scalar field, `D_pore` is set
 to `mean(prob.D[img])`.
 """
 function fit_effective_diffusivity(
-    t, C, prob::TransientProblem, method::Symbol;
+    t, C, prob::TransientDiffusionProblem, method::Symbol;
     depth=0.5, t_fit=(0, t[end]), terms=100,
 )
     @assert !(prob.bc_inlet isa Function) "fit_effective_diffusivity does not support f(t) inlet boundary conditions."
@@ -63,14 +63,14 @@ function fit_effective_diffusivity(
         depth_idx = round(Int, 1 + depth * (N - 1))
         depth_actual = (depth_idx - 0.5) * prob.dx
 
-        ydata = get_slice_conc(
+        ydata = slice_concentration(
             C[idx_min:idx_max], prob.img, prob.axis, depth_idx;
             grid_to_vec=prob.grid_to_vec, pore_only=true,
         )
         model = (t, p) -> slab_concentration(p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms=terms)
 
     elseif method == :mass
-        ydata = (compute_mass_uptake(C[1:idx_max], prob.img))[idx_min:end]
+        ydata = (mass_uptake(C[1:idx_max], prob.img))[idx_min:end]
         model = (t, p) -> φ * (C1 + C2) / 2 .* slab_mass_uptake(p[1], t; C1=C1, C2=C2, L=L, terms=terms)
 
     elseif method == :flux
@@ -82,7 +82,7 @@ function fit_effective_diffusivity(
         end
         depth_actual = depth_idx * prob.dx
 
-        ydata = compute_flux(
+        ydata = flux(
             C[idx_min:idx_max], prob.D, prob.dx, prob.img, prob.axis;
             ind=depth_idx, grid_to_vec=prob.grid_to_vec,
         )
@@ -100,7 +100,7 @@ function fit_effective_diffusivity(
     return τ, D_eff, xdata, ydata, fit, model
 end
 function fit_effective_diffusivity(
-    sim::TransientState, prob::TransientProblem, method::Symbol;
+    sim::TransientState, prob::TransientDiffusionProblem, method::Symbol;
     depth=0.5, t_fit=(0, sim.t[end]), terms=100,
 )
     return fit_effective_diffusivity(
@@ -129,7 +129,7 @@ If `fit_depth == false`: `(tau_list, SE_tau_list, voxels)`
 If `fit_depth == true`: `(tau_list, x_list, SE_tau_list, SE_x_list, voxels)`
 """
 function fit_voxel_diffusivity(
-    sim::TransientState, prob::TransientProblem;
+    sim::TransientState, prob::TransientDiffusionProblem;
     depth=0.5, n_samples=200,
     t_fit=(0, sim.t[end]), terms=100,
     fit_depth::Bool=false,

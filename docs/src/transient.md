@@ -6,7 +6,7 @@ Porous features like dead-end channels and bottlenecks can produce transient beh
 
 ## Boundary condition types
 
-`TransientProblem` accepts the following boundary condition types for `bc_inlet` and `bc_outlet`:
+`TransientDiffusionProblem` accepts the following boundary condition types for `bc_inlet` and `bc_outlet`:
 
 | Type | Meaning | Example |
 |------|---------|---------|
@@ -30,25 +30,25 @@ img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2
 φ = Imaginator.phase_fraction(img, true)
 
 # Steady-state solution for reference tortuosity
-sim_ss = TortuositySimulation(img; axis=axis, gpu=USE_GPU);
+sim_ss = SteadyDiffusionProblem(img; axis=axis, gpu=USE_GPU);
 sol_ss = solve(sim_ss.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 
-C_ss = vec_to_grid(sol_ss.u, img)
+C_ss = reconstruct_field(sol_ss.u, img)
 τ_ss = tortuosity(C_ss, img; axis=:x)
 
 # Transient solution
 # dt is the snapshot interval (not the internal ODE timestep)
 dt = 0.05
 
-prob = TransientProblem(img, dt; bc_inlet=1, bc_outlet=0, axis=axis, gpu=USE_GPU)
+prob = TransientDiffusionProblem(img, dt; bc_inlet=1, bc_outlet=0, axis=axis, gpu=USE_GPU)
 sim = init_state(prob);
 
 # Stop when inlet and outlet fluxes converge (near steady state)
-stop_condition = stop_at_delta_flux(0.005, prob)
+stop_condition = stop_at_flux_balance(0.005, prob)
 solve!(sim, prob, stop_condition)
 
 # Outlet flux at each snapshot
-flux_out = map(C -> compute_flux(C, prob.D, prob.dx, prob.img, prob.axis; ind=:end, grid_to_vec=prob.grid_to_vec), sim.C)
+flux_out = map(C -> flux(C, prob.D, prob.dx, prob.img, prob.axis; ind=:end, grid_to_vec=prob.grid_to_vec), sim.C)
 
 # Analytical outlet flux for a homogeneous slab with D_eff = 1/τ_ss
 t_ana = range(0, 1.5*sim.t[end], 200)[2:end]
@@ -92,7 +92,7 @@ The transient `solve!()` function steps the `TransientState` forward in time, ap
 Built-in stop condition constructors:
 
 - **`stop_at_time(t)`** — stops once the solver reaches time `t`.
-- **`stop_at_delta_flux(delta, prob)`** — stops when the absolute difference between inlet and outlet flux falls below `delta`. Useful for detecting steady state under time-independent boundary conditions.
+- **`stop_at_flux_balance(delta, prob)`** — stops when the absolute difference between inlet and outlet flux falls below `delta`. Useful for detecting steady state under time-independent boundary conditions.
 - **`stop_at_avg_concentration(c, prob)`** — stops when the average pore concentration reaches `c`. For example, with `bc_inlet=1` and `bc_outlet=nothing`, stop at `c_avg=0.99`.
 - **`stop_at_periodic(freq, prob; reltol=1e-2, Nphase=4, frac_period=0.3, depth=1.0)`** — stops when `Nphase` phase points are within `reltol` of the previous period. Intended for problems with time-periodic boundary conditions.
 
@@ -121,7 +121,7 @@ img = Imaginator.trim_nonpercolating_paths(img; axis=axis)
 # Transient solution: C=1 at inlet, insulated at outlet
 dt = 0.1
 
-prob = TransientProblem(img, dt; bc_inlet=1, bc_outlet=nothing, axis=axis, gpu=USE_GPU)
+prob = TransientDiffusionProblem(img, dt; bc_inlet=1, bc_outlet=nothing, axis=axis, gpu=USE_GPU)
 sim = init_state(prob);
 
 stop_condition = stop_at_avg_concentration(0.98, prob)
@@ -150,7 +150,7 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"tortuosity_histogram.svg"))>
 
 ## Time-dependent boundary
 
-`TransientProblem` supports boundary conditions that are functions of time. This is useful for:
+`TransientDiffusionProblem` supports boundary conditions that are functions of time. This is useful for:
 
 - **Smoother startup** — ramp the boundary to reduce numerical error from large initial concentration gradients.
 - **Periodic probing** — a sine wave inlet at periodic steady state produces an outlet wave with decayed amplitude and phase offset, which can reveal dead-end channels and other structural features.
@@ -171,7 +171,7 @@ T = 1/freq
 dt = T/30  # ~30 snapshots per period
 
 # Sine wave inlet (varying from 0 to 1) with insulated outlet
-prob = TransientProblem(img, dt; bc_inlet=t -> (sin(2π*freq*t)+1)/2, bc_outlet=nothing, axis=axis, gpu=USE_GPU)
+prob = TransientDiffusionProblem(img, dt; bc_inlet=t -> (sin(2π*freq*t)+1)/2, bc_outlet=nothing, axis=axis, gpu=USE_GPU)
 # Initial condition at the time-averaged value of the BC (faster convergence to periodic steady state)
 sim = init_state(prob; C0=0.5 .* ones(size(img)))
 
@@ -188,7 +188,7 @@ using Plots
 
 start_ind = searchsortedfirst(sim.t, sim.t[end] - T)
 anim = @animate for k in start_ind:length(sim.t)
-    C_grid = vec_to_grid(sim.C[k], img)
+    C_grid = reconstruct_field(sim.C[k], img)
     plot(range(0, 1, N), C_grid[:, 1, :][1, :],
         title = "Concentration With Sine Wave Inlet",
         ylim = (0, 1), legend = false,

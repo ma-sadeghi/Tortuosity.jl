@@ -237,7 +237,7 @@ end
     end
 end
 
-@testset "TortuositySimulation end-to-end (assembled A, b)" begin
+@testset "SteadyDiffusionProblem end-to-end (assembled A, b)" begin
     for (label, img) in TEST_IMAGES
         nonempty(img) || continue
         any(img[1, :, :]) && any(img[end, :, :]) || continue
@@ -252,8 +252,8 @@ end
             continue
         end
 
-        # New pipeline returns a TortuositySimulation
-        ts_new = TortuositySimulation(cu_img; axis=:x, gpu=true)
+        # New pipeline returns a SteadyDiffusionProblem
+        ts_new = SteadyDiffusionProblem(cu_img; axis=:x, gpu=true)
 
         @test csc_equivalent(A_old, ts_new.prob.A; rtol=1e-4)
         @test isapprox(Array(b_old), Array(ts_new.prob.b); rtol=1e-4)

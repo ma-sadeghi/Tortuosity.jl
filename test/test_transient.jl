@@ -1,4 +1,4 @@
-# Tests for transient diffusion functionality via the TransientProblem public API
+# Tests for transient diffusion functionality via the TransientDiffusionProblem public API
 using Test
 using SparseArrays
 using LinearAlgebra: norm, tr
@@ -83,12 +83,12 @@ end
     @test (Q2 - Q1) ≈ 1.0 atol = 1e-4
 end
 
-# --- TransientProblem construction ---
+# --- TransientDiffusionProblem construction ---
 
 blob_8 = BitArray(Imaginator.blobs(; shape=(8, 8, 8), porosity=0.5, blobiness=1, seed=42))
 
-@testset "TransientProblem — default parameters" begin
-    prob = TransientProblem(blob_8, 0.1; gpu=false)
+@testset "TransientDiffusionProblem — default parameters" begin
+    prob = TransientDiffusionProblem(blob_8, 0.1; gpu=false)
     @test prob.axis == :z
     @test prob.bc_inlet == Float32(1)
     @test prob.bc_outlet == Float32(0)
@@ -96,21 +96,21 @@ blob_8 = BitArray(Imaginator.blobs(; shape=(8, 8, 8), porosity=0.5, blobiness=1,
     @test prob.dt == 0.1
 end
 
-@testset "TransientProblem — custom parameters" begin
-    prob = TransientProblem(blob_8, 0.05; axis=:x, bc_inlet=2, bc_outlet=0, D=0.5, dtype=Float64, gpu=false)
+@testset "TransientDiffusionProblem — custom parameters" begin
+    prob = TransientDiffusionProblem(blob_8, 0.05; axis=:x, bc_inlet=2, bc_outlet=0, D=0.5, dtype=Float64, gpu=false)
     @test prob.axis == :x
     @test prob.bc_inlet == 2.0
     @test prob.D == 0.5
 end
 
-@testset "TransientProblem — insulated outlet" begin
-    prob = TransientProblem(blob_8, 0.1; bc_inlet=1, bc_outlet=nothing, gpu=false)
+@testset "TransientDiffusionProblem — insulated outlet" begin
+    prob = TransientDiffusionProblem(blob_8, 0.1; bc_inlet=1, bc_outlet=nothing, gpu=false)
     @test isnothing(prob.bc_outlet)
 end
 
-@testset "TransientProblem — time-dependent boundary" begin
+@testset "TransientDiffusionProblem — time-dependent boundary" begin
     f_inlet = t -> sin(2π * t)
-    prob = TransientProblem(blob_8, 0.1; bc_inlet=f_inlet, bc_outlet=0, gpu=false)
+    prob = TransientDiffusionProblem(blob_8, 0.1; bc_inlet=f_inlet, bc_outlet=0, gpu=false)
     @test prob.bc_inlet isa Function
     @test prob.bc_outlet == Float32(0)
 end
@@ -119,7 +119,7 @@ end
 
 @testset "Operator — Dirichlet rows are zeroed" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
     A = prob.A
     bc_nodes = Tortuosity.find_boundary_nodes(prob.img, :bottom)
     append!(bc_nodes, Tortuosity.find_boundary_nodes(prob.img, :top))
@@ -130,7 +130,7 @@ end
 
 @testset "Operator — insulated boundary rows are NOT zeroed" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
     A = prob.A
     outlet_nodes = Tortuosity.find_boundary_nodes(prob.img, :top)
     for node in outlet_nodes
@@ -142,7 +142,7 @@ end
 
 @testset "apply_boundaries! — Dirichlet on both faces" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
     C0 = zeros(Float64, size(img))
     apply_boundaries!(C0, prob)
     @test all(C0[:, :, 1] .== 1.0)
@@ -151,7 +151,7 @@ end
 
 @testset "apply_boundaries! — insulated outlet" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img, 0.1; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
     C0 = zeros(Float64, size(img))
     apply_boundaries!(C0, prob)
     @test all(C0[:, :, 1] .== 1.0)
@@ -161,7 +161,7 @@ end
 @testset "apply_boundaries! — time-dependent inlet" begin
     img = ones(Bool, (4, 4, 4))
     f_inlet = t -> 0.5 + t
-    prob = TransientProblem(img, 0.1; axis=:z, bc_inlet=f_inlet, bc_outlet=0, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img, 0.1; axis=:z, bc_inlet=f_inlet, bc_outlet=0, gpu=false, dtype=Float64)
     C0 = zeros(Float64, size(img))
     apply_boundaries!(C0, prob)
     @test all(C0[:, :, 1] .== 0.5) # f(0) = 0.5
@@ -171,7 +171,7 @@ end
 # --- init_state / solve! ---
 
 @testset "init_state — produces valid state" begin
-    prob = TransientProblem(blob_8, 0.1; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8, 0.1; gpu=false, dtype=Float64)
     state = init_state(prob)
     @test length(state.t) == 1
     @test state.t[1] == 0.0
@@ -180,7 +180,7 @@ end
 end
 
 @testset "solve! — time progresses" begin
-    prob = TransientProblem(blob_8, 0.1; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8, 0.1; gpu=false, dtype=Float64)
     state = init_state(prob)
     solve!(state, prob, stop_at_time(0.5))
     @test state.t[end] >= 0.5
@@ -189,7 +189,7 @@ end
 end
 
 @testset "solve! — max_iter warning" begin
-    prob = TransientProblem(blob_8, 0.1; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8, 0.1; gpu=false, dtype=Float64)
     state = init_state(prob)
     @test_logs (:warn, r"max_iter") solve!(state, prob, (t, C) -> false; max_iter=3)
     @test length(state.t) == 4 # initial + 3 steps
@@ -217,27 +217,27 @@ end
 open_16 = ones(Bool, (16, 16, 16))
 
 @testset "Open space transient — $(ax)-axis" for ax in (:x, :y)
-    prob = TransientProblem(open_16, 0.05; axis=ax, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(open_16, 0.05; axis=ax, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
     state = init_state(prob)
-    solve!(state, prob, stop_at_delta_flux(0.01, prob); max_iter=500)
+    solve!(state, prob, stop_at_flux_balance(0.01, prob); max_iter=500)
     C_final = state.C[end]
-    mid = get_slice_conc(C_final, prob.img, prob.axis, size(open_16, 1) ÷ 2; grid_to_vec=prob.grid_to_vec)
+    mid = slice_concentration(C_final, prob.img, prob.axis, size(open_16, 1) ÷ 2; grid_to_vec=prob.grid_to_vec)
     @test mid ≈ 0.5 atol = 0.05
-    J_in = compute_flux(C_final, prob.D, prob.dx, prob.img, prob.axis; ind=1, grid_to_vec=prob.grid_to_vec)
-    J_out = compute_flux(C_final, prob.D, prob.dx, prob.img, prob.axis; ind=:end, grid_to_vec=prob.grid_to_vec)
+    J_in = flux(C_final, prob.D, prob.dx, prob.img, prob.axis; ind=1, grid_to_vec=prob.grid_to_vec)
+    J_out = flux(C_final, prob.D, prob.dx, prob.img, prob.axis; ind=:end, grid_to_vec=prob.grid_to_vec)
     @test J_in ≈ J_out atol = 0.02
 end
 
-prob_z = TransientProblem(open_16, 0.05; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+prob_z = TransientDiffusionProblem(open_16, 0.05; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
 
 @testset "Open space transient — z-axis" begin
     state = init_state(prob_z)
-    solve!(state, prob_z, stop_at_delta_flux(0.01, prob_z); max_iter=500)
+    solve!(state, prob_z, stop_at_flux_balance(0.01, prob_z); max_iter=500)
     C_final = state.C[end]
-    mid = get_slice_conc(C_final, prob_z.img, prob_z.axis, size(open_16, 3) ÷ 2; grid_to_vec=prob_z.grid_to_vec)
+    mid = slice_concentration(C_final, prob_z.img, prob_z.axis, size(open_16, 3) ÷ 2; grid_to_vec=prob_z.grid_to_vec)
     @test mid ≈ 0.5 atol = 0.05
-    J_in = compute_flux(C_final, prob_z.D, prob_z.dx, prob_z.img, prob_z.axis; ind=1, grid_to_vec=prob_z.grid_to_vec)
-    J_out = compute_flux(C_final, prob_z.D, prob_z.dx, prob_z.img, prob_z.axis; ind=:end, grid_to_vec=prob_z.grid_to_vec)
+    J_in = flux(C_final, prob_z.D, prob_z.dx, prob_z.img, prob_z.axis; ind=1, grid_to_vec=prob_z.grid_to_vec)
+    J_out = flux(C_final, prob_z.D, prob_z.dx, prob_z.img, prob_z.axis; ind=:end, grid_to_vec=prob_z.grid_to_vec)
     @test J_in ≈ J_out atol = 0.02
 end
 
@@ -252,7 +252,7 @@ end
     avg = sum(state_c.C[end]) / length(state_c.C[end])
     @test avg >= 0.4
 
-    prob_insulated = TransientProblem(open_16, 0.1; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
+    prob_insulated = TransientDiffusionProblem(open_16, 0.1; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
     state = init_state(prob_insulated)
     solve!(state, prob, stop_at_time(3.0); max_iter=100)
     avg = sum(state.C[end]) / length(state.C[end])
@@ -261,7 +261,7 @@ end
 
 @testset verbose = true "fit_effective_diffusivity — open space" begin
     state_fit = init_state(prob_z)
-    solve!(state_fit, prob_z, stop_at_delta_flux(0.01, prob_z); max_iter=500)
+    solve!(state_fit, prob_z, stop_at_flux_balance(0.01, prob_z); max_iter=500)
 
     @testset "method = :mass" begin
         τ, D_eff, _, _, _, _ = fit_effective_diffusivity(state_fit, prob_z, :mass)

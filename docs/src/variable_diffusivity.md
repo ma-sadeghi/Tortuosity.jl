@@ -26,13 +26,13 @@ D[.!img] .= 0.2     # Less conductive phase
 domain = D .> 0      # The entire image is the domain
 
 # We pass `domain` (not `img`) to the constructor since all voxels are conducting
-sim = TortuositySimulation(domain; axis=:x, D=D, gpu=USE_GPU);
+sim = SteadyDiffusionProblem(domain; axis=:x, D=D, gpu=USE_GPU);
 
 # Solve the system of equations
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false)
 
 # Convert the solution vector to an Nd grid
-c = vec_to_grid(sol.u, domain)
+c = reconstruct_field(sol.u, domain)
 τ = tortuosity(c, domain; axis=:x, D=D)
 println("τ = $τ")
 
@@ -69,11 +69,11 @@ D = rand(Float64, size(img))  # Random diffusivity for all voxels
 D[.!img] .= 0                 # Zero out non-conducting voxels
 domain = D .> 0                # Conducting voxels only
 
-sim = TortuositySimulation(domain; axis=:x, D=D, gpu=USE_GPU);
+sim = SteadyDiffusionProblem(domain; axis=:x, D=D, gpu=USE_GPU);
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false)
 
 # Convert the solution vector to an Nd grid
-c = vec_to_grid(sol.u, domain)
+c = reconstruct_field(sol.u, domain)
 τ = tortuosity(c, domain; axis=:x, D=D)
 println("τ = $τ")
 
