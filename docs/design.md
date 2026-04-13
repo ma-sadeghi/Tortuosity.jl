@@ -255,6 +255,90 @@ asked for GPU. That's a footgun.
 
 ---
 
+## 9. CPU-only operations in a GPU-enabled workflow
+
+**Decision.** Several pieces of the user-facing API run on CPU even when the
+solver itself runs on GPU. They fall into three groups, each with a different
+rationale:
+
+**Group A — strictly post-solve, runs once on already-materialised data.**
+
+- `reconstruct_field` (1D pore vector → NaN-filled 3D grid)
+- `tortuosity`, `effective_diffusivity`, `formation_factor`
+- `fit_effective_diffusivity`, `fit_voxel_diffusivity`
+
+**Group B — called *during* `solve!` (as stop conditions or measurements)
+but operating on CPU snapshot history, not on the GPU integrator state.**
+
+- `flux`, `slice_concentration`, `mass_uptake`
+- `stop_at_avg_concentration`, `stop_at_flux_balance`, `stop_at_periodic`
+
+**Group C — setup-only CPU bookkeeping that is not portable to GPU.**
+
+- `find_boundary_nodes` (face enumeration requires scalar indexing semantics)
+- `grid_to_vec` (pore-ordinal lookup stored in `prob.grid_to_vec`)
+- `BitArray(img .!= 0)` conversion in `TransientDiffusionProblem`
+
+**Rationale.**
+
+*Group A* is called once and operates on small scalar outputs (reductions,
+a single `Array(u)` materialisation, curve fits). Measured cost at 200³ is
+≲30 ms total — under 2% of a typical solve. Porting these to GPU would save
+single-digit milliseconds and add maintenance burden for every backend.
+`LsqFit.jl` has no GPU story at all.
+
+*Group B* is the more interesting case. `solve!` stores each snapshot as
+`push!(state.C, Array(state.integrator.u))` — i.e. every `dt` interval the
+current GPU state is copied to CPU and appended to `state.C`. This is
+intentional: snapshot history is the only unbounded-growth data in a
+transient run, and keeping 1000 snapshots of a 200³ Float32 field on GPU
+would eat 20 GB of VRAM. CPU RAM is cheaper and can be paged. Because the
+snapshots are on CPU by design, any downstream measurement or stop-condition
+evaluation that consumes `C_hist[end]` naturally runs on CPU with **zero
+additional D2H penalty** — `Array(u)` on an already-CPU `Vector` is a no-op.
+
+This means the apparent CPU work in `stop_at_flux_balance` (which calls
+`flux` twice per snapshot) is effectively free, and the entire
+stop-condition evaluation stays out of the GPU hot path.
+
+The per-snapshot `Array(u)` D2H itself is measured at ~15 ms for a ~20 MB
+vector at 200³ — about 0.5% of the per-snapshot ODE work on a consumer GPU.
+For the longest plausible runs (≥ 1000 snapshots) this adds up to a few
+seconds of host-device traffic, still dwarfed by the solve cost.
+
+*Group C* was a performance problem and has been partially fixed:
+
+- `find_boundary_nodes` previously allocated a 64 MB `Int` array plus a
+  `Dict` of 6 slice copies to answer "which pore ordinals are on this face?".
+  At 200³ that cost 55 ms per face. Replaced with a single column-major walk
+  that tracks the running pore ordinal and pushes it onto the result vector
+  when the current cell sits on the target face. Drops to 17 ms per face
+  (~3.2× faster), now competitive with the rest of setup.
+- `grid_to_vec` allocates `Array{Int,3}` the size of `img` — ~30 ms at 200³.
+  Cannot be moved to GPU because the resulting lookup table is consumed by
+  CPU-side measurement code (Group B) that operates on CPU snapshot vectors.
+  Stays on CPU by design.
+- `BitArray(img .!= 0)` packs the input to 1 bit per voxel so it can be
+  cheaply transferred to GPU. ~7 ms at 200³. Unavoidable and tiny.
+
+**Data (200³, after the `find_boundary_nodes` fix).**
+
+`TransientDiffusionProblem` setup at 200³ now takes ~145 ms on GPU, of which ~50 ms
+is CPU-side bookkeeping that cannot be eliminated without breaking Group B,
+~80 ms is GPU kernels, and the rest is H2D transfer. Steady-state setup is
+~160 ms on GPU. The two workflows now run at comparable setup cost —
+the earlier 939 ms vs 160 ms imbalance was dominated by the old
+`find_boundary_nodes` implementation.
+
+**Not investigated.** The remaining delta between transient and steady-state
+setup (~15-20 ms) is the `zero_rows! + dropzeros!` pass that transient needs
+to enforce Dirichlet BCs on the operator. The steady-state path uses
+`apply_dirichlet_bc_fast!` which does similar work but with a slightly
+different kernel pipeline. Sub-20 ms and not on the per-step hot path —
+left for a later optimisation pass if it ever becomes the bottleneck.
+
+---
+
 ## Open / known issues (not yet decisions)
 
 These are tracked here to avoid losing them. Not actionable now; revisit
