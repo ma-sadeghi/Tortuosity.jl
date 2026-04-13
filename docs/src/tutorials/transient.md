@@ -50,7 +50,7 @@ Key parameters of `TransientProblem`:
 - **`axis`** — transport direction.
 - **`D`** — diffusivity (scalar or array, default `1.0`).
 - **`dx`** — voxel spacing (default `1.0`).
-- **`gpu`** — same auto-detection as steady-state.
+- **`gpu`** — same auto-detection as steady-state; see [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
 
 ## Comparing to the homogeneous solution
 

@@ -67,8 +67,10 @@ conditions applied along one axis.
         along the chosen axis for easy comparison.
 - `dtype`: numeric type used for the operator and solution arrays
            (e.g., `Float32` or `Float64`). Defaults to `Float32`.
-- `gpu`: whether to run solver on the GPU. If `nothing`, uses GPU when the
-         image has ≥100,000 pore voxels and a GPU backend is available. Defaults to `nothing`.
+- `gpu`: whether to run the solver on the GPU. If `nothing` (default),
+         uses GPU when a backend package is loaded *and* the image has
+         ≥100,000 pore voxels. See [GPU backends](@ref) for how to activate
+         CUDA, Metal, or AMDGPU.
 """
 function TransientProblem(
     img,
@@ -99,8 +101,18 @@ function TransientProblem(
 
     nnodes = count(img)
     @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
+    # Auto-detect GPU: see the matching block in TortuositySimulation for the
+    # rationale behind the one-time warning on silent CPU fallback.
     if isnothing(gpu)
-        gpu = !isnothing(_preferred_gpu_backend[]) && nnodes >= 100_000
+        has_backend = !isnothing(_preferred_gpu_backend[])
+        if !has_backend && nnodes >= 100_000
+            @warn "Image has $(nnodes) pore voxels but no GPU backend is loaded; \
+                   running on CPU. To enable GPU kernels, load a backend package \
+                   (`using CUDA`, `using Metal`, or `using AMDGPU`) before \
+                   constructing the problem. Pass `gpu=false` explicitly to \
+                   silence this message." maxlog = 1
+        end
+        gpu = has_backend && nnodes >= 100_000
     elseif gpu && isnothing(_preferred_gpu_backend[])
         error("`gpu=true` was requested but no GPU backend is registered. \
                Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
