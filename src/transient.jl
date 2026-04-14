@@ -168,9 +168,12 @@ regardless of whether the solver ran on GPU.
 - `t::Vector{Float64}`: snapshot times at the requested `saveat` intervals.
 - `u::Vector{Vector{T}}`: concentration snapshots (CPU). Each entry is a 1D
   pore-only vector.
-- `retcode`: `SciMLBase.ReturnCode.T` indicating whether the solver reached
-  the end of `tspan` (`Success`) or was terminated early by a callback
-  (`Terminated`).
+- `retcode::Symbol`: `:Success` if the solver reached the end of `tspan`,
+  `:Terminated` if a stop-condition callback fired first. Other values are
+  possible for failure modes (e.g. `:Unstable`, `:MaxIters`) and come
+  verbatim from `Symbol(ode_sol.retcode)`. Users who need the raw
+  `SciMLBase.ReturnCode.T` enum (for `successful_retcode` etc.) can reach
+  through `sol.ode_sol.retcode`.
 - `prob::TransientDiffusionProblem`: the originating problem.
 - `alg`: the algorithm passed to `solve`.
 - `ode_sol`: the raw `SciMLBase.ODESolution` the solve produced. Exposed for
@@ -434,10 +437,11 @@ used to derive effective diffusivity. The flux value this check uses is the
 same one the `flux` observable returns, so the threshold is directly in the
 units users care about.
 
-The callback materialises the integrator state to CPU on each fire. For a GPU
-solve this is the same D2H cost as the snapshot `SavingCallback`, and for
-typical problem sizes it's dwarfed by the ODE step cost — measured at ≲ 1% of
-a per-step work budget at 200³.
+The callback materialises the integrator state to CPU on each fire via
+`Array(u)`. For a GPU solve that's a full D2H copy per ODE step — typically a
+small fraction of the per-step ODE work at realistic problem sizes, but
+worth knowing about if you're running `StopAtFluxBalance` on a large grid
+with a very cheap RHS. Benchmark your use case before assuming it's free.
 """
 function StopAtFluxBalance(prob::TransientDiffusionProblem; abstol=1e-4, reltol=1e-3)
     D, voxel_size, img, axis, pidx = prob.D, prob.voxel_size, prob.img, prob.axis, prob.pore_index
@@ -454,28 +458,29 @@ function StopAtFluxBalance(prob::TransientDiffusionProblem; abstol=1e-4, reltol=
 end
 
 """
-    StopAtSaturation(c::Real; abstol=1e-4, reltol=1e-3)
+    StopAtSaturation(target::Real; abstol=1e-4, reltol=1e-3)
 
 Terminate the solve when the mean concentration over pore voxels reaches
-`c - max(abstol, reltol·|c|)`. Implemented as a `ContinuousCallback` with
-rootfinding, so the callback fires at the exact crossing time rather than at
-the next integrator step.
+`target - max(abstol, reltol·|target|)`. Implemented as a `ContinuousCallback`
+with rootfinding, so the callback fires at the exact crossing time rather than
+at the next integrator step.
 
-The offset `- max(abstol, reltol·|c|)` handles the asymptotic-approach
-footgun: for a monotonically-saturating system, picking a target `c` equal to
-the asymptotic limit (e.g. `c = 1.0` for `bc_inlet = 1, bc_outlet = nothing`)
-would otherwise never fire, because `mean(u)` approaches `c` from below but
-never crosses it. With the default tolerance, the callback fires when the
-system is within `0.001 · c` of the target in finite time. Users who want the
-strict crossing can set `abstol = 0, reltol = 0`.
+The offset `- max(abstol, reltol·|target|)` handles the asymptotic-approach
+footgun: for a monotonically-saturating system, picking a `target` equal to
+the asymptotic limit (e.g. `1.0` for `bc_inlet = 1, bc_outlet = nothing`)
+would otherwise never fire, because the mean concentration approaches `target`
+from below but never crosses it. With the default tolerance, the callback
+fires when the system is within `0.001 · target` of the target in finite time.
+Users who want the strict crossing can set `abstol = 0, reltol = 0`.
 
-This uses `sum(c)/length(c)` on the integrator state directly — no geometry
-lookup needed because `c` is already the pore-only vector.
+The check is `sum(u)/length(u)` on the integrator state `u` directly — no
+geometry lookup needed because `u` is already the pore-only concentration
+vector.
 """
-function StopAtSaturation(c::Real; abstol::Real=1e-4, reltol::Real=1e-3)
-    tol = max(abstol, reltol * abs(c))
-    target = c - tol
-    condition = (u, t, integrator) -> sum(u) / length(u) - target
+function StopAtSaturation(target::Real; abstol::Real=1e-4, reltol::Real=1e-3)
+    tol = max(abstol, reltol * abs(target))
+    threshold = target - tol
+    condition = (u, t, integrator) -> sum(u) / length(u) - threshold
     affect! = integrator -> terminate!(integrator)
     return ContinuousCallback(
         condition, affect!; save_positions=(false, false),
@@ -488,7 +493,7 @@ end
                         compare_window=0.3, depth=1.0)
 
 Detect periodic steady state under an oscillating boundary condition and
-terminate the solve. For each saveat boundary, the callback records the slice
+terminate the solve. On every ODE step, the callback records the slice
 concentration at the specified `depth` along `prob.axis`; once at least one
 full period of history is available, it compares the trailing `compare_window`
 fraction of the current period against the same fraction of the previous
@@ -509,12 +514,14 @@ window), the callback terminates.
 - `depth`: normalized position in `(0, 1]` along `prob.axis` at which the
   slice concentration is sampled. Default: `1.0` (outlet face).
 
-!!! warning
-    `StopAtPeriodicState` relies on the saveat schedule being finer than the
-    driving period — internally it only records a sample every saveat boundary
-    and needs enough resolution to resolve `samples_per_period` phase points
-    across the period. Pass `saveat ≤ 1/(freq · samples_per_period)` or
-    tighter.
+!!! note
+    The callback records one sample per ODE step, not per `saveat` boundary,
+    so its resolution is governed by the integrator's adaptive step control
+    (`reltol` / `abstol` / `dtmax`) rather than the `saveat` schedule. If the
+    solver is taking very large steps relative to the driving period, tighten
+    the ODE tolerances or set `dtmax ≤ 1 / (freq · samples_per_period)`.
+    Closure-captured history grows unbounded at step granularity — see issue
+    #69 for the trimming follow-up.
 """
 function StopAtPeriodicState(
     freq, prob::TransientDiffusionProblem;
@@ -529,16 +536,34 @@ function StopAtPeriodicState(
     period = 1 / freq
     phases = range(0, compare_window; length=samples_per_period)
 
-    N = size(prob.img, axis_dim(prob.axis))
+    ax = axis_dim(prob.axis)
+    N = size(prob.img, ax)
     depth_ind = round(Int, depth * (N - 1) + 1)
 
-    # The callback maintains its own saveat-aligned history in closure state so
-    # we don't depend on the SavingCallback's ordering or fire rate.
+    # Precompute the pore-vector indices on the target slice and promote them
+    # to the same backend as the integrator state. Each callback fire then pulls
+    # just those entries to CPU rather than materialising the full state — on
+    # a 200³ GPU problem this is ~180× faster and ~380× less memory per fire.
+    slice_pore_inds_host = slice_indices(prob.pore_index, prob.axis, depth_ind)
+    # Normalisation denominator: `slice_concentration(...; pore_only=false)`
+    # divides `nansum(slice_2D)` by the full 2D slice area (solid cells
+    # contribute 0 via nansum). Match that convention.
+    slice_full_size = prod(size(selectdim(prob.img, ax, depth_ind)))
+
+    gpu = prob.A isa PortableSparseCSC
+    slice_inds = if gpu
+        d = similar(prob.A.rowval, eltype(slice_pore_inds_host), length(slice_pore_inds_host))
+        copyto!(d, slice_pore_inds_host)
+        d
+    else
+        slice_pore_inds_host
+    end
+
+    # The callback maintains its own step-granular history in closure state so
+    # `interp(t_current)` always has a bracketing entry at the right edge.
+    # Issue #69 tracks trimming the head of the history to the active window.
     t_hist = Float64[]
     slice_hist = Float64[]
-    img = prob.img
-    axis = prob.axis
-    pidx = prob.pore_index
 
     function interp(t, ts, vs)
         i1 = findlast(ti -> ti <= t, ts)
@@ -550,12 +575,11 @@ function StopAtPeriodicState(
     end
 
     condition = function (u, t, integrator)
-        # Record every fire so interp() can always resolve the current time
-        # (it needs ts[end] >= t_end to bracket the right end of the window).
-        # The cost is one tiny slice reduction per ODE step.
-        u_cpu = Array(u)
+        # Pull only the pore values on the target slice — small per-fire D2H
+        # regardless of the total state size.
+        slice_vals = Array(@view u[slice_inds])
         push!(t_hist, t)
-        push!(slice_hist, slice_concentration(u_cpu, img, axis, depth_ind; pore_index=pidx))
+        push!(slice_hist, sum(slice_vals) / slice_full_size)
 
         tmin = t - (1 + compare_window) * period
         tmin < 0 && return false
