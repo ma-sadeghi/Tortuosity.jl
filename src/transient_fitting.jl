@@ -58,10 +58,11 @@ function fit_effective_diffusivity(
     L = (N - 1) * prob.voxel_size * (insulated ? 2 : 1)
 
     if method == :conc
-        # Cell-center convention: concentration lives at the center of each voxel,
-        # so voxel index i maps to physical position (i - 0.5) * voxel_size.
+        # Cell-centered FV with Dirichlet clamped at the centers of voxels 1
+        # and N, so in the analytical coordinate those live at x=0 and x=L
+        # respectively. Voxel i therefore sits at (i - 1) * voxel_size.
         depth_idx = round(Int, 1 + depth * (N - 1))
-        depth_actual = (depth_idx - 0.5) * prob.voxel_size
+        depth_actual = (depth_idx - 1) * prob.voxel_size
 
         ydata = slice_concentration(
             c_hist[idx_min:idx_max], prob.img, prob.axis, depth_idx;
@@ -74,13 +75,15 @@ function fit_effective_diffusivity(
         model = (t, p) -> φ * (c1 + c2) / 2 .* slab_mass_uptake(p[1], t; c1=c1, c2=c2, L=L, terms=terms)
 
     elseif method == :flux
-        # Cell-face convention: flux is computed at the face between voxels
-        # depth_idx and depth_idx+1, so the physical position is depth_idx * voxel_size.
+        # Flux is evaluated between voxels depth_idx and depth_idx+1, at the
+        # face midpoint between their centers. In the analytical coordinate
+        # that face sits at (depth_idx - 0.5) * voxel_size — half a voxel
+        # downstream of voxel depth_idx's center, not at voxel depth_idx+1.
         depth_idx = round(Int, 0.5 + depth * (N - 1))
         if depth_idx == N
             depth_idx = N - 1
         end
-        depth_actual = depth_idx * prob.voxel_size
+        depth_actual = (depth_idx - 0.5) * prob.voxel_size
 
         ydata = flux(
             c_hist[idx_min:idx_max], prob.D, prob.voxel_size, prob.img, prob.axis;
@@ -162,8 +165,9 @@ function fit_voxel_diffusivity(
     c2 = insulated ? c1 : prob.bc_outlet
     L = (N - 1) * prob.voxel_size * (insulated ? 2 : 1)
 
-    # Cell-center convention: voxel index i maps to physical position (i - 0.5) * voxel_size
-    depth_actual = (depth_idx - 0.5) * prob.voxel_size
+    # Cell-centered FV with Dirichlet clamped at voxel 1 and voxel N centers;
+    # in the analytical coordinate voxel i lives at (i - 1) * voxel_size.
+    depth_actual = (depth_idx - 1) * prob.voxel_size
     if fit_depth
         model = (t, p) -> slab_concentration(1 / p[1], p[2], t; c1=c1, c2=c2, L=L, terms=terms)
     else
