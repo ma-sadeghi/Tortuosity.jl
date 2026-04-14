@@ -29,9 +29,8 @@ using Tortuosity:
     Tortuosity,
     PortableSparseCSC,
     SteadyDiffusionProblem,
-    TransientDiffusionProblem,
-    create_connectivity_list,
-    create_adjacency_matrix,
+    build_connectivity_list,
+    build_adjacency_matrix,
     laplacian,
     apply_dirichlet_bc_fast!,
     set_diag!,
@@ -40,12 +39,10 @@ using Tortuosity:
     zero_rows!,
     dropzeros!,
     multihotvec,
-    init_state,
-    stop_at_time,
     KrylovJL_CG
-# `solve` and `solve!` are heavily ambiguous across the SciML ecosystem; pull
-# them from Tortuosity so the bench code stays unambiguous.
-import Tortuosity: solve, solve!
+# `solve` is heavily ambiguous across the SciML ecosystem; pull it from
+# Tortuosity so the bench code stays unambiguous.
+import Tortuosity: solve
 using LinearAlgebra: mul!
 using LinearSolve: LinearProblem
 using SparseArrays: nonzeros
@@ -153,7 +150,7 @@ function build_fixture(size_spec)
     weights = CUDA.fill(1.0f0, nedges)
 
     am_old = OldBaseline.create_adjacency_matrix_old(conns; n=nnodes, weights=weights)
-    am_new = create_adjacency_matrix(conns; n=nnodes, weights=weights)
+    am_new = build_adjacency_matrix(conns; n=nnodes, weights=weights)
 
     L_old = OldBaseline.laplacian_old(am_old)
     L_new = laplacian(am_new)
@@ -227,23 +224,20 @@ _setup_solve_steady(f) = let
     (; prob_old, prob_new = ts_new.prob)
 end
 
-_setup_solve_transient(f) = let
-    prob_old = OldBaseline.transient_problem_old(f.img_cpu, 0.01; axis=:z, dtype=Float32)
-    prob_new = TransientDiffusionProblem(f.img_cpu, 0.01; axis=:z, dtype=Float32, gpu=true)
-    state_old = OldBaseline.init_state_old(prob_old)
-    state_new = init_state(prob_new)
-    (; prob_old, prob_new, state_old, state_new)
-end
+# Transient workflow bench removed alongside the SciML API migration (#54).
+# The new `solve(::TransientDiffusionProblem, alg; ...)` path has no old-side
+# equivalent to compare against, and the underlying GPU kernels it uses
+# (adjacency / laplacian / zero_rows) are already covered by component benches.
 
 const OPERATIONS = Op[
     # ---------- Components ----------
-    Op("create_connectivity_list", :component;
+    Op("build_connectivity_list", :component;
        old = (s, f) -> OldBaseline.create_connectivity_list_old(f.img_gpu),
-       new = (s, f) -> create_connectivity_list(f.img_gpu)),
+       new = (s, f) -> build_connectivity_list(f.img_gpu)),
 
-    Op("create_adjacency_matrix", :component;
+    Op("build_adjacency_matrix", :component;
        old = (s, f) -> OldBaseline.create_adjacency_matrix_old(f.conns; n=f.nnodes, weights=f.weights),
-       new = (s, f) -> create_adjacency_matrix(f.conns; n=f.nnodes, weights=f.weights)),
+       new = (s, f) -> build_adjacency_matrix(f.conns; n=f.nnodes, weights=f.weights)),
 
     Op("laplacian", :component;
        old = (s, f) -> OldBaseline.laplacian_old(f.am_old),
@@ -318,14 +312,6 @@ const OPERATIONS = Op[
        old = (s, f) -> solve(s.prob_old, KrylovJL_CG(); reltol=1e-6),
        new = (s, f) -> solve(s.prob_new, KrylovJL_CG(); reltol=1e-6)),
 
-    Op("TransientDiffusionProblem", :integration;
-       old = (s, f) -> OldBaseline.transient_problem_old(f.img_cpu, 0.01; axis=:z, dtype=Float32),
-       new = (s, f) -> TransientDiffusionProblem(f.img_cpu, 0.01; axis=:z, dtype=Float32, gpu=true)),
-
-    Op("solve! (transient, 5 dt-steps)", :integration;
-       setup = _setup_solve_transient,
-       old = (s, f) -> solve!(s.state_old, s.prob_old, stop_at_time(0.05); max_iter=5),
-       new = (s, f) -> solve!(s.state_new, s.prob_new, stop_at_time(0.05); max_iter=5)),
 ]
 
 # =============================================================================

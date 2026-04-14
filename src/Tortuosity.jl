@@ -7,6 +7,7 @@ using LinearSolve
 using NaNStatistics
 using SparseArrays
 using OrdinaryDiffEq
+using OrdinaryDiffEq: ROCK4
 using LsqFit
 
 # GPU backend registration (populated by package extensions)
@@ -35,26 +36,25 @@ include("caverns.jl")
 # Submodules
 export Imaginator
 export KrylovJL_CG
+export ROCK4
 
 # Structs
 export SteadyDiffusionProblem
 export TransientDiffusionProblem
-export TransientState
 
 # Steady-state analysis
 export solve
+export solve!
 export tortuosity
 export effective_diffusivity
 export formation_factor
 export reconstruct_field
 
-# Transient solver
-export solve!
-export init_state
-export stop_at_time
-export stop_at_avg_concentration
-export stop_at_flux_balance
-export stop_at_periodic
+# Transient solver + stop conditions
+export StopAtSteadyState
+export StopAtFluxBalance
+export StopAtSaturation
+export StopAtPeriodicState
 
 # Transient measurements
 export flux

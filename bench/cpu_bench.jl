@@ -4,9 +4,9 @@
 # The KA kernels are the new backend-agnostic path, here tested on CPU.
 using Tortuosity
 using Tortuosity:
-    _create_connectivity_list_cpu,
-    _create_connectivity_list_ka,
-    create_adjacency_matrix,
+    _build_connectivity_list_cpu,
+    _build_connectivity_list_ka,
+    build_adjacency_matrix,
     laplacian,
     spdiagm,
     find_boundary_nodes,
@@ -47,9 +47,9 @@ img_medium = ones(Bool, 32, 32, 32)      # 32 768 voxels
 img_blob   = Array{Bool}(Tortuosity.Imaginator.blobs(; shape=(32, 32, 32), porosity=0.6, blobiness=1, seed=42))
 
 # Pre-build connectivity lists for adjacency / laplacian benchmarks
-conns_small  = _create_connectivity_list_cpu(img_small)
-conns_medium = _create_connectivity_list_cpu(img_medium)
-conns_blob   = _create_connectivity_list_cpu(img_blob)
+conns_small  = _build_connectivity_list_cpu(img_small)
+conns_medium = _build_connectivity_list_cpu(img_medium)
+conns_blob   = _build_connectivity_list_cpu(img_blob)
 nnodes_small  = sum(img_small)
 nnodes_medium = sum(img_medium)
 nnodes_blob   = sum(img_blob)
@@ -58,9 +58,9 @@ nnodes_blob   = sum(img_blob)
 w_small  = ones(Float64, size(conns_small, 1))
 w_medium = ones(Float64, size(conns_medium, 1))
 w_blob   = ones(Float64, size(conns_blob, 1))
-am_small  = create_adjacency_matrix(conns_small;  n=nnodes_small,  weights=w_small)
-am_medium = create_adjacency_matrix(conns_medium; n=nnodes_medium, weights=w_medium)
-am_blob   = create_adjacency_matrix(conns_blob;   n=nnodes_blob,   weights=w_blob)
+am_small  = build_adjacency_matrix(conns_small;  n=nnodes_small,  weights=w_small)
+am_medium = build_adjacency_matrix(conns_medium; n=nnodes_medium, weights=w_medium)
+am_blob   = build_adjacency_matrix(conns_blob;   n=nnodes_blob,   weights=w_blob)
 
 # Pre-build Laplacians (SparseMatrixCSC)
 L_small  = laplacian(am_small)
@@ -164,19 +164,19 @@ println("\n>>> Benchmarking individual components...")
 
 comp_rows = BenchRow[]
 
-# -- create_connectivity_list --
+# -- build_connectivity_list --
 for (label, img) in [("16^3 open", img_small), ("32^3 blob", img_blob)]
-    b_old = @benchmark _create_connectivity_list_cpu($img)
-    b_new = @benchmark _create_connectivity_list_ka($img)
+    b_old = @benchmark _build_connectivity_list_cpu($img)
+    b_new = @benchmark _build_connectivity_list_ka($img)
     push!(comp_rows, BenchRow("connectivity_list ($label)", median(b_old).time, median(b_new).time))
 end
 
-# -- create_adjacency_matrix: CPU (SparseMatrixCSC) vs KA (PortableSparseCSC) --
+# -- build_adjacency_matrix: CPU (SparseMatrixCSC) vs KA (PortableSparseCSC) --
 # To force the KA generic dispatch, use Int32 array (not Array{Int,2})
 for (label, conns, nn) in [("16^3", conns_small, nnodes_small), ("32^3 blob", conns_blob, nnodes_blob)]
     conns_i32 = Int32.(conns)
-    b_old = @benchmark create_adjacency_matrix($conns; n=$nn)
-    b_new = @benchmark create_adjacency_matrix($conns_i32; n=$nn, weights=1.0f0)
+    b_old = @benchmark build_adjacency_matrix($conns; n=$nn)
+    b_new = @benchmark build_adjacency_matrix($conns_i32; n=$nn, weights=1.0f0)
     push!(comp_rows, BenchRow("adjacency_matrix ($label)", median(b_old).time, median(b_new).time))
 end
 

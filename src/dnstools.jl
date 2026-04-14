@@ -8,13 +8,13 @@
 #  lateral rates cancel out.
 
 """
-    effective_diffusivity(c, img; axis, ind=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+    effective_diffusivity(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
 
 Compute the effective diffusivity `D_eff` from a steady-state concentration field
 by measuring flux through the cross-section at voxel index `ind`.
 
-`D_eff = J * L / Δc`, where `J` is the diffusive flux at `ind`, `L` is the domain
-length, and `Δc` is the concentration drop between inlet and outlet faces.
+`D_eff = J * L / dc`, where `J` is the diffusive flux at `ind`, `L` is the domain
+length, and `dc` is the concentration drop between inlet and outlet faces.
 
 # Arguments
 - `c`: concentration field (full grid, same shape as `img`).
@@ -24,21 +24,21 @@ length, and `Δc` is the concentration drop between inlet and outlet faces.
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
 - `ind`: voxel index at which flux is measured. Default: `1`.
 - `D`: intrinsic diffusivity (scalar). Default: `1.0`.
-- `dx`: voxel spacing. Default: `1.0`.
-- `L`: domain length. Default: `(N - 1) * dx` where `N` is the number of voxels along `axis`.
-- `Δc`: imposed concentration drop. Default: mean inlet minus mean outlet concentration.
+- `voxel_size`: physical voxel spacing. Default: `1.0`.
+- `L`: domain length. Default: `(N - 1) * voxel_size` where `N` is the number of voxels along `axis`.
+- `dc`: imposed concentration drop. Default: mean inlet minus mean outlet concentration.
 """
-function effective_diffusivity(c, img; axis, ind=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+function effective_diffusivity(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
     ax = axis_dim(axis)
     N = size(img, ax)
-    L = isnothing(L) ? (N - 1) * dx : L
-    Δc = isnothing(Δc) ? nanmean(selectdim(c, ax, 1)) - nanmean(selectdim(c, ax, N)) : Δc
-    J = flux(c, D, dx, img, axis; ind=ind)
-    return J * L / Δc
+    L = isnothing(L) ? (N - 1) * voxel_size : L
+    dc = isnothing(dc) ? nanmean(selectdim(c, ax, 1)) - nanmean(selectdim(c, ax, N)) : dc
+    J = flux(c, D, voxel_size, img, axis; ind=ind)
+    return J * L / dc
 end
 
 """
-    tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+    tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
 
 Compute the tortuosity factor `τ = ε / D_eff` from a steady-state concentration
 field. When `ε` is omitted, porosity is computed automatically from `img`.
@@ -52,18 +52,18 @@ field. When `ε` is omitted, porosity is computed automatically from `img`.
 - `ind`: voxel index at which flux is measured. Default: `1`.
 - `ε`: porosity. Default: computed as `phase_fraction(img, true)`.
 - `D`: intrinsic diffusivity (scalar). Default: `1.0`.
-- `dx`: voxel spacing. Default: `1.0`.
-- `L`: domain length. Default: `(N - 1) * dx`.
-- `Δc`: imposed concentration drop. Default: computed from `c`.
+- `voxel_size`: physical voxel spacing. Default: `1.0`.
+- `L`: domain length. Default: `(N - 1) * voxel_size`.
+- `dc`: imposed concentration drop. Default: computed from `c`.
 """
-function tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+function tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
     ε = isnothing(ε) ? Imaginator.phase_fraction(img, true) : ε
-    Deff = effective_diffusivity(c, img; axis, ind, D, dx, L, Δc)
+    Deff = effective_diffusivity(c, img; axis, ind, D, voxel_size, L, dc)
     return ε / Deff
 end
 
 """
-    formation_factor(c, img; axis, ind=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
+    formation_factor(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
 
 Compute the formation factor `F = 1 / D_eff` from a steady-state concentration field.
 
@@ -75,11 +75,11 @@ Compute the formation factor `F = 1 / D_eff` from a steady-state concentration f
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
 - `ind`: voxel index at which flux is measured. Default: `1`.
 - `D`: intrinsic diffusivity (scalar). Default: `1.0`.
-- `dx`: voxel spacing. Default: `1.0`.
-- `L`: domain length. Default: `(N - 1) * dx`.
-- `Δc`: imposed concentration drop. Default: computed from `c`.
+- `voxel_size`: physical voxel spacing. Default: `1.0`.
+- `L`: domain length. Default: `(N - 1) * voxel_size`.
+- `dc`: imposed concentration drop. Default: computed from `c`.
 """
-function formation_factor(c, img; axis, ind=1, D=1.0, dx=1.0, L=nothing, Δc=nothing)
-    Deff = effective_diffusivity(c, img; axis, ind, D, dx, L, Δc)
+function formation_factor(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
+    Deff = effective_diffusivity(c, img; axis, ind, D, voxel_size, L, dc)
     return 1 / Deff
 end

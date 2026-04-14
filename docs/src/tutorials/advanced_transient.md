@@ -1,36 +1,8 @@
 # Advanced Transient Techniques
 
-This page covers advanced features of the transient solver: the full set of stop conditions, per-voxel tortuosity fitting, time-dependent boundaries, and the analytical reference solutions.
+This page covers advanced features of the transient solver: per-voxel tortuosity fitting, time-dependent boundaries for frequency-response measurements, and the analytical reference solutions.
 
-## All stop conditions
-
-The transient `solve!` function accepts any function with signature `f(t_hist, C_hist) -> Bool`. The package provides four built-in constructors:
-
-| Constructor | Stops when... | Typical use case |
-|-------------|--------------|------------------|
-| `stop_at_time(t)` | Simulation time reaches `t` | Fixed-duration runs |
-| `stop_at_flux_balance(delta, prob)` | Inlet–outlet flux difference ≤ `delta` | Steady-state detection |
-| `stop_at_avg_concentration(c, prob)` | Mean pore concentration reaches `c` | Insulated-outlet saturation |
-| `stop_at_periodic(freq, prob; reltol=1e-2, ...)` | Periodic steady state detected | Oscillating boundary conditions |
-
-`stop_at_periodic` has additional keyword arguments:
-
-- **`reltol`** — relative tolerance for periodicity (default `1e-2`).
-- **`Nphase`** — number of phase points to compare across the trailing window (default `4`).
-- **`frac_period`** — fraction of the period to test (default `0.3`).
-- **`depth`** — normalized depth in $(0, 1]$ at which concentration is evaluated (default `1.0`).
-
-Custom stop conditions are just functions:
-
-```julia
-# Stop after 100 diffusion time units
-my_stop = (t_hist, C_hist) -> t_hist[end] > 100.0
-
-# Stop when max concentration exceeds 0.95
-my_stop = (t_hist, C_hist) -> maximum(C_hist[end]) > 0.95
-```
-
-## Tortuosity distribution
+## Per-voxel tortuosity distribution
 
 Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this by fitting the concentration history at individual voxels to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate.
 
@@ -42,14 +14,16 @@ using Tortuosity
 img = Imaginator.blobs(; shape=(64, 64, 32), porosity=0.4, blobiness=0.5, seed=3)
 img = Imaginator.trim_nonpercolating_paths(img; axis=:z)
 
-# C=1 at inlet, insulated at outlet — concentration fills the pore space over time
-prob = TransientDiffusionProblem(img, 0.1; bc_inlet=1, bc_outlet=nothing, axis=:z, gpu=false)
-sim = init_state(prob)
+# c=1 at inlet, insulated at outlet — concentration fills the pore space over time
+prob = TransientDiffusionProblem(img; bc_inlet=1, bc_outlet=nothing, axis=:z, gpu=false)
 
-solve!(sim, prob, stop_at_avg_concentration(0.98, prob))
+sol = solve(prob, ROCK4();
+    saveat   = 0.1,
+    callback = StopAtSaturation(0.98),
+    tspan    = (0.0, 50.0))
 
 # Fit tortuosity at 400 randomly sampled voxels at the outlet (depth=1.0)
-tau_vals, SE_tau, voxel_inds = fit_voxel_diffusivity(sim, prob; depth=1.0, n_samples=400)
+tau_vals, SE_tau, voxel_inds = fit_voxel_diffusivity(sol, prob; depth=1.0, n_samples=400)
 
 histogram(tau_vals,
     xlabel = "Tortuosity", ylabel = "Count",
@@ -85,27 +59,30 @@ img = trues(1, 1, N)
 
 freq = 0.5
 T = 1 / freq
-dt = T / 30  # ~30 snapshots per period
 
 # Sine wave inlet (0 to 1), insulated outlet
-prob = TransientDiffusionProblem(img, dt;
+prob = TransientDiffusionProblem(img;
     bc_inlet = t -> (sin(2π * freq * t) + 1) / 2,
-    bc_outlet = nothing, axis=:z, gpu=false
-)
-# Start at the time-averaged BC value for faster convergence to periodic steady state
-sim = init_state(prob; C0 = 0.5 .* ones(size(img)))
+    bc_outlet = nothing, axis=:z, gpu=false)
 
-# Phase 1: run to periodic steady state
-solve!(sim, prob, stop_at_periodic(freq, prob; reltol=1e-3))
+# Phase 1: run to periodic steady state, starting at the time-averaged BC value.
+sol_warmup = solve(prob, ROCK4();
+    saveat   = T/30,
+    callback = StopAtPeriodicState(freq, prob; reltol=1e-3),
+    tspan    = (0.0, 50.0),
+    u0       = 0.5 .* ones(size(img)))
 
-# Phase 2: capture one clean period
-solve!(sim, prob, stop_at_time(sim.t[end] + T))
+# Phase 2: capture one clean period continuing from the warmup end state.
+t_warmup_end = sol_warmup.t[end]
+sol = solve(prob, ROCK4();
+    saveat = T/30,
+    tspan  = (t_warmup_end, t_warmup_end + T),
+    u0     = reconstruct_field(sol_warmup.u[end], img))
 
 # Animate the last period
-start_ind = searchsortedfirst(sim.t, sim.t[end] - T)
-anim = @animate for k in start_ind:length(sim.t)
-    C_grid = reconstruct_field(sim.C[k], img)
-    plot(range(0, 1, N), C_grid[:, 1, :][1, :],
+anim = @animate for k in eachindex(sol.t)
+    c_grid = reconstruct_field(sol.u[k], img)
+    plot(range(0, 1, N), c_grid[:, 1, :][1, :],
         title = "Sine Wave Inlet — Periodic Steady State",
         ylim = (0, 1), legend = false,
         ylabel = "Concentration", xlabel = "Depth",
@@ -116,7 +93,7 @@ end
 runtime = 2 # hide
 using Logging # hide
 with_logger(NullLogger()) do # hide
-    gif(anim, "sin_inlet.gif", fps=length(sim.t) / runtime) # hide
+    gif(anim, "sin_inlet.gif", fps=length(sol.t) / runtime) # hide
 end # hide
 nothing # hide
 ```
@@ -136,6 +113,6 @@ The package includes analytical solutions for 1D slab diffusion, useful for vali
 | `slab_flux(D, x, t)` | Diffusive flux at position `x` |
 | `slab_cumulative_flux(D, t)` | Cumulative flux through the outlet |
 
-Common keyword arguments: `C1` and `C2` (boundary concentrations, default `1` and `0`), `C0` (initial concentration, default `0`), `L` (slab length, default `1`), `terms` (number of Fourier series terms, default `100`).
+Common keyword arguments: `c1` and `c2` (boundary concentrations, default `1` and `0`), `c0` (initial concentration, default `0`), `L` (slab length, default `1`), `terms` (number of Fourier series terms, default `100`).
 
 See the [API Reference](../api.md) for full signatures.

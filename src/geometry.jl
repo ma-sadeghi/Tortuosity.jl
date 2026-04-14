@@ -43,35 +43,31 @@ orthogonal_dims(d::Int) = orthogonal_dims((:x, :y, :z)[d])
 # Extract a 2D slice without reconstructing the full 3D concentration field
 
 """
-    slice_vec_indices(img, grid_to_vec, axis, idx)
+    slice_indices(pore_index::Array{Int,3}, axis::Symbol, idx::Int)
 
-Return the vector indices corresponding to the pore voxels in a 2D slice of a
-3D porous medium. Extracts a single slice along `axis` at position `idx`, then
-returns the 1D vector indices (into the pore-only vectorization) for the pore
-voxels in that slice.
+Return the pore-vector indices of the pore voxels on a 2D slice along `axis` at
+position `idx`. `pore_index` is the lookup table built by `build_pore_index`
+— solid entries are `0`, pore entries are the 1-based pore-vector position.
 """
-function slice_vec_indices(img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
+function slice_indices(pore_index::Array{Int,3}, axis::Symbol, idx::Int)
     ax = axis_dim(axis)
-    ind_slice = selectdim(grid_to_vec, ax, idx)
-    img_slice = selectdim(img, ax, idx)
-
-    return vec(ind_slice[img_slice])
+    ind_slice = selectdim(pore_index, ax, idx)
+    return filter(!iszero, vec(ind_slice))
 end
 
 """
-    vec_to_slice(u, img, grid_to_vec, axis, idx)
+    reconstruct_slice(u, pore_index::Array{Int,3}, axis::Symbol, idx::Int)
 
-Reconstruct a 2D slice of the concentration field from a pore-only 1D vector.
-Pore voxels receive their values from `u`, solid voxels are filled with `NaN`.
+Reconstruct a 2D slice of the concentration field from the pore-only vector `u`
+at position `idx` along `axis`. Pore voxels receive their values from `u`,
+solid voxels are filled with `NaN`. Mirrors [`reconstruct_field`](@ref) but for
+a single axial slice.
 """
-function vec_to_slice(u, img::BitArray, grid_to_vec::Array{Int}, axis::Symbol, idx::Int)
-    @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
-
+function reconstruct_slice(u, pore_index::Array{Int,3}, axis::Symbol, idx::Int)
     ax = axis_dim(axis)
-    ind_slice = selectdim(grid_to_vec, ax, idx)
-    img_slice = selectdim(img, ax, idx)
-
-    c = fill(NaN, size(img_slice))
-    c[img_slice] .= Array(u)[vec(ind_slice[img_slice])]
+    ind_slice = selectdim(pore_index, ax, idx)
+    c = fill(NaN, size(ind_slice))
+    mask = ind_slice .> 0
+    c[mask] .= Array(u)[ind_slice[mask]]
     return c
 end

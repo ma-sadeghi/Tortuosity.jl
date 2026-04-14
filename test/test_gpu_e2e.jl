@@ -93,27 +93,24 @@ end
 # Transient (closes the gap noted in docs/design.md § open issues)
 # ---------------------------------------------------------------------------
 
-@testset "TransientDiffusionProblem + solve! end-to-end on GPU" begin
+@testset "TransientDiffusionProblem + solve end-to-end on GPU" begin
     img = Array{Bool}(
         Imaginator.blobs(; shape=(24, 24, 24), porosity=0.6f0, blobiness=1, seed=7)
     )
     (any(img[:, :, 1]) && any(img[:, :, end])) || return
 
-    prob = TransientDiffusionProblem(img, 0.05; axis=:z, gpu=true, dtype=Float32)
+    prob = TransientDiffusionProblem(img; axis=:z, gpu=true, dtype=Float32)
     @test prob.img isa AbstractArray{Bool}
     @test !_on_gpu(prob.img)
     @test prob.A isa PortableSparseCSC
 
-    state = init_state(prob)
-    @test length(state.t) == 1
-    @test state.t[1] == 0.0
-    @test length(state.C[1]) == count(prob.img)
-    @test all(isfinite, state.C[1])
-
-    solve!(state, prob, stop_at_time(0.2))
-    @test state.t[end] >= 0.2
-    @test length(state.C) == length(state.t)
-    @test all(all(isfinite, C) for C in state.C)
+    sol = solve(prob, ROCK4(); saveat=0.05, tspan=(0.0, 0.2))
+    @test sol.t[end] >= 0.2
+    @test length(sol.u) == length(sol.t)
+    # sol.u lives on CPU even though the solver ran on GPU
+    @test all(u isa Vector{Float32} for u in sol.u)
+    @test all(all(isfinite, u) for u in sol.u)
+    @test all(length(u) == count(prob.img) for u in sol.u)
 end
 
 @testset "TransientDiffusionProblem CPU/GPU parity (scalar snapshot)" begin
@@ -122,15 +119,13 @@ end
     )
     (any(img[:, :, 1]) && any(img[:, :, end])) || return
 
-    prob_cpu = TransientDiffusionProblem(img, 0.05; axis=:z, gpu=false, dtype=Float64)
-    state_cpu = init_state(prob_cpu)
-    solve!(state_cpu, prob_cpu, stop_at_time(0.15))
-    c_mean_cpu = sum(state_cpu.C[end]) / length(state_cpu.C[end])
+    prob_cpu = TransientDiffusionProblem(img; axis=:z, gpu=false, dtype=Float64)
+    sol_cpu = solve(prob_cpu, ROCK4(); saveat=0.05, tspan=(0.0, 0.15))
+    c_mean_cpu = sum(sol_cpu.u[end]) / length(sol_cpu.u[end])
 
-    prob_gpu = TransientDiffusionProblem(img, 0.05; axis=:z, gpu=true, dtype=Float32)
-    state_gpu = init_state(prob_gpu)
-    solve!(state_gpu, prob_gpu, stop_at_time(0.15))
-    c_mean_gpu = sum(state_gpu.C[end]) / length(state_gpu.C[end])
+    prob_gpu = TransientDiffusionProblem(img; axis=:z, gpu=true, dtype=Float32)
+    sol_gpu = solve(prob_gpu, ROCK4(); saveat=0.05, tspan=(0.0, 0.15))
+    c_mean_gpu = sum(sol_gpu.u[end]) / length(sol_gpu.u[end])
 
     # Different integrator tolerances + Float32/Float64 → loose check
     @test isapprox(c_mean_cpu, c_mean_gpu; atol=1e-2)

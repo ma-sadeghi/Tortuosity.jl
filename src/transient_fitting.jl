@@ -1,7 +1,7 @@
 # Analytical solutions to homogeneous transient diffusion and curve-fitting utilities
 
 """
-    fit_effective_diffusivity(t, C, prob, method; depth=0.5, t_fit=(0, t[end]), terms=100)
+    fit_effective_diffusivity(t, c_hist, prob, method; depth=0.5, t_fit=(0, t[end]), terms=100)
     fit_effective_diffusivity(sim, prob, method; ...)
 
 Fit a 1D analytical transient-diffusion solution to simulation data and extract
@@ -31,7 +31,7 @@ the effective diffusivity. If `prob.D` is a scalar field, `D_pore` is set
 to `mean(prob.D[img])`.
 """
 function fit_effective_diffusivity(
-    t, C, prob::TransientDiffusionProblem, method::Symbol;
+    t, c_hist, prob::TransientDiffusionProblem, method::Symbol;
     depth=0.5, t_fit=(0, t[end]), terms=100,
 )
     @assert !(prob.bc_inlet isa Function) "fit_effective_diffusivity does not support f(t) inlet boundary conditions."
@@ -53,40 +53,40 @@ function fit_effective_diffusivity(
 
     # Insulated outlet is modelled as a symmetric slab of double length
     insulated = isnothing(prob.bc_outlet)
-    C1 = prob.bc_inlet
-    C2 = insulated ? prob.bc_inlet : prob.bc_outlet
-    L = (N - 1) * prob.dx * (insulated ? 2 : 1)
+    c1 = prob.bc_inlet
+    c2 = insulated ? prob.bc_inlet : prob.bc_outlet
+    L = (N - 1) * prob.voxel_size * (insulated ? 2 : 1)
 
     if method == :conc
         # Cell-center convention: concentration lives at the center of each voxel,
-        # so voxel index i maps to physical position (i - 0.5) * dx.
+        # so voxel index i maps to physical position (i - 0.5) * voxel_size.
         depth_idx = round(Int, 1 + depth * (N - 1))
-        depth_actual = (depth_idx - 0.5) * prob.dx
+        depth_actual = (depth_idx - 0.5) * prob.voxel_size
 
         ydata = slice_concentration(
-            C[idx_min:idx_max], prob.img, prob.axis, depth_idx;
-            grid_to_vec=prob.grid_to_vec, pore_only=true,
+            c_hist[idx_min:idx_max], prob.img, prob.axis, depth_idx;
+            pore_index=prob.pore_index, pore_only=true,
         )
-        model = (t, p) -> slab_concentration(p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms=terms)
+        model = (t, p) -> slab_concentration(p[1], depth_actual, t; c1=c1, c2=c2, L=L, terms=terms)
 
     elseif method == :mass
-        ydata = (mass_uptake(C[1:idx_max], prob.img))[idx_min:end]
-        model = (t, p) -> φ * (C1 + C2) / 2 .* slab_mass_uptake(p[1], t; C1=C1, C2=C2, L=L, terms=terms)
+        ydata = (mass_uptake(c_hist[1:idx_max], prob.img))[idx_min:end]
+        model = (t, p) -> φ * (c1 + c2) / 2 .* slab_mass_uptake(p[1], t; c1=c1, c2=c2, L=L, terms=terms)
 
     elseif method == :flux
         # Cell-face convention: flux is computed at the face between voxels
-        # depth_idx and depth_idx+1, so the physical position is depth_idx * dx.
+        # depth_idx and depth_idx+1, so the physical position is depth_idx * voxel_size.
         depth_idx = round(Int, 0.5 + depth * (N - 1))
         if depth_idx == N
             depth_idx = N - 1
         end
-        depth_actual = depth_idx * prob.dx
+        depth_actual = depth_idx * prob.voxel_size
 
         ydata = flux(
-            C[idx_min:idx_max], prob.D, prob.dx, prob.img, prob.axis;
-            ind=depth_idx, grid_to_vec=prob.grid_to_vec,
+            c_hist[idx_min:idx_max], prob.D, prob.voxel_size, prob.img, prob.axis;
+            ind=depth_idx, pore_index=prob.pore_index,
         )
-        model = (t, p) -> φ .* slab_flux(p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms=terms)
+        model = (t, p) -> φ .* slab_flux(p[1], depth_actual, t; c1=c1, c2=c2, L=L, terms=terms)
 
     else
         error("Built-in diffusivity fitting only supports method ':conc', ':mass', and ':flux'.")
@@ -100,17 +100,17 @@ function fit_effective_diffusivity(
     return τ, D_eff, xdata, ydata, fit, model
 end
 function fit_effective_diffusivity(
-    sim::TransientState, prob::TransientDiffusionProblem, method::Symbol;
-    depth=0.5, t_fit=(0, sim.t[end]), terms=100,
+    sol::TransientSolution, prob::TransientDiffusionProblem, method::Symbol;
+    depth=0.5, t_fit=(0, sol.t[end]), terms=100,
 )
     return fit_effective_diffusivity(
-        sim.t, sim.C, prob, method; depth=depth, t_fit=t_fit, terms=terms,
+        sol.t, sol.u, prob, method; depth=depth, t_fit=t_fit, terms=terms,
     )
 end
 
 """
-    fit_voxel_diffusivity(sim, prob; depth=0.5, n_samples=200,
-                          t_fit=(0, sim.t[end]), terms=100, fit_depth=false)
+    fit_voxel_diffusivity(sol, prob; depth=0.5, n_samples=200,
+                          t_fit=(0, sol.t[end]), terms=100, fit_depth=false)
 
 Estimate voxel-wise tortuosity by fitting the transient concentration response
 at a fixed slice depth to the analytic 1D diffusion solution. Samples
@@ -125,13 +125,13 @@ independently.
 - `fit_depth`: if `true`, also fit the effective depth as a free parameter.
 
 # Returns
-If `fit_depth == false`: `(tau_list, SE_tau_list, voxels)`
-If `fit_depth == true`: `(tau_list, x_list, SE_tau_list, SE_x_list, voxels)`
+If `fit_depth == false`: `(taus, SE_taus, voxels)`
+If `fit_depth == true`: `(taus, xs, SE_taus, SE_xs, voxels)`
 """
 function fit_voxel_diffusivity(
-    sim::TransientState, prob::TransientDiffusionProblem;
+    sol::TransientSolution, prob::TransientDiffusionProblem;
     depth=0.5, n_samples=200,
-    t_fit=(0, sim.t[end]), terms=100,
+    t_fit=(0, sol.t[end]), terms=100,
     fit_depth::Bool=false,
 )
     @assert !(prob.bc_inlet isa Function) "fit_voxel_diffusivity does not support f(t) inlet boundary conditions."
@@ -141,69 +141,69 @@ function fit_voxel_diffusivity(
     N = size(prob.img, axis_dim(prob.axis))
     depth_idx = round(Int, 1 + depth * (N - 1))
 
-    slice_coords = slice_vec_indices(prob, depth_idx)
+    slice_coords = slice_indices(prob, depth_idx)
     slice_voxels = length(slice_coords)
     @assert slice_voxels >= n_samples "the number of samples to fit cannot exceed pore voxels at that index"
 
     voxels = slice_coords[round.(Int, LinRange(1, slice_voxels, n_samples))]
 
-    tau_list = Float64[]
-    x_list = Float64[]
-    SE_tau_list = Float64[]
-    SE_x_list = Float64[]
+    taus = Float64[]
+    xs = Float64[]
+    SE_taus = Float64[]
+    SE_xs = Float64[]
 
-    idx_min = argmin(abs.(sim.t .- t_fit[1]))
-    idx_max = argmin(abs.(sim.t .- t_fit[2]))
+    idx_min = argmin(abs.(sol.t .- t_fit[1]))
+    idx_max = argmin(abs.(sol.t .- t_fit[2]))
     @assert idx_min < idx_max "t_fit window must contain at least two time points"
-    xdata = sim.t[idx_min:idx_max]
+    xdata = sol.t[idx_min:idx_max]
 
     insulated = isnothing(prob.bc_outlet)
-    C1 = prob.bc_inlet
-    C2 = insulated ? C1 : prob.bc_outlet
-    L = (N - 1) * prob.dx * (insulated ? 2 : 1)
+    c1 = prob.bc_inlet
+    c2 = insulated ? c1 : prob.bc_outlet
+    L = (N - 1) * prob.voxel_size * (insulated ? 2 : 1)
 
-    # Cell-center convention: voxel index i maps to physical position (i - 0.5) * dx
-    depth_actual = (depth_idx - 0.5) * prob.dx
+    # Cell-center convention: voxel index i maps to physical position (i - 0.5) * voxel_size
+    depth_actual = (depth_idx - 0.5) * prob.voxel_size
     if fit_depth
-        model = (t, p) -> slab_concentration(1 / p[1], p[2], t; C1=C1, C2=C2, L=L, terms=terms)
+        model = (t, p) -> slab_concentration(1 / p[1], p[2], t; c1=c1, c2=c2, L=L, terms=terms)
     else
-        model = (t, p) -> slab_concentration(1 / p[1], depth_actual, t; C1=C1, C2=C2, L=L, terms=terms)
+        model = (t, p) -> slab_concentration(1 / p[1], depth_actual, t; c1=c1, c2=c2, L=L, terms=terms)
     end
 
     D_pore = prob.D isa Number ? Float64(prob.D) : Float64(sum(prob.D[prob.img]) / count(prob.img))
     p0 = fit_depth ? [1 / D_pore, depth] : [1 / D_pore]
 
     for i in voxels
-        ydata = map(A -> A[i], sim.C[idx_min:idx_max])
+        ydata = map(A -> A[i], sol.u[idx_min:idx_max])
 
         fit = curve_fit(model, xdata, ydata, p0)
         sigma = stderror(fit)
 
-        push!(tau_list, fit.param[1] * D_pore)
-        push!(SE_tau_list, sigma[1])
+        push!(taus, fit.param[1] * D_pore)
+        push!(SE_taus, sigma[1])
 
         if fit_depth
-            push!(x_list, fit.param[2])
-            push!(SE_x_list, sigma[2])
+            push!(xs, fit.param[2])
+            push!(SE_xs, sigma[2])
         end
     end
 
     if fit_depth
-        return tau_list, x_list, SE_tau_list, SE_x_list, voxels
+        return taus, xs, SE_taus, SE_xs, voxels
     else
-        return tau_list, SE_tau_list, voxels
+        return taus, SE_taus, voxels
     end
 end
 
 # --- Analytical solutions for 1D slab diffusion ---
 
 """
-    slab_concentration(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_concentration(D, x, t; terms=100, c1=1, c2=0, c0=0, L=1)
 
 Analytical concentration in a 1D slab with constant diffusivity (Crank, *The
 Mathematics of Diffusion*, 2nd ed., p. 50).
 """
-function slab_concentration(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_concentration(D, x, t; terms=100, c1=1, c2=0, c0=0, L=1)
     n = reshape(1:terms, 1, terms)
     m = 2 .* n .- 1
 
@@ -212,13 +212,13 @@ function slab_concentration(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
     t = reshape(t_vec, :, 1)
 
     out = dropdims(
-        C1 .+ (C2 - C1) .* x ./ L .+
+        c1 .+ (c2 - c1) .* x ./ L .+
         2 ./ π .* sum(
-            (C2 .* cos.(π .* n) .- C1) ./ (n) .* sin.(n .* π .* x ./ L) .*
+            (c2 .* cos.(π .* n) .- c1) ./ (n) .* sin.(n .* π .* x ./ L) .*
             exp.(-D .* (n) .^ 2 .* π^2 .* t / L^2);
             dims=2,
         ) .+
-        4 .* C0 ./ π .* sum(
+        4 .* c0 ./ π .* sum(
             1 ./ m .* sin.((2 .* n .- 1) .* (π .* x ./ L)) .*
             exp.(-D .* m .^ 2 .* π^2 .* t ./ L^2);
             dims=2,
@@ -230,12 +230,12 @@ function slab_concentration(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
 end
 
 """
-    slab_mass_uptake(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_mass_uptake(D, t; terms=100, c1=1, c2=0, c0=0, L=1)
 
 Normalized mass uptake `M_t/M_inf` in a 1D slab with constant diffusivity
 (Crank, p. 50).
 """
-function slab_mass_uptake(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_mass_uptake(D, t; terms=100, c1=1, c2=0, c0=0, L=1)
     n = (2 .* reshape(1:terms, 1, terms) .- 1) .^ 2
     t_is_scalar = t isa Number
     t_vec = t_is_scalar ? [t] : collect(t)
@@ -249,12 +249,12 @@ function slab_mass_uptake(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
 end
 
 """
-    slab_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_flux(D, x, t; terms=100, c1=1, c2=0, c0=0, L=1)
 
-Analytical diffusive flux `J(x,t) = -D * ∂C/∂x` in a 1D slab (Crank, Ch. 3).
+Analytical diffusive flux `J(x,t) = -D * ∂c/∂x` in a 1D slab (Crank, Ch. 3).
 Returns 0 at `t=0` to avoid Fourier series truncation artifacts.
 """
-function slab_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_flux(D, x, t; terms=100, c1=1, c2=0, c0=0, L=1)
     n = reshape(1:terms, 1, terms)
     m = 2 .* n .- 1
 
@@ -265,40 +265,40 @@ function slab_flux(D, x, t; terms=100, C1=1, C2=0, C0=0, L=1)
     kn = n .* π ./ L
     km = m .* π ./ L
 
-    dCdx_linear = (C2 - C1) / L
+    dcdx_linear = (c2 - c1) / L
 
-    dCdx_series1 =
+    dcdx_series1 =
         (2 / π) .* sum(
-            ((C2 .* cos.(π .* n) .- C1) ./ n) .* (kn .* cos.(kn .* x)) .*
+            ((c2 .* cos.(π .* n) .- c1) ./ n) .* (kn .* cos.(kn .* x)) .*
             exp.(-D .* (n .^ 2) .* π^2 .* t_mat ./ L^2);
             dims=2,
         )
 
-    dCdx_series2 =
-        (4 * C0 / π) .* sum(
+    dcdx_series2 =
+        (4 * c0 / π) .* sum(
             (1 ./ m) .* (km .* cos.(km .* x)) .* exp.(-D .* (m .^ 2) .* π^2 .* t_mat ./ L^2);
             dims=2,
         )
 
-    dCdx = dCdx_linear .+ dropdims(dCdx_series1 .+ dCdx_series2; dims=2)
+    dcdx = dcdx_linear .+ dropdims(dcdx_series1 .+ dcdx_series2; dims=2)
 
     # Enforce flux=0 at t=0 to avoid trig series truncation error
     if t_is_scalar
-        return t == 0 ? 0.0 : -D * dCdx[1]
+        return t == 0 ? 0.0 : -D * dcdx[1]
     else
-        flux = -D .* dCdx
+        flux = -D .* dcdx
         flux[t_vec .== 0] .= 0
         return flux
     end
 end
 
 """
-    slab_cumulative_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+    slab_cumulative_flux(D, t; terms=100, c1=1, c2=0, c0=0, L=1)
 
 Cumulative amount of substance that has diffused through the slab in the
 interval `(0, t)` (Crank, p. 51).
 """
-function slab_cumulative_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
+function slab_cumulative_flux(D, t; terms=100, c1=1, c2=0, c0=0, L=1)
     n = reshape(1:terms, 1, terms)
     m = (2 .* n .- 1) .^ 2
 
@@ -307,13 +307,13 @@ function slab_cumulative_flux(D, t; terms=100, C1=1, C2=0, C0=0, L=1)
     t = reshape(t_vec, :, 1)
 
     out = dropdims(
-        D * (C1 - C2) .* t ./ L .+
+        D * (c1 - c2) .* t ./ L .+
         (2 * L / π^2) .* sum(
-            (C1 .* cos.(π .* n) .- C2) ./ (n .^ 2) .*
+            (c1 .* cos.(π .* n) .- c2) ./ (n .^ 2) .*
             (1 .- exp.(-D .* (n) .^ 2 .* π^2 .* t / L^2));
             dims=2,
         ) .+
-        (4 * C0 * L / π^2) .*
+        (4 * c0 * L / π^2) .*
         sum(1 ./ m .* (1 .- exp.(-D .* m .* π^2 .* t ./ L^2)); dims=2);
         dims=2,
     )

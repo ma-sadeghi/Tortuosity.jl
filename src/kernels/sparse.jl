@@ -7,19 +7,19 @@ using Atomix
 # --- Diagonal operations ---
 
 """
-    set_diag_kernel!(nzVal, rowVal, colPtr, vals, N_diag)
+    set_diag_kernel!(nzval, rowval, colptr, vals, N_diag)
 
 KA kernel: set existing non-zero diagonal elements in a CSC sparse matrix.
-Each thread handles one column/diagonal index `k` and searches for `rowVal[idx] == k`.
+Each thread handles one column/diagonal index `k` and searches for `rowval[idx] == k`.
 """
-@kernel function set_diag_kernel!(nzVal, @Const(rowVal), @Const(colPtr), @Const(vals), N_diag)
+@kernel function set_diag_kernel!(nzval, @Const(rowval), @Const(colptr), @Const(vals), N_diag)
     k = @index(Global)
     if k <= N_diag && k > 0
-        @inbounds idx_start = colPtr[k]
-        @inbounds idx_end = colPtr[k + 1] - 1
+        @inbounds idx_start = colptr[k]
+        @inbounds idx_end = colptr[k + 1] - 1
         for idx in idx_start:idx_end
-            @inbounds if rowVal[idx] == k
-                @inbounds nzVal[idx] = vals[k]
+            @inbounds if rowval[idx] == k
+                @inbounds nzval[idx] = vals[k]
                 break
             end
         end
@@ -53,21 +53,21 @@ function set_diag!(A::PortableSparseCSC{Tv}, vals::AbstractVector) where {Tv}
 end
 
 """
-    get_diag_kernel!(diag_vals, nzVal, rowVal, colPtr, N_diag)
+    get_diag_kernel!(diag_vals, nzval, rowval, colptr, N_diag)
 
 KA kernel: extract diagonal elements from a CSC sparse matrix. Each thread
 unconditionally writes its result slot (so the caller does not need fill!),
 using a local accumulator to avoid an unnecessary zero write to global memory.
 """
-@kernel function get_diag_kernel!(diag_vals, @Const(nzVal), @Const(rowVal), @Const(colPtr), N_diag)
+@kernel function get_diag_kernel!(diag_vals, @Const(nzval), @Const(rowval), @Const(colptr), N_diag)
     k = @index(Global)
     if k <= N_diag && k > 0
-        @inbounds idx_start = colPtr[k]
-        @inbounds idx_end = colPtr[k + 1] - 1
+        @inbounds idx_start = colptr[k]
+        @inbounds idx_end = colptr[k + 1] - 1
         result = zero(eltype(diag_vals))
         @inbounds for idx in idx_start:idx_end
-            if rowVal[idx] == k
-                result = nzVal[idx]
+            if rowval[idx] == k
+                result = nzval[idx]
                 break
             end
         end
@@ -95,36 +95,36 @@ end
 # --- Row/column zeroing ---
 
 """
-    zero_rows_kernel!(nzVal, rowVal, is_target_row, nnz_val)
+    zero_rows_kernel!(nzval, rowval, is_target_row, nnz_val)
 
 KA kernel: zero out nonzero values whose row index is flagged in `is_target_row`.
 """
-@kernel function zero_rows_kernel!(nzVal, @Const(rowVal), @Const(is_target_row), nnz_val)
+@kernel function zero_rows_kernel!(nzval, @Const(rowval), @Const(is_target_row), nnz_val)
     k = @index(Global)
     if k <= nnz_val && k > 0
-        @inbounds r = rowVal[k]
+        @inbounds r = rowval[k]
         if r > 0 && r <= length(is_target_row)
             @inbounds if is_target_row[r]
-                @inbounds nzVal[k] = zero(eltype(nzVal))
+                @inbounds nzval[k] = zero(eltype(nzval))
             end
         end
     end
 end
 
 """
-    zero_cols_kernel!(nzVal, colPtr, target_cols, num_target_cols)
+    zero_cols_kernel!(nzval, colptr, target_cols, num_target_cols)
 
 KA kernel: zero out all nonzero values in the specified target columns.
 """
-@kernel function zero_cols_kernel!(nzVal, @Const(colPtr), @Const(target_cols), num_target_cols)
+@kernel function zero_cols_kernel!(nzval, @Const(colptr), @Const(target_cols), num_target_cols)
     idx_in_target = @index(Global)
     if idx_in_target <= num_target_cols && idx_in_target > 0
         @inbounds target_c = target_cols[idx_in_target]
-        @inbounds col_start = colPtr[target_c]
-        @inbounds col_end = colPtr[target_c + 1] - 1
+        @inbounds col_start = colptr[target_c]
+        @inbounds col_end = colptr[target_c + 1] - 1
         for k in col_start:col_end
-            if k > 0 && k <= length(nzVal)
-                @inbounds nzVal[k] = zero(eltype(nzVal))
+            if k > 0 && k <= length(nzval)
+                @inbounds nzval[k] = zero(eltype(nzval))
             end
         end
     end
@@ -164,8 +164,8 @@ function zero_rows_cols!(A::PortableSparseCSC, idxs::AbstractVector{<:Integer})
     if !isempty(unique_cols)
         gpu_cols = similar(A.rowval, length(unique_cols))
         copyto!(gpu_cols, unique_cols)
-        num_tc = length(unique_cols)
-        zero_cols_kernel!(backend)(A.nzval, A.colptr, gpu_cols, num_tc; ndrange=num_tc)
+        num_target_cols = length(unique_cols)
+        zero_cols_kernel!(backend)(A.nzval, A.colptr, gpu_cols, num_target_cols; ndrange=num_target_cols)
         KernelAbstractions.synchronize(backend)
     end
 
@@ -199,29 +199,29 @@ end
 # --- Sparse compaction (dropzeros) ---
 
 """
-    compact_and_count_kernel!(new_nzVal, new_rowVal, new_col_counts,
-                              nzVal_old, rowVal_old, colPtr_old,
+    compact_and_count_kernel!(new_nzval, new_rowval, new_col_counts,
+                              nzval_old, rowval_old, colptr_old,
                               flags, scan_output, nnz_old)
 
 KA kernel: compact nonzero values (flagged for retention) into new arrays
-and atomically count entries per column for CSC `colPtr` reconstruction.
+and atomically count entries per column for CSC `colptr` reconstruction.
 """
 @kernel function compact_and_count_kernel!(
-    new_nzVal, new_rowVal, new_col_counts,
-    @Const(nzVal_old), @Const(rowVal_old), @Const(colPtr_old),
+    new_nzval, new_rowval, new_col_counts,
+    @Const(nzval_old), @Const(rowval_old), @Const(colptr_old),
     @Const(flags), @Const(scan_output), nnz_old,
 )
     k = @index(Global)
     if k <= nnz_old && k > 0
         @inbounds if flags[k]
             @inbounds new_idx = scan_output[k] + 1
-            @inbounds val = nzVal_old[k]
-            @inbounds row = rowVal_old[k]
-            if new_idx > 0 && new_idx <= length(new_nzVal)
-                @inbounds new_nzVal[new_idx] = val
-                @inbounds new_rowVal[new_idx] = row
+            @inbounds val = nzval_old[k]
+            @inbounds row = rowval_old[k]
+            if new_idx > 0 && new_idx <= length(new_nzval)
+                @inbounds new_nzval[new_idx] = val
+                @inbounds new_rowval[new_idx] = row
             end
-            @inbounds c = searchsortedlast(colPtr_old, k)
+            @inbounds c = searchsortedlast(colptr_old, k)
             if c > 0 && c <= length(new_col_counts)
                 Atomix.@atomic new_col_counts[c] += 1
             end
@@ -278,33 +278,33 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
     copyto!(scan_output_view, scan_inclusive_view)
 
     # Phase 2: allocate outputs
-    new_nzVal = similar(A.nzval, Tv, nnz_new)
-    new_rowVal = similar(A.rowval, Ti, nnz_new)
+    new_nzval = similar(A.nzval, Tv, nnz_new)
+    new_rowval = similar(A.rowval, Ti, nnz_new)
     new_col_counts = fill!(similar(A.rowval, num_cols), zero(Ti))
 
     # Phase 3: compact and count
     compact_and_count_kernel!(backend)(
-        new_nzVal, new_rowVal, new_col_counts,
+        new_nzval, new_rowval, new_col_counts,
         A.nzval, A.rowval, A.colptr,
         flags, scan_output, nnz_old; ndrange=nnz_old,
     )
     KernelAbstractions.synchronize(backend)
 
     # Phase 4: build new colptr
-    new_colPtr = similar(A.colptr, num_cols + 1)
+    new_colptr = similar(A.colptr, num_cols + 1)
     inclusive_scan_counts = accumulate(+, new_col_counts)
     fill_val = one(Ti)
-    new_colPtr_view1 = @view new_colPtr[1:1]
-    fill!(new_colPtr_view1, fill_val)
+    new_colptr_view1 = @view new_colptr[1:1]
+    fill!(new_colptr_view1, fill_val)
     if num_cols > 0
-        new_colPtr_view2 = @view new_colPtr[2:end]
-        new_colPtr_view2 .= inclusive_scan_counts .+ one(Ti)
+        new_colptr_view2 = @view new_colptr[2:end]
+        new_colptr_view2 .= inclusive_scan_counts .+ one(Ti)
     end
 
     # Phase 5: update A in place
-    A.nzval = new_nzVal
-    A.rowval = new_rowVal
-    A.colptr = new_colPtr
+    A.nzval = new_nzval
+    A.rowval = new_rowval
+    A.colptr = new_colptr
     KernelAbstractions.synchronize(backend)
 
     return nothing

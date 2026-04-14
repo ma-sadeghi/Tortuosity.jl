@@ -52,10 +52,10 @@ function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, rel
 
         sim = SteadyDiffusionProblem(filled_img; axis=axis, gpu=gpu)
         #scale 'flux' to be resolution independent, maybe better if this could be applied as boundary condition directly
-        C  = N.*reconstruct_field(solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=reltol).u, filled_img)
+        c  = N.*reconstruct_field(solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=reltol).u, filled_img)
 
-        #C is always on CPU from reconstruct_field, but this shouldn't be a bottleneck
-        flux = flux_out(C, filled_img)
+        #c is always on CPU from reconstruct_field, but this shouldn't be a bottleneck
+        flux = flux_out(c, filled_img)
 
         caverns[(log10.(flux) .< vmin) .& filled_img] .= true
         #also trim newly isolated pores
@@ -68,26 +68,26 @@ function find_caverns(img::BitArray; vmin = -2, iter = 1, axis::Symbol = :z, rel
 end
 
 """
-    flux_out(C::AbstractArray, img::AbstractArray{Bool})
+    flux_out(c::AbstractArray, img::AbstractArray{Bool})
 
-Compute the total absolute flux at each voxel by summing `|ΔC|` over all
+Compute the total absolute flux at each voxel by summing `|dc|` over all
 face-connected neighbors. Operates in image space (full 3D grid). Solid
 voxels contribute zero flux. Does not account for non-uniform diffusivity.
 """
-function flux_out(C::AbstractArray, img::AbstractArray{Bool})
-    @assert size(C) == size(img) "size of C must match size of img"
+function flux_out(c::AbstractArray, img::AbstractArray{Bool})
+    @assert size(c) == size(img) "size of c must match size of img"
 
     #find flux of each connection with image mask. note that in Julia, false * NaN = 0.0
     Fx = (img[1:end-1, :, :] .& img[2:end, :, :]).*
-        abs.(C[1:end-1, :, :] .- C[2:end, :, :])
+        abs.(c[1:end-1, :, :] .- c[2:end, :, :])
 
     Fy = (img[:, 1:end-1, :] .& img[:, 2:end, :]).*
-        abs.(C[:, 1:end-1, :] .- C[:, 2:end, :])
+        abs.(c[:, 1:end-1, :] .- c[:, 2:end, :])
 
     Fz = (img[:, :, 1:end-1] .& img[:, :, 2:end]).*
-        abs.(C[:, :, 1:end-1] .- C[:, :, 2:end])
+        abs.(c[:, :, 1:end-1] .- c[:, :, 2:end])
 
-    F = similar(C)
+    F = similar(c)
     fill!(F, 0)
 
     # X-direction edges
@@ -102,5 +102,5 @@ function flux_out(C::AbstractArray, img::AbstractArray{Bool})
     F[:, :, 1:end-1] .+= Fz
     F[:, :, 2:end]   .+= Fz
 
-    return F        
+    return F
 end

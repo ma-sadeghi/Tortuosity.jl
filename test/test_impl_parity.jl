@@ -11,7 +11,7 @@
 #
 # 1. apply_dirichlet_bc!               vs  apply_dirichlet_bc_fast!   (SparseMatrixCSC)
 # 2. apply_dirichlet_bc_fast!(CPU)     vs  apply_dirichlet_bc_fast!(PortableSparseCSC)
-# 3. _create_connectivity_list_cpu     vs  _create_connectivity_list_ka (CPU backend)
+# 3. _build_connectivity_list_cpu     vs  _build_connectivity_list_ka (CPU backend)
 # 4. laplacian(AbstractMatrix)         vs  laplacian(PortableSparseCSC)
 # 5. zero_rows!(SparseMatrixCSC)       vs  zero_rows!(PortableSparseCSC)
 
@@ -24,9 +24,9 @@ using Tortuosity: Imaginator,
     PortableSparseCSC,
     apply_dirichlet_bc!,
     apply_dirichlet_bc_fast!,
-    _create_connectivity_list_cpu,
-    _create_connectivity_list_ka,
-    create_adjacency_matrix,
+    _build_connectivity_list_cpu,
+    _build_connectivity_list_ka,
+    build_adjacency_matrix,
     laplacian,
     zero_rows!,
     find_boundary_nodes,
@@ -77,11 +77,11 @@ end
 const PARITY_IMAGES = parity_fixtures()
 
 function build_laplacian_cpu(img::AbstractArray{Bool,3})
-    conns = _create_connectivity_list_cpu(img)
+    conns = _build_connectivity_list_cpu(img)
     nnodes = count(img)
     (nnodes == 0 || size(conns, 1) == 0) && return nothing
     w = ones(Float64, size(conns, 1))
-    am = create_adjacency_matrix(conns; n=nnodes, weights=w)
+    am = build_adjacency_matrix(conns; n=nnodes, weights=w)
     return laplacian(am)
 end
 
@@ -136,11 +136,11 @@ end
     end
 end
 
-@testset "_create_connectivity_list_cpu vs _ka (CPU backend)" begin
+@testset "_build_connectivity_list_cpu vs _ka (CPU backend)" begin
     for (label, img) in PARITY_IMAGES
         count(img) >= 2 || continue
-        conns_cpu = _create_connectivity_list_cpu(img)
-        conns_ka = _create_connectivity_list_ka(img)
+        conns_cpu = _build_connectivity_list_cpu(img)
+        conns_ka = _build_connectivity_list_ka(img)
         @test canonicalize_conns(conns_cpu) == canonicalize_conns(conns_ka)
     end
 end
@@ -148,11 +148,11 @@ end
 @testset "laplacian(::SparseMatrixCSC) vs laplacian(::PortableSparseCSC)" begin
     for (label, img) in PARITY_IMAGES
         count(img) >= 2 || continue
-        conns = _create_connectivity_list_cpu(img)
+        conns = _build_connectivity_list_cpu(img)
         size(conns, 1) > 0 || continue
         nnodes = count(img)
         w = ones(Float64, size(conns, 1))
-        am_sparse = create_adjacency_matrix(conns; n=nnodes, weights=w)
+        am_sparse = build_adjacency_matrix(conns; n=nnodes, weights=w)
         L_sparse = laplacian(am_sparse)
         am_port = sparse_to_portable(am_sparse)
         L_port = laplacian(am_port)

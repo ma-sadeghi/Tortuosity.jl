@@ -11,7 +11,7 @@ For how to enable a GPU backend, see [GPU backends](@ref).
 ```@docs
 SteadyDiffusionProblem
 TransientDiffusionProblem
-TransientState
+Tortuosity.TransientSolution
 ```
 
 ## Steady-state solvers and analysis
@@ -38,21 +38,25 @@ reconstruct_field
 
 ## Transient solver
 
-```@docs
-init_state
-solve!
-```
+The transient solver follows the SciML convention: build a
+[`TransientDiffusionProblem`](@ref) and pass it to `solve(prob, alg; ...)`. The
+returned [`TransientSolution`](@ref Tortuosity.TransientSolution) holds
+CPU-resident snapshots at the requested `saveat` intervals. The `solve` method
+takes the same kwargs OrdinaryDiffEq does (`reltol`, `abstol`, `tspan`,
+`callback`, …) plus a required `saveat`. See the
+[Transient Diffusion](tutorials/transient.md) tutorial for a worked example.
 
 ### Stop conditions
 
-`solve!` accepts any `f(t_hist, C_hist) -> Bool` as a stop condition. The
-package ships four built-in constructors:
+Stop-condition callbacks terminate the solve when a diffusion-specific
+convergence criterion is met. They compose with `CallbackSet` and any other
+SciML-compatible callback.
 
 ```@docs
-stop_at_time
-stop_at_flux_balance
-stop_at_avg_concentration
-stop_at_periodic
+StopAtSteadyState
+StopAtFluxBalance
+StopAtSaturation
+StopAtPeriodicState
 ```
 
 ## Measurements on transient fields
