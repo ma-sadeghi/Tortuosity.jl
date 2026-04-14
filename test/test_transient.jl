@@ -293,14 +293,13 @@ end
 
 # --- Fitting effective diffusivity ---
 #
-# These are smoke tests for the TransientSolution adapter method of
-# fit_effective_diffusivity. Tolerances are loose because the fit quality on a
-# small 16³ open-space cube is limited by (1) the discrete grid resolution and
-# (2) a known mismatch between the :mass discretisation and the continuous
-# `slab_mass_uptake` analytical — the simulation subtracts the initial face
-# contribution from mass_uptake while the analytical does not. Strict
-# effective-diffusivity accuracy tests belong on a larger image anyway, so we
-# just verify the wrapper plumbing works end-to-end here.
+# Smoke tests for the TransientSolution adapter + accuracy tests on a
+# fully-open slab. For a homogeneous open slab the discrete FD solver is
+# solving exactly the same PDE as the analytical `slab_concentration` /
+# `slab_flux`, so :conc and :flux must recover D_eff = D_pore to numerical
+# precision on a sufficiently refined grid. :mass has a separate O(1/N)
+# reference-state offset in `mass_uptake` and is excluded from the strict
+# accuracy check.
 
 @testset "fit_effective_diffusivity — TransientSolution wrapper" begin
     prob = TransientDiffusionProblem(open_16;
@@ -318,8 +317,56 @@ end
         @test length(xdata) == length(ydata)
         @test length(xdata) > 0
     end
+end
 
-    # :flux is the tightest method for this setup; check the value itself
-    _, D_eff_flux, _, _, _, _ = fit_effective_diffusivity(sol, prob, :flux; depth=0.5)
-    @test D_eff_flux ≈ 1.0 atol = 0.25
+@testset "fit_effective_diffusivity — fully-open slab recovers D to machine precision" begin
+    # A 1-voxel-wide "slab" in z with fine axial resolution. Every voxel is
+    # pore, so the discrete solver is exactly the continuous 1D slab and
+    # fit_effective_diffusivity with :conc or :flux must recover D = 1 to
+    # within ODE-integrator precision. This would fail by O(dx/L) if the
+    # depth_actual ↔ voxel_index map were off by half a voxel.
+    N = 65
+    img = trues(1, 1, N)
+    prob = TransientDiffusionProblem(img;
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+    sol = solve(prob, ROCK4();
+        saveat=0.005,
+        callback=StopAtFluxBalance(prob; abstol=1e-5),
+        tspan=(0.0, 5.0),
+        reltol=1e-8, abstol=1e-10)
+
+    for depth in (0.25, 0.5, 0.75)
+        τ_c, D_eff_c, _, _, _, _ = fit_effective_diffusivity(sol, prob, :conc; depth=depth)
+        @test D_eff_c ≈ 1.0 atol = 1e-6
+        @test τ_c    ≈ 1.0 atol = 1e-6
+
+        τ_f, D_eff_f, _, _, _, _ = fit_effective_diffusivity(sol, prob, :flux; depth=depth)
+        @test D_eff_f ≈ 1.0 atol = 1e-5
+        @test τ_f    ≈ 1.0 atol = 1e-5
+    end
+end
+
+@testset "fit_effective_diffusivity — depth endpoints hit Dirichlet values" begin
+    # Pin the analytical ↔ discrete coordinate mapping at the boundaries:
+    # voxel 1 must sit at x=0 (where slab_concentration returns c1) and
+    # voxel N at x=L (where it returns c2). A half-voxel offset in
+    # depth_actual would shift these by dx/2 and break the mapping.
+    N = 33
+    img = trues(1, 1, N)
+    prob = TransientDiffusionProblem(img;
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+    sol = solve(prob, ROCK4();
+        saveat=0.01,
+        callback=StopAtFluxBalance(prob; abstol=1e-5),
+        tspan=(0.0, 5.0),
+        reltol=1e-8, abstol=1e-10)
+
+    # At depth=0 / depth=1 the ydata is literally the clamped value, so if
+    # the model matches c1 / c2 at x=0 / x=L then the fit reduces to a
+    # trivial constant and τ = 1 exactly.
+    τ0, D0, _, _, _, _ = fit_effective_diffusivity(sol, prob, :conc; depth=0.0)
+    @test D0 ≈ 1.0 atol = 1e-6
+
+    τ1, D1, _, _, _, _ = fit_effective_diffusivity(sol, prob, :conc; depth=1.0)
+    @test D1 ≈ 1.0 atol = 1e-6
 end
