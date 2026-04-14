@@ -372,15 +372,15 @@ end
     @test D1 ≈ 1.0 atol = 1e-6
 end
 
-@testset "fit_effective_diffusivity — :mass on open slab with late t_fit" begin
-    # Regression test for the mass_uptake reference-state fix. Before the
-    # fix, mass_uptake subtracted sum(c_hist[1]) as reference, which
-    # included the Dirichlet-clamped inlet face contribution and biased
-    # :mass fits by O(1/N). After the fix, the prob-aware overload defaults
-    # to c0_total=0 (matching the default _initial_state path u0=zeros),
-    # and with a late t_fit window that avoids the early-time finite-cell
-    # discretization, :mass recovers D = 1 to effectively machine precision
-    # at every N.
+@testset "fit_effective_diffusivity — :mass with auto-late t_fit default" begin
+    # Regression test for the mass_uptake reference-state fix AND the
+    # auto-late t_fit default for :mass. Before the fix, mass_uptake
+    # subtracted sum(c_hist[1]) as reference, which included the Dirichlet-
+    # clamped inlet face contribution and biased :mass fits by O(1/N).
+    # After the fix, the prob-aware overload defaults to c0_total=0 and
+    # fit_effective_diffusivity auto-picks a late t_fit window that skips
+    # the early-time finite-cell discretization — users don't need to know
+    # about either pathology to get accurate :mass fits.
     for N in (17, 33, 65, 129)
         img = trues(1, 1, N)
         prob = TransientDiffusionProblem(img;
@@ -390,15 +390,52 @@ end
             tspan=(0.0, 10.0),
             reltol=1e-12, abstol=1e-14)
 
-        # Late t_fit window — start well past the first-eigenmode timescale
-        # L²/(π²·D) ≈ 0.1 for L=1, D=1, so (1.5, 5.0) sits in the asymptotic
-        # tail where discrete and continuous eigenrates agree to O(dx²).
-        τ, D_eff, _, _, _, _ = fit_effective_diffusivity(
-            sol, prob, :mass; t_fit=(1.5, 5.0),
-        )
+        # No t_fit passed — should auto-pick a window past the first-
+        # eigenmode timescale and recover D to effectively machine precision.
+        τ, D_eff, xdata, _, _, _ = fit_effective_diffusivity(sol, prob, :mass)
         @test D_eff ≈ 1.0 atol = 1e-6
         @test τ    ≈ 1.0 atol = 1e-6
+        # Sanity check that the window actually starts late
+        @test xdata[1] >= 1.0
     end
+end
+
+@testset "fit_effective_diffusivity — t_fit auto-selection rules" begin
+    # Pin the defaulting behavior of _resolve_t_fit through the public API:
+    # - :conc / :flux → full trajectory
+    # - :mass         → starts at min(1.5·L²/D_pore, 0.5·(t_end - t_start))
+    # - Explicit t_fit always wins
+    N = 33
+    img = trues(1, 1, N)
+    prob = TransientDiffusionProblem(img;
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+    sol = solve(prob, ROCK4(); saveat=0.01, tspan=(0.0, 10.0),
+                reltol=1e-10, abstol=1e-12)
+
+    # :conc / :flux default → full trajectory
+    _, _, xd_c, _, _, _ = fit_effective_diffusivity(sol, prob, :conc; depth=0.5)
+    @test xd_c[1] == sol.t[1]
+    @test xd_c[end] == sol.t[end]
+
+    _, _, xd_f, _, _, _ = fit_effective_diffusivity(sol, prob, :flux; depth=0.5)
+    @test xd_f[1] == sol.t[1]
+    @test xd_f[end] == sol.t[end]
+
+    # :mass default → starts at ~1.5·L²/D_pore = 1.5 for L=1, D_pore=1
+    _, _, xd_m, _, _, _ = fit_effective_diffusivity(sol, prob, :mass)
+    @test xd_m[1] ≈ 1.5 atol = 0.02  # one saveat slack
+    @test xd_m[end] == sol.t[end]
+
+    # Explicit t_fit always wins, even for :mass
+    _, _, xd_m_exp, _, _, _ = fit_effective_diffusivity(sol, prob, :mass; t_fit=(0.5, 2.0))
+    @test xd_m_exp[1] ≈ 0.5 atol = 0.02
+    @test xd_m_exp[end] ≈ 2.0 atol = 0.02
+
+    # Short simulation → :mass late cap should fall back to 0.5·(t_end-t_start)
+    sol_short = solve(prob, ROCK4(); saveat=0.01, tspan=(0.0, 1.0),
+                      reltol=1e-10, abstol=1e-12)
+    _, _, xd_short, _, _, _ = fit_effective_diffusivity(sol_short, prob, :mass)
+    @test xd_short[1] ≈ 0.5 atol = 0.02  # capped at half the trajectory
 end
 
 @testset "mass_uptake — c0_total reference behavior" begin
