@@ -295,11 +295,12 @@ end
 #
 # Smoke tests for the TransientSolution adapter + accuracy tests on a
 # fully-open slab. For a homogeneous open slab the discrete FD solver is
-# solving exactly the same PDE as the analytical `slab_concentration` /
-# `slab_flux`, so :conc and :flux must recover D_eff = D_pore to numerical
-# precision on a sufficiently refined grid. :mass has a separate O(1/N)
-# reference-state offset in `mass_uptake` and is excluded from the strict
-# accuracy check.
+# solving exactly the same PDE as the analytical slab solutions, so
+# fit_effective_diffusivity must recover D_eff = D_pore to numerical
+# precision on a sufficiently refined grid — :conc and :flux over the full
+# trajectory, :mass over a late-time window that skips the early-time
+# (t ≲ dx²/D) finite-boundary-cell discretization artifact (see
+# fit_effective_diffusivity docstring).
 
 @testset "fit_effective_diffusivity — TransientSolution wrapper" begin
     prob = TransientDiffusionProblem(open_16;
@@ -369,4 +370,62 @@ end
 
     τ1, D1, _, _, _, _ = fit_effective_diffusivity(sol, prob, :conc; depth=1.0)
     @test D1 ≈ 1.0 atol = 1e-6
+end
+
+@testset "fit_effective_diffusivity — :mass on open slab with late t_fit" begin
+    # Regression test for the mass_uptake reference-state fix. Before the
+    # fix, mass_uptake subtracted sum(c_hist[1]) as reference, which
+    # included the Dirichlet-clamped inlet face contribution and biased
+    # :mass fits by O(1/N). After the fix, the prob-aware overload defaults
+    # to c0_total=0 (matching the default _initial_state path u0=zeros),
+    # and with a late t_fit window that avoids the early-time finite-cell
+    # discretization, :mass recovers D = 1 to effectively machine precision
+    # at every N.
+    for N in (17, 33, 65, 129)
+        img = trues(1, 1, N)
+        prob = TransientDiffusionProblem(img;
+            axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+        sol = solve(prob, ROCK4();
+            saveat=0.01,
+            tspan=(0.0, 10.0),
+            reltol=1e-12, abstol=1e-14)
+
+        # Late t_fit window — start well past the first-eigenmode timescale
+        # L²/(π²·D) ≈ 0.1 for L=1, D=1, so (1.5, 5.0) sits in the asymptotic
+        # tail where discrete and continuous eigenrates agree to O(dx²).
+        τ, D_eff, _, _, _, _ = fit_effective_diffusivity(
+            sol, prob, :mass; t_fit=(1.5, 5.0),
+        )
+        @test D_eff ≈ 1.0 atol = 1e-6
+        @test τ    ≈ 1.0 atol = 1e-6
+    end
+end
+
+@testset "mass_uptake — c0_total reference behavior" begin
+    # Direct test of the mass_uptake API: the prob-aware overload must
+    # default to c0_total=0 (the true pre-clamp initial state for the
+    # default solve path), not nansum(c_hist[1]) — which is the post-clamp
+    # state carrying the Dirichlet face contribution.
+    N = 33
+    img = trues(1, 1, N)
+    prob = TransientDiffusionProblem(img;
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+    sol = solve(prob, ROCK4();
+        saveat=0.01,
+        callback=StopAtFluxBalance(prob; abstol=1e-8),
+        tspan=(0.0, 20.0),
+        reltol=1e-12, abstol=1e-14)
+
+    # Prob overload default: reference is 0, so the asymptote is (c1+c2)/2.
+    m_prob = Tortuosity.mass_uptake(sol.u, prob)
+    @test m_prob[end] ≈ 0.5 atol = 1e-4
+
+    # Explicit c0_total override still works.
+    m_override = Tortuosity.mass_uptake(sol.u, prob; c0_total=0.0)
+    @test m_override == m_prob
+
+    # Primitive img overload preserves legacy behavior (subtract c_hist[1]).
+    m_img = Tortuosity.mass_uptake(sol.u, prob.img)
+    @test m_img[1] == 0.0  # legacy: first entry subtracts itself
+    @test m_img[end] ≈ 0.5 - 1/N atol = 1e-4  # O(1/N) biased, as documented
 end

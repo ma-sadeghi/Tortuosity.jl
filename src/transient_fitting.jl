@@ -23,6 +23,24 @@ Boundary modes must be `bc_inlet=<number>, bc_outlet=<number>` or
 - `t_fit` — time window `(tmin, tmax)` over which the fit is performed.
 - `terms` — number of eigenfunction terms in the analytic series solution.
 
+# Choice of `t_fit` for `:mass`
+
+`:conc` and `:flux` fits can use the full trajectory because the analytical
+slab solutions match the discrete FD solver to `O(dx²)` spatial error at
+any interior point / face. The `:mass` observable is different: at very
+early times (`t ≲ dx²/D`) the discrete mass uptake lags the continuous
+slab because the finite-thickness boundary cells cannot represent the
+arbitrarily-sharp spatial gradient near the Dirichlet plane. This is a
+first-order-in-`dx` discretization effect, not a bug, and it disappears
+once the diffusion length `√(Dt)` exceeds a few voxels.
+
+For accurate `D_eff` recovery with `:mass`, pass an explicit `t_fit`
+window that skips the early-time regime — e.g. `t_fit=(t_late, t_end)`
+with `t_late ≳ L²/(π²·D)` (the first-eigenmode timescale). In this tail
+only the slowest-decaying eigenmode contributes, and its discrete and
+continuous rates agree to `O(dx²)`, so the fit recovers `D_eff` to
+effectively machine precision.
+
 # Returns
 `τ, D_eff, xdata, ydata, fit, model`
 
@@ -71,7 +89,10 @@ function fit_effective_diffusivity(
         model = (t, p) -> slab_concentration(p[1], depth_actual, t; c1=c1, c2=c2, L=L, terms=terms)
 
     elseif method == :mass
-        ydata = (mass_uptake(c_hist[1:idx_max], prob.img))[idx_min:end]
+        # Use the problem-aware overload so the reference defaults to 0,
+        # matching the default `_initial_state` path (u0=nothing ⇒ c0=zeros)
+        # and the analytical slab_mass_uptake's assumption c(x, 0) = 0.
+        ydata = mass_uptake(c_hist[1:idx_max], prob)[idx_min:end]
         model = (t, p) -> φ * (c1 + c2) / 2 .* slab_mass_uptake(p[1], t; c1=c1, c2=c2, L=L, terms=terms)
 
     elseif method == :flux
