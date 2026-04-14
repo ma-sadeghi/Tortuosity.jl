@@ -487,93 +487,12 @@ end
 # (pre-refactor), using OldBaseline primitives to keep the old GPU path
 # fully isolated from the new code.
 
-function build_transient_operator_old(img, D, bc_inlet, bc_outlet; axis, dx)
-    # img is BitArray{3} on CPU. Compute BC nodes on CPU first (same as new code).
-    inlet_face, outlet_face = Tortuosity.axis_faces(axis)
-    bc_nodes = Int[]
-    if !isnothing(bc_inlet)
-        append!(bc_nodes, find_boundary_nodes_old(img, inlet_face))
-    end
-    if !isnothing(bc_outlet)
-        append!(bc_nodes, find_boundary_nodes_old(img, outlet_face))
-    end
-
-    img_gpu = CuArray(img)
-    nnodes = sum(img_gpu)
-
-    conns = create_connectivity_list_old(img_gpu)
-
-    if !(D isa Number)
-        D_local = Tortuosity.atleast_3d(D)
-        D_local_gpu = CuArray(D_local)
-        gd = Tortuosity.interpolate_edge_values(D_local_gpu[img_gpu], conns)
-    else
-        gd = D
-    end
-
-    weights = gd isa Number ? CUDA.fill(eltype(D)(gd), size(conns, 1)) : gd
-    am = create_adjacency_matrix_old(conns; n=nnodes, weights=weights)
-    A = laplacian_old(am)
-
-    nonzeros(A) .= nonzeros(A) ./ (-dx^2)
-
-    bc_nodes = Int32.(bc_nodes)
-    zero_rows_old!(A, bc_nodes)
-
-    return A
-end
-
-function transient_problem_old(
-    img, dt;
-    axis::Symbol=:z, bc_inlet=1, bc_outlet=0,
-    D=1.0, dx=nothing, dtype=Float32,
-)
-    img = Tortuosity.atleast_3d(img)
-    img = BitArray(img .!= 0)
-    D = D isa Number ? dtype(D) : dtype.(D)
-    bc_inlet = Tortuosity._validate_bc(bc_inlet, dtype, "bc_inlet")
-    bc_outlet = Tortuosity._validate_bc(bc_outlet, dtype, "bc_outlet")
-
-    isnothing(dx) && (dx = 1 / (size(img, Tortuosity.axis_dim(axis)) - 1))
-
-    g2v = Tortuosity.grid_to_vec(img)
-    A = build_transient_operator_old(img, D, bc_inlet, bc_outlet; axis=axis, dx=dx)
-
-    return Tortuosity.TransientDiffusionProblem(dx, dt, D, img, g2v, axis, bc_inlet, bc_outlet, A)
-end
-
-function init_state_old(
-    prob::Tortuosity.TransientDiffusionProblem{T}; C0=nothing, alg=ROCK4(),
-    reltol=1e-3, abstol=1e-6,
-) where {T}
-    if C0 === nothing
-        C0 = zeros(T, size(prob.img))
-    else
-        C0 = Tortuosity.atleast_3d(C0)
-        @assert size(C0) == size(prob.img) "C0 dims must match img"
-        C0 = T.(C0)
-    end
-
-    Tortuosity.apply_boundaries!(C0, prob)
-    C0 = C0[prob.img]
-
-    # OLD-style GPU detection: check for CuSparseMatrixCSC instead of PortableSparseCSC
-    gpu = prob.A isa CUDA.CUSPARSE.CuSparseMatrixCSC
-    if gpu
-        C0 = CuArray(C0)
-    end
-
-    dC! = Tortuosity.make_dC_function(prob)
-    prob_ode = ODEProblem(dC!, C0, (0.0, Inf))
-    integrator = init(prob_ode, alg; save_everystep=false, reltol=reltol, abstol=abstol)
-
-    C_hist = Vector{Vector{T}}()
-    t_hist = Float64[]
-    push!(t_hist, 0.0)
-    push!(C_hist, Array(C0))
-
-    return Tortuosity.TransientState(integrator, t_hist, C_hist)
-end
+# Transient reference implementations (`build_transient_operator_old`,
+# `transient_problem_old`, `init_state_old`) were removed when issue #54
+# dropped `TransientState` and the closure-based stop-condition API. The
+# steady-state `tortuosity_simulation_old` path below still exercises the
+# full old CUDA kernel chain (connectivity list + adjacency + laplacian +
+# apply_dirichlet_bc), which is what the GPU parity tests care about.
 
 function tortuosity_simulation_old(img_gpu::CuArray)
     nnodes = sum(img_gpu)

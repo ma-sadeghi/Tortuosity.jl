@@ -117,7 +117,7 @@ per-iteration wrapper allocation entirely.
 
 ## 4. Don't sort CSC `rowval` after the atomic scatter
 
-**Decision.** `create_adjacency_matrix` builds CSC via histogram + scan +
+**Decision.** `build_adjacency_matrix` builds CSC via histogram + scan +
 atomic scatter. The atomics produce non-deterministic row ordering within
 each column. We do **not** sort the rowvals after the scatter.
 
@@ -267,16 +267,21 @@ rationale:
 - `tortuosity`, `effective_diffusivity`, `formation_factor`
 - `fit_effective_diffusivity`, `fit_voxel_diffusivity`
 
-**Group B — called *during* `solve!` (as stop conditions or measurements)
+**Group B — called *during* `solve` (as stop conditions or measurements)
 but operating on CPU snapshot history, not on the GPU integrator state.**
 
 - `flux`, `slice_concentration`, `mass_uptake`
-- `stop_at_avg_concentration`, `stop_at_flux_balance`, `stop_at_periodic`
+- `StopAtFluxBalance`, `StopAtPeriodicState` (both materialise the state to CPU
+  on each callback fire so they can reuse the existing CPU-side `flux` /
+  `slice_concentration` code paths)
+- `StopAtSteadyState` and `StopAtSaturation` are the exceptions: they operate
+  on device-resident state via backend-agnostic reductions (`sum(u)`,
+  `DiffEqBase.get_du!`), so no D2H per fire.
 
 **Group C — setup-only CPU bookkeeping that is not portable to GPU.**
 
 - `find_boundary_nodes` (face enumeration requires scalar indexing semantics)
-- `grid_to_vec` (pore-ordinal lookup stored in `prob.grid_to_vec`)
+- `build_pore_index` (pore-ordinal lookup stored in `prob.pore_index`)
 - `BitArray(img .!= 0)` conversion in `TransientDiffusionProblem`
 
 **Rationale.**
@@ -287,19 +292,17 @@ a single `Array(u)` materialisation, curve fits). Measured cost at 200³ is
 single-digit milliseconds and add maintenance burden for every backend.
 `LsqFit.jl` has no GPU story at all.
 
-*Group B* is the more interesting case. `solve!` stores each snapshot as
-`push!(state.C, Array(state.integrator.u))` — i.e. every `dt` interval the
-current GPU state is copied to CPU and appended to `state.C`. This is
-intentional: snapshot history is the only unbounded-growth data in a
-transient run, and keeping 1000 snapshots of a 200³ Float32 field on GPU
-would eat 20 GB of VRAM. CPU RAM is cheaper and can be paged. Because the
-snapshots are on CPU by design, any downstream measurement or stop-condition
-evaluation that consumes `C_hist[end]` naturally runs on CPU with **zero
-additional D2H penalty** — `Array(u)` on an already-CPU `Vector` is a no-op.
-
-This means the apparent CPU work in `stop_at_flux_balance` (which calls
-`flux` twice per snapshot) is effectively free, and the entire
-stop-condition evaluation stays out of the GPU hot path.
+*Group B* is the more interesting case. The transient `solve` wrapper
+attaches a `DiffEqCallbacks.SavingCallback` whose save function is
+`(u, t, integ) -> Array(u)`, so every `saveat` interval the current GPU
+state is materialised to CPU and pushed into `sol.u`. This is intentional:
+snapshot history is the only unbounded-growth data in a transient run, and
+keeping 1000 snapshots of a 200³ Float32 field on GPU would eat 20 GB of
+VRAM. CPU RAM is cheaper and can be paged. Stop-condition callbacks that
+need to examine the state (`StopAtFluxBalance`, `StopAtPeriodicState`)
+materialise via `Array(u)` on each fire and reuse the CPU-side `flux` /
+`slice_concentration` code — the D2H cost is comparable to the per-snapshot
+save and happens at similar frequency in a well-tuned run.
 
 The per-snapshot `Array(u)` D2H itself is measured at ~15 ms for a ~20 MB
 vector at 200³ — about 0.5% of the per-snapshot ODE work on a consumer GPU.
@@ -314,10 +317,10 @@ seconds of host-device traffic, still dwarfed by the solve cost.
   that tracks the running pore ordinal and pushes it onto the result vector
   when the current cell sits on the target face. Drops to 17 ms per face
   (~3.2× faster), now competitive with the rest of setup.
-- `grid_to_vec` allocates `Array{Int,3}` the size of `img` — ~30 ms at 200³.
-  Cannot be moved to GPU because the resulting lookup table is consumed by
-  CPU-side measurement code (Group B) that operates on CPU snapshot vectors.
-  Stays on CPU by design.
+- `build_pore_index` allocates `Array{Int,3}` the size of `img` — ~30 ms at
+  200³. Cannot be moved to GPU because the resulting lookup table is consumed
+  by CPU-side measurement code (Group B) that operates on CPU snapshot
+  vectors. Stays on CPU by design.
 - `BitArray(img .!= 0)` packs the input to 1 bit per voxel so it can be
   cheaply transferred to GPU. ~7 ms at 200³. Unavoidable and tiny.
 
@@ -336,6 +339,113 @@ to enforce Dirichlet BCs on the operator. The steady-state path uses
 `apply_dirichlet_bc_fast!` which does similar work but with a slightly
 different kernel pipeline. Sub-20 ms and not on the per-step hot path —
 left for a later optimisation pass if it ever becomes the bottleneck.
+
+---
+
+## 10. Transient API is SciML-native (`solve(prob, alg; kwargs...)`)
+
+**Decision.** The transient solver exposes a single entry point:
+
+```julia
+prob = TransientDiffusionProblem(img; axis, bc_inlet, bc_outlet, D, voxel_size, …)
+sol  = solve(prob, alg; saveat, callback, tspan, reltol, abstol, kwargs...)
+```
+
+This replaces the pre-migration bespoke API (`init_state` + `solve!` + closure-
+based `stop_at_*`) with a straight SciML `CommonSolve.solve` method. Stop
+conditions are `DiscreteCallback` / `ContinuousCallback` factories
+(`StopAtSteadyState`, `StopAtFluxBalance`, `StopAtSaturation`,
+`StopAtPeriodicState`) that compose with any other SciML callback via
+`CallbackSet`. No backwards-compatibility shim — the old API was dropped
+cleanly (issue #54, pre-1.0, no known external users).
+
+**Rationale.** The old `init_state` + `solve!` pair was a thin wrapper over
+`OrdinaryDiffEq.init` plus a `step!` loop, but it hid the engine behind a
+bespoke façade that blocked legitimate composition:
+
+1. **Algorithm choice was hard-coded.** `init_state` instantiated `ROCK4()`
+   unconditionally. Users who wanted `Tsit5`, `TRBDF2`, `AutoTsit5(Rosenbrock23())`,
+   or anything else had to reach past the public API.
+2. **Stop conditions weren't composable with SciML callbacks.** The old
+   closures had signature `(t_hist, C_hist) -> Bool` and only ran between `dt`
+   intervals. A user who wanted to combine the flux-balance check with
+   `PositiveDomain` or a custom conservation check had no clean path.
+3. **OrdinaryDiffEq kwargs had to be plumbed one at a time.** `maxiters`,
+   `tstops`, `progress`, `save_everystep`, and every new knob would require a
+   forwarding change in our `solve!`.
+4. **Two solve verbs.** `solve` (from LinearSolve, for the steady-state
+   `LinearProblem`) and our own `solve!` (for `TransientState`) forced every
+   new user to learn an inconsistency. The SciML convention is one `solve`.
+
+**How the wrapper preserves the "CPU snapshots even on GPU" invariant.**
+Default `sol.u` in OrdinaryDiffEq stores whatever the integrator state type is
+— on GPU that's `Vector{CuVector{Float32}}`, which OOMs for long runs. To
+keep the old invariant, `solve(::TransientDiffusionProblem, alg; …)`:
+
+1. Builds an internal `ODEProblem(rhs!, u0, tspan)`.
+2. Attaches a `DiffEqCallbacks.SavingCallback((u, t, integ) -> Array(u),
+   saved; saveat=saveat)` that materialises each saved state to CPU.
+3. Composes it with the user's callback via `CallbackSet`.
+4. Passes `save_everystep=false, save_start=false, save_end=false` to the
+   underlying `solve` so the default save machinery never touches the GPU
+   state.
+5. Returns a thin `TransientSolution` wrapper with `t`, `u`, `retcode`, `prob`,
+   `alg`, and a passthrough `ode_sol` field for power users who want solver
+   diagnostics like `destats`.
+
+This gives users `sol.t` and `sol.u` as CPU vectors even for GPU runs while
+staying out of OrdinaryDiffEq's internal snapshot machinery entirely.
+
+**Stop conditions as callback factories.** Each factory returns a standard
+SciML callback:
+
+- **`StopAtSteadyState`** — thin forwarder to
+  `DiffEqCallbacks.TerminateSteadyState(abstol, reltol; min_t)`. Reads `du/dt`
+  from the integrator cache via `DiffEqBase.get_du!`, so it works on CPU and
+  GPU without backend code.
+- **`StopAtFluxBalance(prob; abstol, reltol)`** — `DiscreteCallback` that
+  materialises `c` to CPU and calls the existing `flux` function at both
+  inlet and outlet, terminating when the difference falls below
+  `max(abstol, reltol·max(|f_in|, |f_out|))`. Kept custom because boundary-
+  flux convergence is the physical quantity porous-media experimenters care
+  about — strictly weaker than `StopAtSteadyState` but more interpretable.
+- **`StopAtSaturation(c; abstol, reltol)`** — `ContinuousCallback` with
+  rootfinding on `sum(u)/length(u) - (c - tol)`. Offsets the target down by
+  `max(abstol, reltol·|c|)` so callers who pass `c` equal to the asymptotic
+  limit still get termination in finite time — the
+  asymptotic-approach footgun mentioned in the issue #54 design discussion.
+- **`StopAtPeriodicState(freq, prob; …)`** — custom `DiscreteCallback` with
+  its own closure-captured slice history. No SciML equivalent; kept custom.
+
+**Alternatives considered.**
+
+- **Subtype `SciMLBase.AbstractODEProblem`** — rejected. Would let
+  `solve(::TransientDiffusionProblem, alg)` dispatch through SciMLBase's
+  machinery directly, but it couples us to the `ODEProblem` layout and makes
+  the geometry metadata (`pore_index`, `img`, `voxel_size`) awkward to attach.
+  The wrapper approach keeps the PDE discretisation separate from the ODE
+  problem and makes the geometry available to postprocessing helpers.
+- **Struct-based stop-condition hierarchy** (`abstract type StopCondition`,
+  callable subtypes) — considered and deferred. Would gain type stability and
+  introspectability (`subtypes(StopCondition)` enumerates the family) but
+  the gain is small against the current closure-based factories, and the
+  struct layer can be retrofitted additively later.
+- **Full `ODESolution` return type** — rejected for the reason in decision #9
+  above: `sol.u` needs to be CPU-resident, and either letting
+  OrdinaryDiffEq's default save mechanism store GPU snapshots (OOM) or
+  post-constructing an `ODESolution` with a swapped `.u` (fragile) were
+  worse than a thin wrapper.
+- **Keeping `dt` on the problem struct** — rejected. In the old API, `dt` was
+  a positional arg on the constructor and doubled as the snapshot interval
+  and stop-condition evaluation interval. In the new API both of those are
+  runtime concerns (`saveat` is a `solve` kwarg; callbacks fire every ODE
+  step), so `dt` has no place on the problem. Constructor is now
+  `TransientDiffusionProblem(img; ...)`.
+
+**Data.** The new wrapper adds no meaningful runtime overhead over the old
+manual step loop (verified on blob fixtures in `test/test_transient.jl`).
+Setup cost is unchanged — all the geometry work happens in the constructor,
+which is byte-identical to the pre-migration path.
 
 ---
 

@@ -5,6 +5,8 @@ authors = ["Amin Sadeghi <amin.sadeghi@live.com>"]
 
 [deps]
 Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
+CommonSolve = "38540f10-b2f7-11e9-35d8-d573e4eb0ff2"
+DiffEqCallbacks = "459566f4-90b8-5000-8ac3-15dfb0a30def"
 HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
 ImageFiltering = "6a3955dd-da59-5b1f-98d4-e7296123deb5"
 ImageMorphology = "787d08f9-d448-5407-9aad-5290dd7ab264"
@@ -33,6 +35,8 @@ TortuosityMetalExt = "Metal"
 [compat]
 Atomix = "1"
 CUDA = "5"
+CommonSolve = "0.2"
+DiffEqCallbacks = "4"
 HDF5 = "0.17.2"
 ImageFiltering = "0.7.9"
 ImageMorphology = "0.4.5"

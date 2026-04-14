@@ -1,7 +1,7 @@
 using Test
 using Tortuosity
 using Tortuosity.Imaginator: phase_fraction
-import Tortuosity: find_true_indices, reverse_lookup
+import Tortuosity: find_true_indices, build_reverse_lookup
 
 # Set up fixtures
 img = ones(UInt8, (32, 32, 32))
@@ -52,7 +52,7 @@ end
 
     @test find_true_indices(mat) == expected
 
-    lookup = reverse_lookup(mat)
+    lookup = build_reverse_lookup(mat)
     for (i, idx) in enumerate(expected)
         @test lookup[idx] == i
     end

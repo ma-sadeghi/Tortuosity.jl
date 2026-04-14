@@ -58,13 +58,21 @@ function reconstruct_field(u, img::AbstractArray{Bool})
 end
 
 """
-    grid_to_vec(img::BitArray)
+    build_pore_index(img::BitArray)
 
-Build a lookup array mapping each pore voxel in `img` to its 1D index in the
-pore-only vector. Solid voxels are mapped to `0`. This is the inverse of
-[`reconstruct_field`](@ref).
+Build a 3D `Array{Int}` the same shape as `img` mapping each voxel to its index
+in the flat pore-only vector (ordered column-major over pore voxels). Pore
+voxels store their 1-based pore-vector position; solid voxels store `0` as a
+"not-a-pore" sentinel.
+
+Solid voxels use `0` rather than `NaN` because the return type is `Array{Int}`
+(for O(1) indexing into the pore vector) and `Int` has no NaN. Since pore
+indices are 1-based, `0` is unambiguously invalid.
+
+Used internally by [`slice_indices`](@ref) and [`reconstruct_slice`](@ref) to
+avoid walking the full image on every slice operation.
 """
-function grid_to_vec(img::BitArray)
+function build_pore_index(img::BitArray)
     g = zeros(Int, size(img))
     g[img] = 1:count(img)
     return g
@@ -88,14 +96,13 @@ function find_true_indices(a::AbstractArray{Bool})
 end
 
 """
-    reverse_lookup(im::AbstractArray{Bool})
+    build_reverse_lookup(img::AbstractArray{Bool})
 
-Build a `Dict` mapping each `true`-element's linear index in `im` to its
-sequential pore-voxel number (1, 2, …, `count(im)`).
+Build a `Dict` mapping each `true`-element's linear index in `img` to its
+sequential pore-voxel number (1, 2, …, `count(img)`).
 """
-function reverse_lookup(im::AbstractArray{Bool})
-    return Dict(zip(find_true_indices(im), 1:count(im)))
-    # sparsevec(find_true_indices(im), 1:count(im))
+function build_reverse_lookup(img::AbstractArray{Bool})
+    return Dict(zip(find_true_indices(img), 1:count(img)))
 end
 
 """

@@ -12,7 +12,7 @@ using SparseArrays
 using CUDA
 using Tortuosity
 using Tortuosity: PortableSparseCSC, find_boundary_nodes, Imaginator,
-    create_connectivity_list, create_adjacency_matrix, laplacian,
+    build_connectivity_list, build_adjacency_matrix, laplacian,
     apply_dirichlet_bc_fast!
 
 include(joinpath(@__DIR__, "..", "bench", "old_baseline.jl"))
@@ -121,17 +121,17 @@ nonempty(img) = sum(img) >= 4
 # Tests
 # ---------------------------------------------------------------------------
 
-@testset "create_connectivity_list" begin
+@testset "build_connectivity_list" begin
     for (label, img) in TEST_IMAGES
         nonempty(img) || continue
         cu_img = CuArray(img)
         old_conns = OldBaseline.create_connectivity_list_old(cu_img)
-        new_conns = create_connectivity_list(cu_img)
+        new_conns = build_connectivity_list(cu_img)
         @test conns_equivalent(old_conns, new_conns)
     end
 end
 
-@testset "create_adjacency_matrix (uniform weights)" begin
+@testset "build_adjacency_matrix (uniform weights)" begin
     for (label, img) in TEST_IMAGES
         nonempty(img) || continue
         cu_img = CuArray(img)
@@ -140,12 +140,12 @@ end
         nnodes = Int(sum(cu_img))
         weights = CUDA.fill(1.0f0, size(conns, 1))
         am_old = OldBaseline.create_adjacency_matrix_old(conns; n=nnodes, weights=weights)
-        am_new = create_adjacency_matrix(conns; n=nnodes, weights=weights)
+        am_new = build_adjacency_matrix(conns; n=nnodes, weights=weights)
         @test csc_equivalent(am_old, am_new)
     end
 end
 
-@testset "create_adjacency_matrix (random weights)" begin
+@testset "build_adjacency_matrix (random weights)" begin
     for (label, img) in TEST_IMAGES
         nonempty(img) || continue
         cu_img = CuArray(img)
@@ -156,7 +156,7 @@ end
         w_cpu = rand(Float32, size(conns, 1)) .+ 0.5f0
         weights = CuArray(w_cpu)
         am_old = OldBaseline.create_adjacency_matrix_old(conns; n=nnodes, weights=weights)
-        am_new = create_adjacency_matrix(conns; n=nnodes, weights=weights)
+        am_new = build_adjacency_matrix(conns; n=nnodes, weights=weights)
         @test csc_equivalent(am_old, am_new)
     end
 end
@@ -170,7 +170,7 @@ end
         nnodes = Int(sum(cu_img))
         weights = CUDA.fill(1.0f0, size(conns, 1))
         am_old = OldBaseline.create_adjacency_matrix_old(conns; n=nnodes, weights=weights)
-        am_new = create_adjacency_matrix(conns; n=nnodes, weights=weights)
+        am_new = build_adjacency_matrix(conns; n=nnodes, weights=weights)
         L_old = OldBaseline.laplacian_old(am_old)
         L_new = laplacian(am_new)
         @test csc_equivalent(L_old, L_new; rtol=1e-5)
@@ -186,7 +186,7 @@ end
         nnodes = Int(sum(cu_img))
         weights = CUDA.fill(1.0f0, size(conns, 1))
         am_old = OldBaseline.create_adjacency_matrix_old(conns; n=nnodes, weights=weights)
-        am_new = create_adjacency_matrix(conns; n=nnodes, weights=weights)
+        am_new = build_adjacency_matrix(conns; n=nnodes, weights=weights)
         L_old = OldBaseline.laplacian_old(am_old)
         L_new = laplacian(am_new)
         Random.seed!(hash(label))
@@ -217,7 +217,7 @@ end
         b_old = CUDA.zeros(Float32, nnodes)
 
         # Build via NEW path
-        am_new = create_adjacency_matrix(conns; n=nnodes, weights=weights)
+        am_new = build_adjacency_matrix(conns; n=nnodes, weights=weights)
         L_new = laplacian(am_new)
         b_new = CUDA.zeros(Float32, nnodes)
 

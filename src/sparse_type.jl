@@ -83,6 +83,14 @@ SparseArrays.nonzeros(A::PortableSparseCSC) = A.nzval
 SparseArrays.rowvals(A::PortableSparseCSC) = A.rowval
 SparseArrays.getcolptr(A::PortableSparseCSC) = A.colptr
 
+# Override the AbstractMatrix fallback — scalar indexing isn't supported, and
+# the default `show` path walks every entry. Print a concise summary instead.
+function Base.show(io::IO, A::PortableSparseCSC{T}) where {T}
+    storage = eltype(A.nzval) === T ? "$(typeof(A.nzval).name.name)" : ""
+    return print(io, "PortableSparseCSC{$T}($(A.m)×$(A.n), nnz=$(nnz(A)), storage=$(storage))")
+end
+Base.show(io::IO, ::MIME"text/plain", A::PortableSparseCSC) = show(io, A)
+
 function Base.getindex(::PortableSparseCSC, ::Integer, ::Integer)
     error("Scalar indexing not supported for PortableSparseCSC; use mul! for SpMV")
 end

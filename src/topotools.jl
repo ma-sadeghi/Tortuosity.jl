@@ -17,7 +17,7 @@ function laplacian(am)
 end
 
 """
-    create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
+    build_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
 
 Build an `nedges x 2` connectivity matrix listing all face-connected neighbor
 pairs in the 3D boolean image `img`. Each row `[i, j]` indicates that pore
@@ -29,20 +29,20 @@ Uses CPU loops for standard arrays, KA kernels for GPU arrays.
 - `inds`: pre-computed index array mapping grid positions to sequential pore
   indices. Default: computed internally.
 """
-function create_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
+function build_connectivity_list(img::AbstractArray{Bool,3}; inds=nothing)
     if _on_gpu(img)
-        return _create_connectivity_list_ka(img; inds=inds)
+        return _build_connectivity_list_ka(img; inds=inds)
     end
-    return _create_connectivity_list_cpu(img; inds=inds)
+    return _build_connectivity_list_cpu(img; inds=inds)
 end
 
 # Handle 2D input by promoting to 3D
-function create_connectivity_list(img::AbstractArray{Bool}; inds=nothing)
+function build_connectivity_list(img::AbstractArray{Bool}; inds=nothing)
     img3d = ndims(img) == 2 ? reshape(img, size(img)..., 1) : img
-    return create_connectivity_list(img3d; inds=inds)
+    return build_connectivity_list(img3d; inds=inds)
 end
 
-function _create_connectivity_list_cpu(img::AbstractArray{Bool,3}; inds=nothing)
+function _build_connectivity_list_cpu(img::AbstractArray{Bool,3}; inds=nothing)
     nx, ny, nz = size(img)
 
     if isnothing(inds)
@@ -92,7 +92,7 @@ end
 """
 GPU implementation using a two-pass histogram strategy with KA kernels.
 """
-function _create_connectivity_list_ka(img; inds=nothing)
+function _build_connectivity_list_ka(img; inds=nothing)
     img = ndims(img) == 2 ? reshape(img, size(img)..., 1) : img
     nx, ny, nz = size(img)
     N = length(img)
@@ -144,7 +144,7 @@ function _create_connectivity_list_ka(img; inds=nothing)
 end
 
 """
-    create_adjacency_matrix(conns; n, weights=1)
+    build_adjacency_matrix(conns; n, weights=1)
 
 Build a sparse adjacency matrix in CSC format from an `nedges x 2` connectivity
 list. Returns `SparseMatrixCSC` for CPU arrays, `PortableSparseCSC` for GPU arrays.
@@ -153,23 +153,23 @@ list. Returns `SparseMatrixCSC` for CPU arrays, `PortableSparseCSC` for GPU arra
 - `n`: number of nodes (determines matrix size `n x n`).
 - `weights`: scalar weight for all edges, or a vector of per-edge weights.
 """
-function create_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
+function build_adjacency_matrix(conns::Array{Int,2}; n, weights=1)
     nedges = size(conns, 1)
     w = length(weights) == 1 ? fill(weights, nedges) : weights
 
     # Build CSC directly from pre-sorted connectivity (sorted by column, then row).
     # This avoids the 3-4x memory overhead and sorting cost of sparse().
-    rowVal = conns[:, 1]
-    colPtr = zeros(Int, n + 1)
+    rowval = conns[:, 1]
+    colptr = zeros(Int, n + 1)
     for k in 1:nedges
-        colPtr[conns[k, 2] + 1] += 1
+        colptr[conns[k, 2] + 1] += 1
     end
-    cumsum!(colPtr, colPtr)
-    colPtr .+= 1
-    return SparseMatrixCSC(n, n, colPtr, rowVal, w)
+    cumsum!(colptr, colptr)
+    colptr .+= 1
+    return SparseMatrixCSC(n, n, colptr, rowval, w)
 end
 
-function create_adjacency_matrix(
+function build_adjacency_matrix(
     conns::AbstractMatrix{<:Integer}; n::Integer, weights=1.0f0,
 )
     backend = get_backend(conns)
