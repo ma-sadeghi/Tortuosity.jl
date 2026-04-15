@@ -66,6 +66,10 @@ const _has_gpu = _has_cuda || _has_metal
         include("test_impl_parity.jl")
     end
 
+    @testset verbose = true "Example scripts" begin
+        include("test_examples.jl")
+    end
+
     if _has_cuda
         @testset verbose = true "GPU parity vs old CUDA baseline" begin
             include("test_gpu_parity.jl")

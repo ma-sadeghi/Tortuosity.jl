@@ -7,7 +7,7 @@ using Tortuosity
 using Tortuosity: Imaginator, SteadyDiffusionProblem, tortuosity, reconstruct_field
 
 PLOT = false
-USE_GPU = true
+USE_GPU = false
 
 # %%
 # Generate/load the image

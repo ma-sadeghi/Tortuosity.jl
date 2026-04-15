@@ -3,12 +3,12 @@
 
 using Plots
 using Printf
+using Statistics
 using Tortuosity
 using Tortuosity: tortuosity, reconstruct_field
-using HDF5
 
 PLOT = false
-USE_GPU = true
+USE_GPU = false
 
 # %% ------------------------------------------------------
 # Generate/load the image
