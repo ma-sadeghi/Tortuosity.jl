@@ -94,7 +94,7 @@ export slab_cumulative_flux
     effective_diffusivity(c, img; axis=:x)
     formation_factor(c, img; axis=:x)
 
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, dtype=Float32)
+    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0)
     tsol = solve(prob, ROCK4(); saveat=0.1, tspan=(0.0, 0.2))
     flux(tsol.u, prob.D, prob.voxel_size, prob.img, prob.axis; ind=1, pore_index=prob.pore_index)
     mass_uptake(tsol.u, prob)
