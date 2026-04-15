@@ -6,9 +6,10 @@ using LinearAlgebra
 using LinearSolve
 using NaNStatistics
 using SparseArrays
-using OrdinaryDiffEq
-using OrdinaryDiffEq: ROCK4
+using OrdinaryDiffEqStabilizedRK
+using OrdinaryDiffEqStabilizedRK: ROCK4, ODEProblem
 using LsqFit
+using PrecompileTools: @compile_workload
 
 # GPU backend registration (populated by package extensions)
 const _preferred_gpu_backend = Ref{Any}(nothing)
@@ -70,5 +71,36 @@ export slab_concentration
 export slab_mass_uptake
 export slab_flux
 export slab_cumulative_flux
+
+# Precompile a representative end-to-end workload so the first user-visible
+# `solve` doesn't pay inference cost. Touches the steady linear path
+# (KrylovJL_CG via LinearSolve), the transient ROCK4 path (with SavingCallback),
+# the porous-media observables, and the LsqFit-based effective-diffusivity fit.
+# Intentionally CPU-only and tiny (12³ image): the goal is type coverage, not
+# correctness — accuracy is verified in the test suite. See issue #30.
+@compile_workload begin
+    # Precompile the imgen path with the same kwargs users pass in tutorials.
+    Imaginator.blobs(shape=(12, 12, 12), porosity=0.65, blobiness=1.0, seed=1)
+
+    # `ones(Bool, ...)` returns `Array{Bool,3}`, matching `Imaginator.blobs`'s
+    # output type — `trues` would return a `BitArray{3}` and the steady-state
+    # specializations would miss the user path entirely.
+    img = ones(Bool, 12, 12, 12)
+
+    sim = SteadyDiffusionProblem(img; axis=:x)
+    sol = solve(sim.prob, KrylovJL_CG())
+    c = reconstruct_field(sol.u, img)
+    tortuosity(c, img; axis=:x)
+    effective_diffusivity(c, img; axis=:x)
+    formation_factor(c, img; axis=:x)
+
+    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, dtype=Float32)
+    tsol = solve(prob, ROCK4(); saveat=0.1, tspan=(0.0, 0.2))
+    flux(tsol.u, prob.D, prob.voxel_size, prob.img, prob.axis; ind=1, pore_index=prob.pore_index)
+    mass_uptake(tsol.u, prob)
+    slice_concentration(tsol.u, prob.img, prob.axis, 1; pore_index=prob.pore_index, pore_only=true)
+
+    fit_effective_diffusivity(tsol, prob, :mass)
+end
 
 end  # module Tortuosity
