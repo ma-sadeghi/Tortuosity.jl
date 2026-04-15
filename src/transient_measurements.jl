@@ -108,35 +108,58 @@ function flux(c_hist::AbstractVector{<:Array}, D, voxel_size, img, axis; ind=:en
 end
 
 """
-    mass_uptake(c_hist, img)
-    mass_uptake(c_hist, prob::TransientDiffusionProblem)
+    mass_uptake(c_hist, img; c0_total=nothing)
+    mass_uptake(c_hist, prob::TransientDiffusionProblem; c0_total=0)
 
-Change in **volume-averaged** concentration from the initial state at each
-timestep. For each snapshot `c` in `c_hist`, returns
-`(Σ c - Σ c_hist[1]) / length(img)` — i.e. the difference between total
+Change in **volume-averaged** concentration from the pre-simulation initial
+state at each timestep. For each snapshot `c` in `c_hist`, returns
+`(Σ c - c0_total) / length(img)` — the difference between total
 concentration summed over all voxels (solid contributions are `NaN`-safe
-via `nansum` and therefore treated as zero) divided by the **total** number
-of voxels, not the pore count.
+via `nansum` and therefore treated as zero) and a scalar reference
+`c0_total`, divided by the **total** number of voxels (not the pore count).
 
 This is the discrete counterpart of [`slab_mass_uptake`](@ref), which is
-defined as `M_t / M_∞` for a homogeneous slab and therefore
-porosity-weighted. The `fit_effective_diffusivity` routine multiplies the
-analytical `slab_mass_uptake(D, t)` by `φ` to match the volume-averaged
+defined as `M_t / M_∞` for a homogeneous slab and therefore porosity-
+weighted. The `fit_effective_diffusivity` routine multiplies the analytical
+`slab_mass_uptake(D, t)` by `φ · (c1 + c2) / 2` to match the volume-averaged
 convention used here.
 
+# The `c0_total` reference
+
+`c_hist[1]` cannot be used as the initial reference for fits against
+`slab_mass_uptake`: the transient solver applies Dirichlet boundary values
+inside `_initial_state` **before** the first save, so `c_hist[1]` already
+contains the clamped inlet/outlet face contribution and is not the true
+pre-clamp initial state. Subtracting `c_hist[1]` yields an `O(1 / N)` bias
+that survives to `t → ∞` and skews any `D_eff` fit against
+`slab_mass_uptake` by a constant offset.
+
+The analytical `slab_mass_uptake` assumes `c(x, 0) = c0` (typically `0`)
+for all `x`, *before* the Dirichlet boundary load turns on. The correct
+reference is therefore the volume-integral of the pre-clamp initial field:
+
+- `img` overload, default `c0_total=nothing` → preserves legacy behavior
+  (`c0_total = nansum(c_hist[1])`) for any callers that rely on it.
+- `prob` overload, default `c0_total=0` → matches the default `solve` path
+  (`u0 === nothing ⇒ c0 = zeros`). If you ran `solve(prob, alg; u0=u0)`
+  with a non-zero pre-clamp `u0`, pass `c0_total = nansum(u0)` explicitly.
+
 # Arguments
-- `c_hist`: a vector of concentration snapshots. Each entry may be a full
-  3D grid or, via the `TransientDiffusionProblem` overload, a pore-only vector that
-  is mapped back via `prob.img`.
+- `c_hist`: vector of concentration snapshots. Each entry may be a full 3D
+  grid or, via the `TransientDiffusionProblem` overload, a pore-only
+  vector that is mapped back via `prob.img`.
 - `img`: boolean pore mask matching the full-grid shape.
+
+# Keyword Arguments
+- `c0_total`: scalar reference. See discussion above. `img` overload
+  defaults to `nansum(c_hist[1])`; `prob` overload defaults to `0`.
 
 # Returns
 `Vector{Float64}` of volume-averaged mass uptake, one entry per snapshot.
-Entry 1 is always zero.
 """
-function mass_uptake(c_hist, img::AbstractArray)
-    c0_total = nansum(c_hist[1])
-    return [(nansum(c) - c0_total) / length(img) for c in c_hist]
+function mass_uptake(c_hist, img::AbstractArray; c0_total=nothing)
+    ref = isnothing(c0_total) ? nansum(c_hist[1]) : c0_total
+    return [(nansum(c) - ref) / length(img) for c in c_hist]
 end
 
 # --- Convenience wrappers that unpack TransientDiffusionProblem ---
@@ -147,5 +170,5 @@ slice_concentration(c, prob::TransientDiffusionProblem, ind; pore_only::Bool=fal
 flux(c, prob::TransientDiffusionProblem; ind=:end) =
     flux(c, prob.D, prob.voxel_size, prob.img, prob.axis; ind=ind, pore_index=prob.pore_index)
 
-mass_uptake(c_hist, prob::TransientDiffusionProblem) =
-    mass_uptake(c_hist, prob.img)
+mass_uptake(c_hist, prob::TransientDiffusionProblem; c0_total::Real=0) =
+    mass_uptake(c_hist, prob.img; c0_total=c0_total)

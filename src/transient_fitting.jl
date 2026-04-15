@@ -1,7 +1,7 @@
 # Analytical solutions to homogeneous transient diffusion and curve-fitting utilities
 
 """
-    fit_effective_diffusivity(t, c_hist, prob, method; depth=0.5, t_fit=(0, t[end]), terms=100)
+    fit_effective_diffusivity(t, c_hist, prob, method; depth=0.5, t_fit=nothing, terms=100)
     fit_effective_diffusivity(sim, prob, method; ...)
 
 Fit a 1D analytical transient-diffusion solution to simulation data and extract
@@ -21,7 +21,36 @@ Boundary modes must be `bc_inlet=<number>, bc_outlet=<number>` or
 - `depth` — fractional depth in `[0,1]` for `:conc` and `:flux`.
              The value is snapped to the nearest voxel index.
 - `t_fit` — time window `(tmin, tmax)` over which the fit is performed.
+             Default `nothing` picks a sensible window per `method` (see below).
 - `terms` — number of eigenfunction terms in the analytic series solution.
+
+# Default `t_fit` per method
+
+With `t_fit = nothing` (the default), the fit window is auto-selected:
+
+- `:conc`, `:flux` → `(t[1], t[end])` (full trajectory). Both the point
+  concentration and the face flux match the analytical slab solution to
+  `O(dx²)` at any interior sample, so the full trajectory is usable.
+- `:mass` → `(max(t[1], 1.5 · L² / D_pore), t[end])`, i.e. starts well
+  past the first-eigenmode timescale `L² / (π² · D_pore) ≈ 0.1 · L²/D_pore`
+  and capped at `0.5 · (t[end] - t[1])` so a short simulation still has a
+  non-empty window. This auto-late default exists because `:mass` is a
+  volume-integrated observable: at very early times (`t ≲ dx²/D`) the
+  discrete mass uptake lags the continuous slab because the continuous
+  analytical has an unbounded flux at `x=0, t=0⁺` (the zero-thickness
+  boundary layer of a step-function BC) while the discrete flux is capped
+  at `D · c1 / dx`. That mismatch is a first-order-in-`dx` discretization
+  effect of the `:mass` observable on a step-function BC — it's not a bug
+  and can't be removed without either refining the grid or switching
+  observable. By default we simply skip the affected window; in the tail
+  only the slowest-decaying eigenmode contributes and its discrete and
+  continuous rates agree to `O(dx²)`, so the fit recovers `D_eff` to
+  effectively machine precision. For accuracy-critical work consider
+  `:flux`, which measures at an interior face and has no early-time
+  boundary-layer pathology at any `depth > 0`.
+
+You can always override the auto-selected window by passing an explicit
+`t_fit = (tmin, tmax)` tuple.
 
 # Returns
 `τ, D_eff, xdata, ydata, fit, model`
@@ -32,7 +61,7 @@ to `mean(prob.D[img])`.
 """
 function fit_effective_diffusivity(
     t, c_hist, prob::TransientDiffusionProblem, method::Symbol;
-    depth=0.5, t_fit=(0, t[end]), terms=100,
+    depth=0.5, t_fit=nothing, terms=100,
 )
     @assert !(prob.bc_inlet isa Function) "fit_effective_diffusivity does not support f(t) inlet boundary conditions."
     @assert !(prob.bc_outlet isa Function) "fit_effective_diffusivity does not support f(t) outlet boundary conditions."
@@ -43,19 +72,20 @@ function fit_effective_diffusivity(
     D_pore = prob.D isa Number ? Float64(prob.D) : Float64(sum(prob.D[prob.img]) / count(prob.img))
     param = [D_pore]
 
-    idx_min = argmin(abs.(t .- t_fit[1]))
-    idx_max = argmin(abs.(t .- t_fit[2]))
     N = size(prob.img, axis_dim(prob.axis))
-
-    xdata = t[idx_min:idx_max]
-    ydata = nothing
-    model = nothing
-
     # Insulated outlet is modelled as a symmetric slab of double length
     insulated = isnothing(prob.bc_outlet)
     c1 = prob.bc_inlet
     c2 = insulated ? prob.bc_inlet : prob.bc_outlet
     L = (N - 1) * prob.voxel_size * (insulated ? 2 : 1)
+
+    t_fit = _resolve_t_fit(t_fit, method, t, L, D_pore)
+    idx_min = argmin(abs.(t .- t_fit[1]))
+    idx_max = argmin(abs.(t .- t_fit[2]))
+
+    xdata = t[idx_min:idx_max]
+    ydata = nothing
+    model = nothing
 
     if method == :conc
         # Cell-centered FV with Dirichlet clamped at the centers of voxels 1
@@ -71,7 +101,10 @@ function fit_effective_diffusivity(
         model = (t, p) -> slab_concentration(p[1], depth_actual, t; c1=c1, c2=c2, L=L, terms=terms)
 
     elseif method == :mass
-        ydata = (mass_uptake(c_hist[1:idx_max], prob.img))[idx_min:end]
+        # Use the problem-aware overload so the reference defaults to 0,
+        # matching the default `_initial_state` path (u0=nothing ⇒ c0=zeros)
+        # and the analytical slab_mass_uptake's assumption c(x, 0) = 0.
+        ydata = mass_uptake(c_hist[1:idx_max], prob)[idx_min:end]
         model = (t, p) -> φ * (c1 + c2) / 2 .* slab_mass_uptake(p[1], t; c1=c1, c2=c2, L=L, terms=terms)
 
     elseif method == :flux
@@ -104,11 +137,29 @@ function fit_effective_diffusivity(
 end
 function fit_effective_diffusivity(
     sol::TransientSolution, prob::TransientDiffusionProblem, method::Symbol;
-    depth=0.5, t_fit=(0, sol.t[end]), terms=100,
+    depth=0.5, t_fit=nothing, terms=100,
 )
     return fit_effective_diffusivity(
         sol.t, sol.u, prob, method; depth=depth, t_fit=t_fit, terms=terms,
     )
+end
+
+# Resolve `t_fit` to a concrete (tmin, tmax) tuple. For :mass, auto-selects
+# a late start that skips the early-time boundary-layer regime where the
+# discrete and continuous trajectories disagree by O(dx). See the
+# fit_effective_diffusivity docstring for the reasoning.
+function _resolve_t_fit(t_fit, method::Symbol, t, L::Real, D_pore::Real)
+    t_fit === nothing || return t_fit
+    t_start = first(t)
+    t_end = last(t)
+    if method == :mass
+        # 1.5·L²/D_pore is ~15·τ₁ where τ₁ = L²/(π²·D_pore) is the first-
+        # eigenmode timescale — safely in the asymptotic tail. Cap at half
+        # the trajectory so a short sim still has a non-empty window.
+        t_late = min(1.5 * L^2 / D_pore, t_start + 0.5 * (t_end - t_start))
+        return (max(t_start, t_late), t_end)
+    end
+    return (t_start, t_end)
 end
 
 """
