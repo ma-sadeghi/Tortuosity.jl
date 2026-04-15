@@ -1,6 +1,6 @@
 name = "Tortuosity"
 uuid = "80bb5c7f-3561-4bbc-a7c3-5e29a4cab6cc"
-version = "0.0.5"
+version = "0.0.6"
 authors = ["Amin Sadeghi <amin.sadeghi@live.com>"]
 
 [deps]
