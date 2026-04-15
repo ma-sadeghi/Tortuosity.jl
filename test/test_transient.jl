@@ -94,7 +94,7 @@ blob_8 = BitArray(Imaginator.blobs(; shape=(8, 8, 8), porosity=0.5, blobiness=1,
 end
 
 @testset "TransientDiffusionProblem — custom parameters" begin
-    prob = TransientDiffusionProblem(blob_8; axis=:x, bc_inlet=2, bc_outlet=0, D=0.5, dtype=Float64, gpu=false)
+    prob = TransientDiffusionProblem(blob_8; axis=:x, bc_inlet=2, bc_outlet=0, D=0.5, gpu=false)
     @test prob.axis == :x
     @test prob.bc_inlet == 2.0
     @test prob.D == 0.5
@@ -126,7 +126,7 @@ end
 
 @testset "Operator — Dirichlet rows are zeroed" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false)
     A = prob.A
     bc_nodes = find_boundary_nodes(prob.img, :bottom)
     append!(bc_nodes, find_boundary_nodes(prob.img, :top))
@@ -137,7 +137,7 @@ end
 
 @testset "Operator — insulated boundary rows are NOT zeroed" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false)
     A = prob.A
     outlet_nodes = find_boundary_nodes(prob.img, :top)
     for node in outlet_nodes
@@ -149,7 +149,7 @@ end
 
 @testset "apply_boundaries! — Dirichlet on both faces" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false)
     c0 = zeros(Float64, size(img))
     apply_boundaries!(c0, prob)
     @test all(c0[:, :, 1] .== 1.0)
@@ -158,7 +158,7 @@ end
 
 @testset "apply_boundaries! — insulated outlet" begin
     img = ones(Bool, (4, 4, 4))
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false)
     c0 = zeros(Float64, size(img))
     apply_boundaries!(c0, prob)
     @test all(c0[:, :, 1] .== 1.0)
@@ -168,7 +168,7 @@ end
 @testset "apply_boundaries! — time-dependent inlet" begin
     img = ones(Bool, (4, 4, 4))
     f_inlet = t -> 0.5 + t
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=f_inlet, bc_outlet=0, gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=f_inlet, bc_outlet=0, gpu=false)
     c0 = zeros(Float64, size(img))
     apply_boundaries!(c0, prob)
     @test all(c0[:, :, 1] .== 0.5)  # f(0) = 0.5
@@ -178,7 +178,7 @@ end
 # --- Solve + TransientSolution ---
 
 @testset "solve — basic time progression" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8; gpu=false)
     sol = solve(prob, ROCK4(); saveat=0.1, tspan=(0.0, 0.5))
     @test sol.t[end] >= 0.5
     @test length(sol.t) > 1
@@ -187,13 +187,13 @@ end
 end
 
 @testset "solve — sol.u is CPU even under GPU-style code path" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8; gpu=false)
     sol = solve(prob, ROCK4(); saveat=0.1, tspan=(0.0, 0.5))
     @test all(u isa Vector{Float64} for u in sol.u)
 end
 
 @testset "TransientSolution — show" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8; gpu=false)
     sol = solve(prob, ROCK4(); saveat=0.2, tspan=(0.0, 0.5))
     io = IOBuffer()
     show(io, sol)
@@ -206,7 +206,7 @@ end
 # --- Stop conditions ---
 
 @testset "StopAtSteadyState — terminates on small du/dt" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8; gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.1,
         callback=StopAtSteadyState(abstol=1e-4, reltol=1e-3),
@@ -216,7 +216,7 @@ end
 end
 
 @testset "StopAtSaturation — terminates at target mean" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8; gpu=false)
     target = 0.3
     sol = solve(prob, ROCK4();
         saveat=0.05,
@@ -228,7 +228,7 @@ end
 end
 
 @testset "StopAtFluxBalance — terminates near steady state" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8; gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.1,
         callback=StopAtFluxBalance(prob; abstol=0.05),
@@ -248,7 +248,7 @@ end
         axis=:z,
         bc_inlet=t -> (sin(2π * freq * t) + 1) / 2,
         bc_outlet=nothing,
-        gpu=false, dtype=Float64)
+        gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.05,
         callback=StopAtPeriodicState(freq, prob; reltol=1e-3),
@@ -261,7 +261,7 @@ end
 # --- Composed callbacks ---
 
 @testset "CallbackSet — compose stop condition with tspan cap" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false, dtype=Float64)
+    prob = TransientDiffusionProblem(blob_8; gpu=false)
     # Extremely tight tolerance so the callback shouldn't fire before tspan end
     sol = solve(prob, ROCK4();
         saveat=0.1,
@@ -277,7 +277,7 @@ open_16 = ones(Bool, (16, 16, 16))
 
 @testset "Open space transient — $(ax)-axis" for ax in (:x, :y, :z)
     prob = TransientDiffusionProblem(open_16;
-        axis=ax, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+        axis=ax, bc_inlet=1, bc_outlet=0, gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.05,
         callback=StopAtFluxBalance(prob; abstol=0.01),
@@ -304,7 +304,7 @@ end
 
 @testset "fit_effective_diffusivity — TransientSolution wrapper" begin
     prob = TransientDiffusionProblem(open_16;
-        axis=:z, bc_inlet=1, bc_outlet=0, gpu=false, dtype=Float64)
+        axis=:z, bc_inlet=1, bc_outlet=0, gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.02,
         callback=StopAtFluxBalance(prob; abstol=0.001),
@@ -329,7 +329,7 @@ end
     N = 65
     img = trues(1, 1, N)
     prob = TransientDiffusionProblem(img;
-        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.005,
         callback=StopAtFluxBalance(prob; abstol=1e-5),
@@ -355,7 +355,7 @@ end
     N = 33
     img = trues(1, 1, N)
     prob = TransientDiffusionProblem(img;
-        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.01,
         callback=StopAtFluxBalance(prob; abstol=1e-5),
@@ -384,7 +384,7 @@ end
     for N in (17, 33, 65, 129)
         img = trues(1, 1, N)
         prob = TransientDiffusionProblem(img;
-            axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+            axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false)
         sol = solve(prob, ROCK4();
             saveat=0.01,
             tspan=(0.0, 10.0),
@@ -408,7 +408,7 @@ end
     N = 33
     img = trues(1, 1, N)
     prob = TransientDiffusionProblem(img;
-        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false)
     sol = solve(prob, ROCK4(); saveat=0.01, tspan=(0.0, 10.0),
                 reltol=1e-10, abstol=1e-12)
 
@@ -446,7 +446,7 @@ end
     N = 33
     img = trues(1, 1, N)
     prob = TransientDiffusionProblem(img;
-        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false, dtype=Float64)
+        axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false)
     sol = solve(prob, ROCK4();
         saveat=0.01,
         callback=StopAtFluxBalance(prob; abstol=1e-8),

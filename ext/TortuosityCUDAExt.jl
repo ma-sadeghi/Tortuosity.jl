@@ -9,6 +9,7 @@ using Tortuosity: PortableSparseCSC
 using KernelAbstractions
 using LinearAlgebra
 using SparseArrays
+using PrecompileTools: @setup_workload, @compile_workload
 
 function __init__()
     if CUDA.functional()
@@ -71,6 +72,31 @@ function LinearAlgebra.mul!(
     alpha::Number, beta::Number,
 ) where {Tv,Ti,V<:CuVector,Vi<:CuVector}
     return mul!(y, _as_cusparse(A), x, alpha, beta)
+end
+
+# Mirror the CPU precompile workload in src/Tortuosity.jl for the CUDA GPU path.
+# Only runs when a CUDA device is actually present at extension-precompile time;
+# on machines without a GPU it's a no-op and users pay full TTFX on first solve.
+# Note: `__init__` hasn't run yet during precompile, so we register the backend
+# refs manually inside the workload and restore them after.
+@setup_workload begin
+    if CUDA.functional()
+        img = ones(Bool, 12, 12, 12)
+        @compile_workload begin
+            Tortuosity._preferred_gpu_backend[] = CUDABackend()
+            Tortuosity._gpu_adapt[] = CUDA.cu
+            try
+                sim = Tortuosity.SteadyDiffusionProblem(img; axis=:x, gpu=true)
+                Tortuosity.solve(sim.prob, Tortuosity.KrylovJL_CG())
+
+                prob = Tortuosity.TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=true)
+                Tortuosity.solve(prob, Tortuosity.ROCK4(); saveat=0.1, tspan=(0.0, 0.2))
+            finally
+                Tortuosity._preferred_gpu_backend[] = nothing
+                Tortuosity._gpu_adapt[] = identity
+            end
+        end
+    end
 end
 
 end

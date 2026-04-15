@@ -60,7 +60,7 @@ end
 
 """
     TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0,
-                              D=1.0, voxel_size=nothing, dtype=Float32, gpu=nothing)
+                              D=1.0, voxel_size=nothing, gpu=nothing)
 
 Construct a `TransientDiffusionProblem` describing transient diffusion through a
 3D voxelized porous material. The input `img` defines which voxels are pore
@@ -85,11 +85,11 @@ along one axis.
 - `voxel_size`: physical spacing between adjacent voxel centers. If `nothing`,
   it is set to `1/(N_axis - 1)` so that the domain spans `[0, 1]` along the
   chosen axis.
-- `dtype`: numeric type used for the operator and solution arrays (e.g.,
-  `Float32` or `Float64`). Default: `Float32`.
 - `gpu`: whether to run the solver on the GPU. If `nothing` (default), uses
   GPU when a backend package is loaded *and* the image has ≥ 100 000 pore
   voxels. See [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
+  The element type follows `gpu`: `Float64` on CPU, `Float32` on GPU — the
+  same convention as `SteadyDiffusionProblem`.
 """
 function TransientDiffusionProblem(
     img;
@@ -98,7 +98,6 @@ function TransientDiffusionProblem(
     bc_outlet::BoundValue=0,
     D=1.0,
     voxel_size=nothing,
-    dtype=Float32,
     gpu=nothing,
 )
     img = atleast_3d(img)
@@ -111,10 +110,6 @@ function TransientDiffusionProblem(
     end
     img = BitArray(img .!= 0)
     @assert D isa Number || size(img) == size(D) "For scalar field D, size should match img size"
-    D = D isa Number ? dtype(D) : dtype.(D)
-
-    bc_inlet = _validate_bc(bc_inlet, dtype, "bc_inlet")
-    bc_outlet = _validate_bc(bc_outlet, dtype, "bc_outlet")
 
     nnodes = count(img)
     @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
@@ -135,6 +130,11 @@ function TransientDiffusionProblem(
                Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
     end
 
+    T = gpu ? Float32 : Float64
+    D = D isa Number ? T(D) : T.(D)
+    bc_inlet = _validate_bc(bc_inlet, T, "bc_inlet")
+    bc_outlet = _validate_bc(bc_outlet, T, "bc_outlet")
+
     @assert size(img, axis_dim(axis)) > 1 "Image must have at least 2 voxels along the chosen axis"
     isnothing(voxel_size) && (voxel_size = 1 / (size(img, axis_dim(axis)) - 1))
 
@@ -144,13 +144,13 @@ function TransientDiffusionProblem(
     return TransientDiffusionProblem(voxel_size, D, img, pidx, axis, bc_inlet, bc_outlet, A)
 end
 
-function _validate_bc(bc, dtype, name)
+function _validate_bc(bc, ::Type{T}, name) where {T}
     if bc isa Function
         val = bc(0.0)
         @assert val isa Number "$name(t) must return a Number"
         return bc
     elseif bc isa Number
-        return dtype(bc)
+        return T(bc)
     else
         return nothing
     end

@@ -99,7 +99,7 @@ end
     )
     (any(img[:, :, 1]) && any(img[:, :, end])) || return
 
-    prob = TransientDiffusionProblem(img; axis=:z, gpu=true, dtype=Float32)
+    prob = TransientDiffusionProblem(img; axis=:z, gpu=true)
     @test prob.img isa AbstractArray{Bool}
     @test !_on_gpu(prob.img)
     @test prob.A isa PortableSparseCSC
@@ -119,11 +119,11 @@ end
     )
     (any(img[:, :, 1]) && any(img[:, :, end])) || return
 
-    prob_cpu = TransientDiffusionProblem(img; axis=:z, gpu=false, dtype=Float64)
+    prob_cpu = TransientDiffusionProblem(img; axis=:z, gpu=false)
     sol_cpu = solve(prob_cpu, ROCK4(); saveat=0.05, tspan=(0.0, 0.15))
     c_mean_cpu = sum(sol_cpu.u[end]) / length(sol_cpu.u[end])
 
-    prob_gpu = TransientDiffusionProblem(img; axis=:z, gpu=true, dtype=Float32)
+    prob_gpu = TransientDiffusionProblem(img; axis=:z, gpu=true)
     sol_gpu = solve(prob_gpu, ROCK4(); saveat=0.05, tspan=(0.0, 0.15))
     c_mean_gpu = sum(sol_gpu.u[end]) / length(sol_gpu.u[end])
 
