@@ -2,7 +2,6 @@ module Imaginator
 
 using ImageFiltering
 using ImageMorphology
-using Images
 using Random
 using SpecialFunctions
 using Statistics

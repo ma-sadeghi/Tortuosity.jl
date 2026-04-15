@@ -7,7 +7,6 @@ using CUDA.CUSPARSE
 using SparseArrays
 using LinearAlgebra
 import Tortuosity
-import OrdinaryDiffEq: ODEProblem, init, ROCK4
 
 # ========================================================================
 # GRAPH KERNELS (old, CUDA.@cuda, CUDA.@atomic)
