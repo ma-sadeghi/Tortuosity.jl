@@ -45,5 +45,4 @@ temp/
 
 # System prompts
 .github/copilot-commit-message-instructions.md
-CLAUDE.md
 JULIA_PERF_TIPS.md
