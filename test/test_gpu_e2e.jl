@@ -32,6 +32,23 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu
     @test tortuosity(c_grid, sim.img; axis=ax) ≈ 1.0 atol = 1e-3
 end
 
+# Regression: small-box GPU runs once produced τ ≈ 0.73 instead of 1.0 on
+# Metal because histogram_connections_kernel! interleaved a per-bucket atomic
+# with a shared-counter atomic, and the latter silently lost updates under
+# contention. The undercount only matters in absolute terms (~24 missing
+# entries in the connectivity list), so the existing 16³/24³ tests above
+# absorbed it within atol=1e-3 — the bug only became visible once the box
+# was small enough that 24 lost edges was a meaningful fraction of total.
+@testset "open space $(n)^3 (small-box atomic regression) · axis=$(ax)" for n in (4, 6),
+    ax in (:x, :y, :z)
+
+    img = ones(Bool, n, n, n)
+    sim = SteadyDiffusionProblem(img; axis=ax, gpu=true)
+    sol = solve(sim.prob, KrylovJL_CG(); reltol=1.0f-6)
+    c_grid = reconstruct_field(sol.u, sim.img)
+    @test tortuosity(c_grid, sim.img; axis=ax) ≈ 1.0 atol = 1e-3
+end
+
 @testset "half-channel 16^3 (x-axis)" begin
     img = ones(Bool, 16, 16, 16)
     img[:, :, 1:8] .= false

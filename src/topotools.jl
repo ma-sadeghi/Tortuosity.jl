@@ -120,18 +120,23 @@ function _build_connectivity_list_ka(img; inds=nothing)
 
     # Pass 1: histogram. Use Int32 buckets — half the memory traffic.
     d_histogram = fill!(similar(idx_gpu, Int32, num_true), Int32(0))
-    d_total_conn_count = fill!(similar(idx_gpu, Int32, 1), Int32(0))
     histogram_connections_kernel!(backend, 256)(
-        d_histogram, d_total_conn_count, img, idx_gpu, nx, ny, nz; ndrange=N,
+        d_histogram, img, idx_gpu, nx, ny, nz; ndrange=N,
     )
-    # We need total_conns on the host before allocating conns_gpu, so this
-    # implicit sync via Array() is unavoidable.
-    total_conns = Int(Array(d_total_conn_count)[1])
-    total_conns == 0 && return Matrix{Int}(undef, 0, 2)
 
-    # Exclusive scan for write offsets
+    # Exclusive scan for write offsets. The kernel deliberately does not
+    # maintain its own total-connection counter — combining a per-bucket atomic
+    # with a second shared-counter atomic in the same kernel exposes a
+    # Metal/Atomix bug where the shared counter silently loses updates under
+    # contention (#80). Instead, derive total_conns from the scan we need
+    # anyway: the matching inclusive-scan-last-element equals
+    # `exclusive[end] + histogram[end]`. Two single-element host reads beat a
+    # full GPU reduction at moderate problem sizes.
     d_bucket_write_counters = similar(idx_gpu, Int32, num_true)
     exclusive_scan!(d_bucket_write_counters, d_histogram)
+    total_conns = Int(Array(@view d_bucket_write_counters[end:end])[1]) +
+                  Int(Array(@view d_histogram[end:end])[1])
+    total_conns == 0 && return Matrix{Int}(undef, 0, 2)
 
     # Pass 2: write connections
     conns_gpu = similar(idx_gpu, Int32, total_conns, 2)

@@ -18,27 +18,31 @@ given by `linear_indices`. Maps each `true` voxel to its pore-voxel number.
 end
 
 """
-    histogram_connections_kernel!(d_histogram, d_total_conn_count, im_gpu, idx_gpu, nx, ny, nz)
+    histogram_connections_kernel!(d_histogram, im_gpu, idx_gpu, nx, ny, nz)
 
-KA kernel: build a histogram counting connections per source node. Each thread
+KA kernel: build a histogram counting connections per neighbor node. Each thread
 processes one voxel and atomically increments `d_histogram[neighbor_idx]` for
-each face-connected neighbor. Also accumulates `d_total_conn_count`.
+each face-connected neighbor.
+
+The total connection count is intentionally derived afterwards from `sum(d_histogram)`
+rather than tracked here. Combining a per-bucket atomic with a second shared-counter
+atomic in the same kernel exposes a Metal/Atomix bug where updates to the shared
+counter are silently lost under contention. The histogram itself is unaffected
+because contention is spread across `num_true` buckets.
 """
 @kernel function histogram_connections_kernel!(
-    d_histogram, d_total_conn_count, @Const(im_gpu), @Const(idx_gpu), nx, ny, nz,
+    d_histogram, @Const(im_gpu), @Const(idx_gpu), nx, ny, nz,
 )
     linear_idx = @index(Global)
     if linear_idx <= length(im_gpu)
         cid = CartesianIndices(im_gpu)[linear_idx]
         i, j, k = cid.I
-        local_conn_count = 0
         if @inbounds im_gpu[i, j, k]
             # Check k-1
             if k > 1 && @inbounds im_gpu[i, j, k - 1]
                 neighbor_val_idx = @inbounds idx_gpu[i, j, k - 1]
                 if neighbor_val_idx > 0
                     Atomix.@atomic d_histogram[neighbor_val_idx] += 1
-                    local_conn_count += 1
                 end
             end
             # Check j-1
@@ -46,7 +50,6 @@ each face-connected neighbor. Also accumulates `d_total_conn_count`.
                 neighbor_val_idx = @inbounds idx_gpu[i, j - 1, k]
                 if neighbor_val_idx > 0
                     Atomix.@atomic d_histogram[neighbor_val_idx] += 1
-                    local_conn_count += 1
                 end
             end
             # Check i-1
@@ -54,7 +57,6 @@ each face-connected neighbor. Also accumulates `d_total_conn_count`.
                 neighbor_val_idx = @inbounds idx_gpu[i - 1, j, k]
                 if neighbor_val_idx > 0
                     Atomix.@atomic d_histogram[neighbor_val_idx] += 1
-                    local_conn_count += 1
                 end
             end
             # Check i+1
@@ -62,7 +64,6 @@ each face-connected neighbor. Also accumulates `d_total_conn_count`.
                 neighbor_val_idx = @inbounds idx_gpu[i + 1, j, k]
                 if neighbor_val_idx > 0
                     Atomix.@atomic d_histogram[neighbor_val_idx] += 1
-                    local_conn_count += 1
                 end
             end
             # Check j+1
@@ -70,7 +71,6 @@ each face-connected neighbor. Also accumulates `d_total_conn_count`.
                 neighbor_val_idx = @inbounds idx_gpu[i, j + 1, k]
                 if neighbor_val_idx > 0
                     Atomix.@atomic d_histogram[neighbor_val_idx] += 1
-                    local_conn_count += 1
                 end
             end
             # Check k+1
@@ -78,12 +78,8 @@ each face-connected neighbor. Also accumulates `d_total_conn_count`.
                 neighbor_val_idx = @inbounds idx_gpu[i, j, k + 1]
                 if neighbor_val_idx > 0
                     Atomix.@atomic d_histogram[neighbor_val_idx] += 1
-                    local_conn_count += 1
                 end
             end
-        end
-        if local_conn_count > 0
-            Atomix.@atomic d_total_conn_count[1] += local_conn_count
         end
     end
 end
