@@ -9,6 +9,7 @@ Steady-state tortuosity is a single number for the whole image. But transport th
 ```@example advtrans
 using Plots
 using Tortuosity
+using Statistics
 
 # 3D image — we need spatial variation along the transport axis
 img = Imaginator.blobs(; shape=(64, 64, 32), porosity=0.4, blobiness=0.5, seed=3)
@@ -25,7 +26,12 @@ sol = solve(prob, ROCK4();
 # Fit tortuosity at 400 randomly sampled voxels at the outlet (depth=1.0)
 tau_vals, SE_tau, voxel_inds = fit_voxel_diffusivity(sol, prob; depth=1.0, n_samples=400)
 
-histogram(tau_vals,
+# IQR-based removal of outliers, isolated voxel could have huge tortuosity value
+q1, q3 = quantile(tau_vals, [0.25, 0.75])
+iqr = q3 - q1
+filtered_vals = filter(x -> (x ≥ q1 - 1.5*iqr) && (x ≤ q3 + 1.5*iqr), tau_vals)
+
+histogram(filtered_vals,
     xlabel = "Tortuosity", ylabel = "Count",
     title = "Per-Voxel Tortuosity Distribution at the Outlet",
     legend = false
