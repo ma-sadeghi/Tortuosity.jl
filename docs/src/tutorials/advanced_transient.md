@@ -4,7 +4,7 @@ This page covers advanced features of the transient solver: per-voxel tortuosity
 
 ## Per-voxel tortuosity distribution
 
-Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this by fitting the concentration history at individual voxels to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate.
+Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this by fitting the concentration history at individual voxels to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate. The spread of the tortuosity values reflects the domain size, the degree to which different paths intersect, and the degree of variation between paths.
 
 ```@example advtrans
 using Plots
