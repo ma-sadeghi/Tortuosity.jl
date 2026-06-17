@@ -63,6 +63,7 @@ StopAtPeriodicState
 
 ```@docs
 flux
+flux_distribution
 slice_concentration
 mass_uptake
 ```
