@@ -144,10 +144,11 @@ end
 """
     check_flux_convergence(c, img, axis; D=1, reltol=1e-3)
 
-Evaluate whether the slice‑wise flux along a chosen axis has converged to a
-physically consistent steady‑state profile.
+Evaluate whether the slice‑wise flux along a chosen axis has converged to constant
+main-axis flux within the given reltol.
 
-Certain geometries may require a lower solver tolerance for the flux to converge
+Solver tolerance is not directly related to flux convergence, so certain geometries may
+require relatively tight solver tolerance before the flux will converge
 
 # Arguments
 - `c::Array`: Concentration field (full 3D array).

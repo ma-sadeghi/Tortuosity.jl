@@ -111,6 +111,7 @@ end
     flux_distribution(c, D, voxel_size, img, axis)
 
 Compute the slice‑wise diffusive flux along a chosen axis of a 3D voxel domain.
+The same measurement as `Tortuosity.flux()` for each slice along the main axis.
 
 # Arguments
 - `c::Array`: Concentration field. May be a full 3D array matching `img`, or a
@@ -158,7 +159,7 @@ function flux_distribution(c, D, voxel_size, img, axis)
         error("D must be a scalar or a scalar field with dimensions of img")
     end
 
-    directional_flux = D_eff .* (c[I1...] .- c[I2...])
+    directional_flux = D_eff .* (full_c[I1...] .- full_c[I2...])
 
     flux_dist = dropdims(nansum(directional_flux, dims = perp_dims),dims = perp_dims)
     cross_section_count = size(img)[perp_dims[1]] * size(img)[perp_dims[2]]
