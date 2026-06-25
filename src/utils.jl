@@ -167,7 +167,7 @@ function check_flux_convergence(c, img, axis; D=1, reltol = 1e-3)
 
     flux_dist = flux_distribution(c, D, 1, img, axis) #voxel_size is arbitrary, so is D if it's a scalar
     avg_flux = sum(flux_dist) ./length(flux_dist)
-    max_rel_error = abs(maximum(flux_dist .- avg_flux)/avg_flux)
+    max_rel_error = maximum(abs.((flux_dist .- avg_flux)/avg_flux))
 
     return max_rel_error < reltol
 end
