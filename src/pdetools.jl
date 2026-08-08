@@ -1,3 +1,20 @@
+# KNOWN LIMITATION — zero-degree boundary nodes silently lose their condition.
+#
+# A Dirichlet value is imposed as `diag[i] * x[i] = diag[i] * val[i]`, which
+# preserves the original diagonal and keeps `A` symmetric. It degenerates when
+# the node has no neighbours: its degree, and therefore its diagonal, is zero,
+# so the row reads `0 = 0`, `dropzeros!` deletes it, and the value is never
+# applied. An isolated pore voxel on the inlet face keeps `c = 0` instead of
+# `c = 1`, which drags the inlet-slice mean below the imposed drop and reports
+# a tortuosity below 1 — physically impossible.
+#
+# Reachable from the public API on any untrimmed image: 33 of the 36 blob
+# fixtures in `test/test_gpu_parity.jl` contain such a voxel. Scaling those rows
+# by 1 instead would fix it and is the identity everywhere else, but it changes
+# numerical output for most real images and diverges from the frozen CUDA
+# reference in `bench/old_baseline.jl`, so it needs its own change. Documented
+# as `@test_broken` in `test/test_assembly.jl`.
+
 """
     apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
 
