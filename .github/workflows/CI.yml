@@ -45,3 +45,10 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+        env:
+          # `overlap_indices_fast` chunks its input across `Threads.nthreads()`
+          # and concatenates the per-thread results. At one thread that reduces
+          # to a single chunk, so the multi-chunk merge — and the ordering
+          # guarantee that depends on it — is never executed. Run the suite with
+          # several threads so that path is actually covered.
+          JULIA_NUM_THREADS: '4'
