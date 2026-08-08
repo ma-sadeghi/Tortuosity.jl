@@ -199,8 +199,11 @@ function build_adjacency_matrix(
         weights
     end
 
-    I = conns[:, 1]  # row indices
-    J = conns[:, 2]  # column indices
+    # Views, not copies: `conns` is already device-resident and both columns are
+    # read-only from here on, so materialising them would double the peak — two
+    # full `nedges` index vectors alive while `rowval`/`nzval` are allocated.
+    I = @view conns[:, 1]  # row indices
+    J = @view conns[:, 2]  # column indices
 
     # Step 1: histogram of column indices
     col_counts = fill!(similar(conns, Ti, n), zero(Ti))
