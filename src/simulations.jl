@@ -188,7 +188,9 @@ function SteadyDiffusionProblem(
     T = gpu ? Float32 : Float64
     img_dev = gpu ? _gpu_adapt[](img) : img
     D_dev = isnothing(D) ? nothing : (gpu ? _gpu_adapt[](D) : D)
-    b = gpu ? fill!(_gpu_adapt[](zeros(T, nnodes)), zero(T)) : zeros(T, nnodes)
+    # Built on the device rather than allocated on the host and uploaded: the
+    # host array was zeroed twice and then sent over PCIe to be zeroed again.
+    b = gpu ? fill!(similar(img_dev, T, nnodes), zero(T)) : zeros(T, nnodes)
     D0 = T(1)
 
     verbose && @info "Building connectivity list and adjacency matrices..."
