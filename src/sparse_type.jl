@@ -141,6 +141,21 @@ end
     end
 end
 
+# `A * ones(n)` without the vector of ones: the same scatter as `_spmv_kernel!`
+# with `x` folded away. Row sums, not column sums — the two coincide for a
+# symmetric adjacency matrix but `laplacian` accepts any matrix, and `D` is
+# defined as the row sums.
+@kernel function _row_sums_kernel!(
+    sums, @Const(colptr), @Const(rowval), @Const(nzval), n
+)
+    j = @index(Global)
+    if j <= n
+        @inbounds for idx in colptr[j]:(colptr[j + 1] - 1)
+            Atomix.@atomic sums[rowval[idx]] += nzval[idx]
+        end
+    end
+end
+
 function LinearAlgebra.mul!(
     y::AbstractVector, A::PortableSparseCSC, x::AbstractVector
 )
@@ -234,15 +249,19 @@ end
 @kernel function _laplacian_entries_kernel!(
     L_rowval, L_nzval, @Const(L_colptr),
     @Const(A_rowval), @Const(A_nzval), @Const(A_colptr),
-    @Const(degrees), @Const(diag_missing), n,
+    @Const(degrees), n,
 )
     j = @index(Global)
     if j <= n
         @inbounds A_start = A_colptr[j]
         @inbounds A_end = A_colptr[j + 1] - 1
         @inbounds L_pos = L_colptr[j]
+        # Column j of L is column j of A plus a diagonal, except where A already
+        # carried one — so the gap between the two column lengths is the flag,
+        # and no separate `diag_missing` array has to stay live this long.
+        @inbounds diag_missing_j = (L_colptr[j + 1] - L_pos) != (A_end - A_start + 1)
 
-        if iszero(@inbounds diag_missing[j])
+        if !diag_missing_j
             # The column already carries A[j,j]. Rewrite it in place as
             # degree[j] - A[j,j] and negate everything else; the entry count is
             # unchanged, so no diagonal may be spliced in as well.
@@ -296,13 +315,14 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
 
     backend = get_backend(am.nzval)
 
-    # Row sums (degrees) via SpMV: degrees = A * ones(n)
-    ones_v = fill!(similar(am.nzval, n), one(T))
+    # Row sums (degrees) = A * ones(n), computed without the ones.
     degrees = fill!(similar(am.nzval, m), zero(T))
-    mul!(degrees, am, ones_v)
-    _free!(ones_v)
+    _row_sums_kernel!(backend)(degrees, am.colptr, am.rowval, am.nzval, n; ndrange=n)
+    KernelAbstractions.synchronize(backend)
 
     # Count the diagonals L will have to add, then size it from that count.
+    # Both of these are n-element scratch arrays, so they are released before
+    # L's entry arrays — which are `nnz` long — get allocated below.
     diag_missing = similar(am.colptr, n)
     _laplacian_diag_missing_kernel!(backend)(
         diag_missing, am.rowval, am.colptr, n; ndrange=n,
@@ -310,6 +330,7 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
     KernelAbstractions.synchronize(backend)
 
     extra_scan = accumulate(+, diag_missing)
+    _free!(diag_missing)
 
     L_colptr = similar(am.colptr, n + 1)
     _laplacian_colptr_kernel!(backend)(L_colptr, am.colptr, extra_scan, n; ndrange=n)
@@ -330,11 +351,10 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
     _laplacian_entries_kernel!(backend)(
         L_rowval, L_nzval, L_colptr,
         am.rowval, am.nzval, am.colptr,
-        degrees, diag_missing, n; ndrange=n,
+        degrees, n; ndrange=n,
     )
     KernelAbstractions.synchronize(backend)
     _free!(degrees)
-    _free!(diag_missing)
 
     return PortableSparseCSC(m, n, L_colptr, L_rowval, L_nzval)
 end
