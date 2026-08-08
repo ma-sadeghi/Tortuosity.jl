@@ -259,3 +259,78 @@ end
         @test isapprox(Array(b_old), Array(ts_new.prob.b); rtol=1e-4)
     end
 end
+
+# ---------------------------------------------------------------------------
+# Row-index ordering
+# ---------------------------------------------------------------------------
+#
+# `build_adjacency_matrix` scatters COO entries into CSC slots with atomic
+# counters, so row indices within a column come out in whatever order the
+# threads won — measured at ~90% of columns unsorted on a 24³ open image. That
+# ordering survives `laplacian` and `dropzeros!` all the way to the matrix
+# `TortuosityCUDAExt` hands to CUSPARSE.
+#
+# This is fine today: CUDA.jl runs CSC SpMV as a transposed CSR operation, which
+# scatters and is therefore order-independent. But "fine" here is a property of
+# the vendor library, not a guarantee we enforce, and enforcing it would mean a
+# segmented sort over every nonzero on the setup path. So the property is tested
+# instead: if a future CUDA.jl or CUSPARSE starts requiring sorted indices, this
+# fails loudly rather than quietly returning a wrong tortuosity.
+
+@testset "CUSPARSE SpMV tolerates unsorted row indices within a column" begin
+    # CPU mask with gpu=true: the constructor moves it across itself, so this
+    # doesn't trip the "img was passed on GPU" warning.
+    A = SteadyDiffusionProblem(ones(Bool, 24, 24, 24); axis=:x, gpu=true).prob.A
+
+    colptr, rowval, nzval = Array(A.colptr), Array(A.rowval), Array(A.nzval)
+    unsorted = count(1:A.n) do j
+        !issorted(@view rowval[colptr[j]:(colptr[j + 1] - 1)])
+    end
+    # Guard the premise: if assembly ever starts emitting sorted columns, the
+    # rest of this testset stops proving anything and should be revisited.
+    @test unsorted > 0
+
+    # Sort the reference's columns before handing them to `SparseMatrixCSC`.
+    # That type's invariant is sorted row indices and its constructor does not
+    # check — leaving them unsorted would make the oracle depend on the very
+    # order-independence this testset is trying to verify.
+    rv_ref, nv_ref = copy(rowval), copy(nzval)
+    for j in 1:A.n
+        slot = colptr[j]:(colptr[j + 1] - 1)
+        perm = sortperm(@view rv_ref[slot])
+        rv_ref[slot] = rv_ref[slot][perm]
+        nv_ref[slot] = nv_ref[slot][perm]
+    end
+    A_cpu = SparseMatrixCSC(A.m, A.n, copy(colptr), rv_ref, nv_ref)
+    x = rand(Float32, A.n)
+    y_ref = A_cpu * x
+
+    @testset "as assembled" begin
+        @test isapprox(Array(A * CuArray(x)), y_ref; rtol=1e-4)
+    end
+
+    @testset "with every column deliberately shuffled" begin
+        Random.seed!(20260806)
+        rv, nv = copy(rowval), copy(nzval)
+        for j in 1:A.n
+            slot = colptr[j]:(colptr[j + 1] - 1)
+            perm = shuffle(collect(slot))
+            rv[slot] = rv[perm]
+            nv[slot] = nv[perm]
+        end
+        A_shuffled = PortableSparseCSC(A.m, A.n, CuArray(colptr), CuArray(rv), CuArray(nv))
+        @test isapprox(Array(A_shuffled * CuArray(x)), y_ref; rtol=1e-4)
+    end
+
+    @testset "sorting the columns does not change the result" begin
+        rv, nv = copy(rowval), copy(nzval)
+        for j in 1:A.n
+            slot = colptr[j]:(colptr[j + 1] - 1)
+            perm = sortperm(@view rv[slot])
+            rv[slot] = rv[slot][perm]
+            nv[slot] = nv[slot][perm]
+        end
+        A_sorted = PortableSparseCSC(A.m, A.n, CuArray(colptr), CuArray(rv), CuArray(nv))
+        @test isapprox(Array(A_sorted * CuArray(x)), y_ref; rtol=1e-4)
+    end
+end

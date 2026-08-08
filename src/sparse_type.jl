@@ -22,8 +22,14 @@ Dispatches on the type of `am`:
 
 - Generic `AbstractMatrix` (including `SparseMatrixCSC`) → builds `D` via
   `spdiagm` and returns `D - A`.
-- [`PortableSparseCSC`](@ref) → assembled in a single pass with KA kernels;
-  no intermediate matrices.
+- [`PortableSparseCSC`](@ref) → assembled directly with KA kernels; no
+  intermediate matrices. A diagonal entry is added only to columns that lack
+  one, so an adjacency matrix carrying self-loops is handled correctly.
+
+The two dispatches agree on every *value*, but not always on the sparsity
+pattern: `D - A` prunes entries that evaluate to zero, whereas the
+`PortableSparseCSC` path keeps a structural diagonal in every column. They
+coincide after [`dropzeros!`](@ref), which the solver path applies anyway.
 """
 function laplacian end
 
@@ -129,22 +135,54 @@ function Base.:*(A::PortableSparseCSC, x::AbstractVector)
     return mul!(y, A, x)
 end
 
-# --- Laplacian: L = D - A in a single pass ---
+# --- Laplacian: L = D - A ---
 # D is the degree matrix (diagonal of row sums), A is the adjacency matrix.
-# Assumes A has no self-loops (no diagonal entries), which holds for graph Laplacians.
+#
+# A column of L holds the column of A plus a diagonal entry — but only when the
+# column does not already carry one. Adjacency matrices built from
+# `build_connectivity_list` never do (a voxel is not its own face-neighbour),
+# but `laplacian` accepts any matrix, so the output size is counted rather than
+# assumed. Assuming `nnz(A) + n` over-allocates by one slot per self-loop column
+# and leaves it uninitialised, which surfaces downstream as a garbage row index
+# in the `@inbounds` SpMV kernel.
 
-@kernel function _laplacian_colptr_kernel!(L_colptr, @Const(A_colptr), n)
+@kernel function _laplacian_diag_missing_kernel!(
+    diag_missing, @Const(A_rowval), @Const(A_colptr), n
+)
     j = @index(Global)
-    if j <= n + 1
-        # Each column gains one entry (the diagonal), so offset by (j - 1)
-        @inbounds L_colptr[j] = A_colptr[j] + (j - 1)
+    if j <= n
+        @inbounds A_start = A_colptr[j]
+        @inbounds A_end = A_colptr[j + 1] - 1
+        found = false
+        @inbounds for idx in A_start:A_end
+            if A_rowval[idx] == j
+                found = true
+                break
+            end
+        end
+        T = eltype(diag_missing)
+        @inbounds diag_missing[j] = found ? zero(T) : one(T)
+    end
+end
+
+@kernel function _laplacian_colptr_kernel!(
+    L_colptr, @Const(A_colptr), @Const(extra_scan), n
+)
+    j = @index(Global)
+    if j == 1
+        @inbounds L_colptr[1] = A_colptr[1]
+    end
+    if j <= n
+        # Column j of L holds column j of A plus however many diagonals were
+        # added in columns 1..j — that running total is `extra_scan`.
+        @inbounds L_colptr[j + 1] = A_colptr[j + 1] + extra_scan[j]
     end
 end
 
 @kernel function _laplacian_entries_kernel!(
     L_rowval, L_nzval, @Const(L_colptr),
     @Const(A_rowval), @Const(A_nzval), @Const(A_colptr),
-    @Const(degrees), n,
+    @Const(degrees), @Const(diag_missing), n,
 )
     j = @index(Global)
     if j <= n
@@ -152,39 +190,40 @@ end
         @inbounds A_end = A_colptr[j + 1] - 1
         @inbounds L_pos = L_colptr[j]
 
-        offset = 0
-        diag_inserted = false
-
-        for idx in A_start:A_end
-            @inbounds row = A_rowval[idx]
-
-            if !diag_inserted && row >= j
-                if row == j
-                    # Self-loop (rare): L[j,j] = degree[j] - A[j,j]
-                    @inbounds L_rowval[L_pos + offset] = j
-                    @inbounds L_nzval[L_pos + offset] = degrees[j] - A_nzval[idx]
-                    offset += 1
-                    diag_inserted = true
-                    continue
-                else
-                    # Insert diagonal before this entry
+        if iszero(@inbounds diag_missing[j])
+            # The column already carries A[j,j]. Rewrite it in place as
+            # degree[j] - A[j,j] and negate everything else; the entry count is
+            # unchanged, so no diagonal may be spliced in as well.
+            offset = 0
+            for idx in A_start:A_end
+                @inbounds row = A_rowval[idx]
+                @inbounds L_rowval[L_pos + offset] = row
+                @inbounds L_nzval[L_pos + offset] =
+                    row == j ? degrees[j] - A_nzval[idx] : -A_nzval[idx]
+                offset += 1
+            end
+        else
+            # No diagonal present: negate the off-diagonals and splice the
+            # diagonal in at its sorted position, or append it when every row
+            # index is below j.
+            offset = 0
+            diag_inserted = false
+            for idx in A_start:A_end
+                @inbounds row = A_rowval[idx]
+                if !diag_inserted && row > j
                     @inbounds L_rowval[L_pos + offset] = j
                     @inbounds L_nzval[L_pos + offset] = degrees[j]
                     offset += 1
                     diag_inserted = true
                 end
+                @inbounds L_rowval[L_pos + offset] = row
+                @inbounds L_nzval[L_pos + offset] = -A_nzval[idx]
+                offset += 1
             end
-
-            # Off-diagonal entry: negate
-            @inbounds L_rowval[L_pos + offset] = row
-            @inbounds L_nzval[L_pos + offset] = -A_nzval[idx]
-            offset += 1
-        end
-
-        # Diagonal not yet inserted (all row indices < j)
-        if !diag_inserted
-            @inbounds L_rowval[L_pos + offset] = j
-            @inbounds L_nzval[L_pos + offset] = degrees[j]
+            if !diag_inserted
+                @inbounds L_rowval[L_pos + offset] = j
+                @inbounds L_nzval[L_pos + offset] = degrees[j]
+            end
         end
     end
 end
@@ -193,26 +232,51 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
     m, n = size(am)
     @assert m == n "Adjacency matrix must be square"
 
+    Ti = eltype(am.colptr)
+    if n == 0
+        return PortableSparseCSC(
+            m, n,
+            fill!(similar(am.colptr, 1), one(Ti)),
+            similar(am.rowval, 0),
+            similar(am.nzval, 0),
+        )
+    end
+
+    backend = get_backend(am.nzval)
+
     # Row sums (degrees) via SpMV: degrees = A * ones(n)
     ones_v = fill!(similar(am.nzval, n), one(T))
     degrees = fill!(similar(am.nzval, m), zero(T))
     mul!(degrees, am, ones_v)
 
-    # L has nnz(A) + n entries (one new diagonal per column)
-    nnz_L = nnz(am) + n
+    # Count the diagonals L will have to add, then size it from that count.
+    diag_missing = similar(am.colptr, n)
+    _laplacian_diag_missing_kernel!(backend)(
+        diag_missing, am.rowval, am.colptr, n; ndrange=n,
+    )
+    KernelAbstractions.synchronize(backend)
+
+    extra_scan = accumulate(+, diag_missing)
+
     L_colptr = similar(am.colptr, n + 1)
+    _laplacian_colptr_kernel!(backend)(L_colptr, am.colptr, extra_scan, n; ndrange=n)
+    KernelAbstractions.synchronize(backend)
+
+    # Size the entry arrays from the column pointers we just built, not from
+    # `nnz(am) + total_extra`. Those agree only when the input's stored-value
+    # array matches its colptr span, which `PortableSparseCSC` never validates —
+    # and sizing the output by assumption is the exact failure this routine
+    # exists to avoid. Two single-slot host reads, the idiom
+    # `_build_connectivity_list_ka` already uses.
+    nnz_L = Int(Array(@view L_colptr[end:end])[1]) - Int(Array(@view L_colptr[1:1])[1])
+
     L_rowval = similar(am.rowval, nnz_L)
     L_nzval = similar(am.nzval, nnz_L)
-
-    backend = get_backend(am.nzval)
-
-    _laplacian_colptr_kernel!(backend)(L_colptr, am.colptr, n; ndrange=n + 1)
-    KernelAbstractions.synchronize(backend)
 
     _laplacian_entries_kernel!(backend)(
         L_rowval, L_nzval, L_colptr,
         am.rowval, am.nzval, am.colptr,
-        degrees, n; ndrange=n,
+        degrees, diag_missing, n; ndrange=n,
     )
     KernelAbstractions.synchronize(backend)
 
