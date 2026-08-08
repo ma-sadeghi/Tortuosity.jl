@@ -85,38 +85,22 @@ because contention is spread across `num_true` buckets.
 end
 
 """
-    shift_kernel!(dest, src, n)
-
-KA kernel: right-shift `src` into `dest` with `dest[1] = 0`, converting an
-inclusive prefix sum into an exclusive prefix sum.
-"""
-@kernel function shift_kernel!(dest, @Const(src), n)
-    idx = @index(Global)
-    if idx == 1 && n >= 1
-        @inbounds dest[idx] = 0
-    elseif 1 < idx <= n
-        @inbounds dest[idx] = src[idx - 1]
-    end
-end
-
-"""
     exclusive_scan!(out, inp)
 
 Compute the exclusive prefix sum: `out[i] = sum(inp[1:i-1])`.
-Uses `cumsum!` for the inclusive scan, then shifts via [`shift_kernel!`](@ref).
 Works on any backend (CPU via Base, GPU via GPUArrays).
+
+Written as the inclusive scan minus each element's own contribution, which is
+exact for the integer counters this backs and needs neither a second buffer the
+size of the scan nor a shifting kernel to read it.
 """
 function exclusive_scan!(out::AbstractVector{T}, inp::AbstractVector{T}) where {T}
     n = length(inp)
     n == 0 && return out
     length(out) != n && throw(DimensionMismatch("Output must match input length"))
 
-    temp_inclusive = similar(out)
-    cumsum!(temp_inclusive, inp)
-
-    backend = get_backend(out)
-    shift_kernel!(backend)(out, temp_inclusive, n; ndrange=n)
-    KernelAbstractions.synchronize(backend)
+    cumsum!(out, inp)
+    out .-= inp
 
     return out
 end
