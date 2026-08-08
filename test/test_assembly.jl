@@ -19,6 +19,7 @@ using Tortuosity:
     build_adjacency_matrix,
     build_connectivity_list,
     build_pore_index,
+    effective_diffusivity,
     tortuosity,
     _build_connectivity_list_cpu,
     find_boundary_nodes,
@@ -315,44 +316,38 @@ end
     end
 end
 
-@testset "KNOWN BUG: an isolated boundary voxel loses its Dirichlet value" begin
+@testset "an isolated boundary voxel still receives its Dirichlet value" begin
     # A zero-degree boundary node has a zero diagonal, so the `diag·x = diag·val`
-    # encoding collapses to `0 = 0`, `dropzeros!` deletes the row, and the
-    # prescribed value is never applied. The voxel keeps c = 0 while sitting on
-    # a c = 1 face, which pulls the inlet-slice mean below the imposed drop and
-    # reports a tortuosity below 1 — physically impossible.
-    #
-    # Reachable on any untrimmed image: 33 of the 36 blob fixtures in
-    # test_gpu_parity.jl contain such a voxel. Fixing it means scaling those
-    # rows by 1 instead, which is the identity for every well-connected image
-    # but changes results for most real ones and diverges from the frozen CUDA
-    # reference in bench/old_baseline.jl — so it needs its own change.
-    #
-    # The `@test_broken`s below record the intended behaviour. When the fix
-    # lands they will report "Unexpectedly Pass"; flip them to `@test` then.
+    # encoding would collapse to `0 = 0`, `dropzeros!` would delete the row, and
+    # the prescribed value would never be applied. The voxel would keep c = 0
+    # while sitting on a c = 1 face, dragging the inlet-slice mean below the
+    # imposed drop and reporting a tortuosity below 1 — impossible, from a solve
+    # that reports success. Reachable on any untrimmed image.
     duct = falses(12, 6, 6)
     duct[:, 3:4, 3:4] .= true
     iso = copy(duct)
     iso[1, 6, 6] = true                        # on the inlet face, touching nothing
 
-    sim = SteadyDiffusionProblem(iso; axis=:x, gpu=false)
+    sim = SteadyDiffusionProblem(iso; axis=:x, gpu=false, warn_nonpercolating=false)
     node = build_pore_index(BitArray(iso))[1, 6, 6]
     A = Array(sim.prob.A)
 
-    # Current behaviour: the row is empty and the RHS entry is zero.
-    @test all(iszero, A[node, :])
-    @test sim.prob.b[node] == 0
-    @test_broken A[node, node] > 0
+    @test A[node, node] > 0                    # the row survives dropzeros!
+    @test count(!iszero, A[node, :]) == 1      # …and is diagonal-only
+    @test sim.prob.b[node] ≈ A[node, node] * 1.0
 
     c = reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u, iso)
-    @test c[1, 6, 6] == 0                      # …so it never sees the inlet value
-    @test_broken c[1, 6, 6] ≈ 1.0 atol = 1e-9
+    @test c[1, 6, 6] ≈ 1.0 atol = 1e-9         # the inlet value is honoured
 
-    # The consequence that actually bites: a tortuosity below the open-pore
-    # limit, from a solve that reports success.
-    τ = tortuosity(c, iso; axis=:x)
-    @test τ < 1
-    @test_broken τ > 1
+    # The voxel adds pore volume but carries no flux, so D_eff is untouched and
+    # τ rises above the duct's 1.0 rather than dropping below it.
+    c_duct = reconstruct_field(
+        solve(SteadyDiffusionProblem(duct; axis=:x, gpu=false).prob,
+              KrylovJL_CG(); reltol=1e-12).u, duct,
+    )
+    @test effective_diffusivity(c, iso; axis=:x) ≈
+          effective_diffusivity(c_duct, duct; axis=:x) atol = 1e-9
+    @test tortuosity(c, iso; axis=:x) > 1
 end
 
 @testset "a pore space with no connected pairs still assembles" begin
@@ -402,11 +397,16 @@ end
     A = Array(sim.prob.A)
     b = sim.prob.b
 
+    # A zero-degree boundary node has nothing to scale, so its row is given a
+    # unit diagonal instead — otherwise `diag·x = diag·val` reads `0 = 0` and the
+    # prescribed value is dropped. Identity for every node with a neighbour.
+    bc_diag = [iszero(d) ? one(d) : d for d in diag(L)[bc]]
+
     @test A[free, free] ≈ L[free, free]                 # free–free block untouched
     @test all(iszero, A[free, bc])                      # coupling eliminated…
     @test all(iszero, A[bc, free])                      # …symmetrically
-    @test diag(A)[bc] ≈ diag(L)[bc]                     # original diagonal kept
-    @test b[bc] ≈ diag(L)[bc] .* vals
+    @test diag(A)[bc] ≈ bc_diag                         # diagonal preserved, or 1
+    @test b[bc] ≈ bc_diag .* vals
     @test b[free] ≈ -L[free, bc] * vals                 # folded-in boundary load
 end
 

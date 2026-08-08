@@ -1,19 +1,22 @@
-# KNOWN LIMITATION — zero-degree boundary nodes silently lose their condition.
-#
 # A Dirichlet value is imposed as `diag[i] * x[i] = diag[i] * val[i]`, which
-# preserves the original diagonal and keeps `A` symmetric. It degenerates when
-# the node has no neighbours: its degree, and therefore its diagonal, is zero,
-# so the row reads `0 = 0`, `dropzeros!` deletes it, and the value is never
-# applied. An isolated pore voxel on the inlet face keeps `c = 0` instead of
-# `c = 1`, which drags the inlet-slice mean below the imposed drop and reports
-# a tortuosity below 1 — physically impossible.
+# preserves the original diagonal and keeps `A` symmetric. That encoding
+# degenerates when the node has no neighbours: its degree, and therefore its
+# diagonal, is zero, so the row reads `0 = 0`, `dropzeros!` deletes it, and the
+# prescribed value is never applied.
 #
-# Reachable from the public API on any untrimmed image: 33 of the 36 blob
-# fixtures in `test/test_gpu_parity.jl` contain such a voxel. Scaling those rows
-# by 1 instead would fix it and is the identity everywhere else, but it changes
-# numerical output for most real images and diverges from the frozen CUDA
-# reference in `bench/old_baseline.jl`, so it needs its own change. Documented
-# as `@test_broken` in `test/test_assembly.jl`.
+# The consequence is not a crash but a plausible wrong answer. An isolated pore
+# voxel on the inlet face keeps `c = 0` while sitting on a `c = 1` face, which
+# drags the inlet-slice mean below the imposed drop, inflates `D_eff`, and
+# reports a tortuosity below 1 — impossible, from a solve that reports success.
+# Reachable on any untrimmed image: 33 of the 36 blob fixtures in
+# `test/test_gpu_parity.jl` contain such a voxel.
+#
+# Scaling those rows by 1 instead enforces `x[i] = val[i]` exactly and keeps `A`
+# symmetric, since such a row and column are empty apart from the diagonal. It
+# is the identity everywhere else: any node with at least one neighbour has a
+# positive degree, and `SteadyDiffusionProblem` already requires `D > 0` across
+# the pore space.
+_unit_where_zero(d) = ifelse.(iszero.(d), one(eltype(d)), d)
 
 """
     apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
@@ -27,7 +30,7 @@ to its original value, and adjusts `b` so that `x[nodes] .= vals` upon solve.
 """
 function apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
     diag_inds = SparseArrays.diagind(A)[nodes]
-    diag_vals = SparseArrays.diag(A)[nodes]
+    diag_vals = _unit_where_zero(SparseArrays.diag(A)[nodes])
     # Add contribution from BCs to the RHS
     x_bc = multihotvec(nodes, length(b); vals=vals)
     b .-= A * x_bc
@@ -62,7 +65,7 @@ function apply_dirichlet_bc_fast!(A::SparseMatrixCSC, b; nodes, vals)
 
     # Fetch the diagonal before it's zeroed out
     diag_inds = SparseArrays.diagind(A)[nodes]
-    diag_vals = SparseArrays.diag(A)[nodes]
+    diag_vals = _unit_where_zero(SparseArrays.diag(A)[nodes])
     # Add contribution from BCs to the RHS
     x_bc = multihotvec(nodes, length(b); vals=vals)
     b .-= A * x_bc
@@ -79,6 +82,11 @@ function apply_dirichlet_bc_fast!(A::SparseMatrixCSC, b; nodes, vals)
     dropzeros!(A)
 end
 
+# Requires a structurally-present diagonal in every boundary column: the update
+# goes through `set_diag!`, which rewrites existing slots and cannot insert.
+# `laplacian(::PortableSparseCSC)` guarantees this — it emits a diagonal in
+# every column, including zero ones. Wrapping a `SparseMatrixCSC` Laplacian
+# would not, because `spdiagm(d) - A` prunes a zero-valued diagonal.
 function apply_dirichlet_bc_fast!(A::PortableSparseCSC, b; nodes, vals)
     # NOTE: This is the standard way to apply Dirichlet BCs:
     #  - Add contribution from BCs to the non-BC nodes in the RHS
@@ -99,10 +107,14 @@ function apply_dirichlet_bc_fast!(A::PortableSparseCSC, b; nodes, vals)
     x_bc = multihotvec(nodes, length(b); vals=gpu_vals, template=b)
     b .-= A * x_bc
     zero_rows_cols!(A, nodes)
-    # Apply BCs x[i] = vals[i] via diag[i] * x[i] = diag[i] * vals[i]
-    set_diag!(A, diag_vals)
+    # Patch the boundary rows only. `set_diag!` writes the whole diagonal, and a
+    # zero-degree *interior* node is deliberately left alone: it carries no flux
+    # and its row is already consistent at 0 = 0.
     gpu_nodes = similar(A.rowval, eltype(nodes), length(nodes))
     copyto!(gpu_nodes, nodes)
+    diag_vals[gpu_nodes] .= _unit_where_zero(diag_vals[gpu_nodes])
+    # Apply BCs x[i] = vals[i] via diag[i] * x[i] = diag[i] * vals[i]
+    set_diag!(A, diag_vals)
     b[gpu_nodes] .= gpu_vals .* diag_vals[gpu_nodes]
     dropzeros!(A)
 end

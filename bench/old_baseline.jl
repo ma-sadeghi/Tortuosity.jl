@@ -474,6 +474,15 @@ function apply_dirichlet_bc_old!(A::CUDA.CUSPARSE.CuSparseMatrixCSC, b; nodes, v
     x_bc = multihotvec_old(nodes, length(b); vals=CuArray(vals), gpu=true)
     b .-= A * x_bc
     zero_rows_cols_old!(A, nodes)
+    # Deliberate divergence from the original CUDA code: a zero-degree boundary
+    # node has a zero diagonal, so `diag*x = diag*val` collapses to `0 = 0` and
+    # the prescribed value is silently dropped. This baseline exists as an
+    # *independent implementation* to check the KA rewrite against, not as a
+    # specification of correct behaviour, so it carries the same fix the
+    # production path does — otherwise it would pin a known bug. See the comment
+    # above `_unit_where_zero` in src/pdetools.jl.
+    diag_vals[nodes] .= ifelse.(iszero.(diag_vals[nodes]), one(eltype(diag_vals)),
+                                diag_vals[nodes])
     set_diag_old!(A, diag_vals)
     b[nodes] .= vals .* CUDA.@allowscalar diag_vals[nodes]
     dropzeros_old!(A)
