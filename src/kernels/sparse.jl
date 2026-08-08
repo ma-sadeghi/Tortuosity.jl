@@ -265,6 +265,7 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
 
     # All zeros
     if nnz_new == 0
+        _invalidate_cache!(A)
         A.nzval = similar(A.nzval, Tv, 0)
         A.rowval = similar(A.rowval, Ti, 0)
         A.colptr = fill!(similar(A.colptr, num_cols + 1), one(Ti))
@@ -301,7 +302,10 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
         new_colptr_view2 .= inclusive_scan_counts .+ one(Ti)
     end
 
-    # Phase 5: update A in place
+    # Phase 5: update A in place. Dropping the backend cache first releases the
+    # wrapper still holding the pre-compaction `rowval` and `nzval` — 14.1 GiB at
+    # 800³, reachable until the matrix itself dies without this.
+    _invalidate_cache!(A)
     A.nzval = new_nzval
     A.rowval = new_rowval
     A.colptr = new_colptr

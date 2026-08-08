@@ -24,21 +24,20 @@ Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrixCSC) = true
 # --- Fast path: wrap PortableSparseCSC as CuSparseMatrixCSC for CUSPARSE SpMV ---
 # CUSPARSE expects Int32 indices. Wrapping is cheap (just stores pointers), but
 # within a Krylov solve `mul!` is called hundreds of times so even cheap
-# allocations accumulate. We cache the wrapper in `A._cache` and invalidate via
-# a pointer check — if any of `A`'s underlying vectors has been reassigned
-# (e.g. by `dropzeros!`) the cached wrapper's fields point to stale buffers
-# and we rebuild.
+# allocations accumulate, so we cache the wrapper in `A._cache`.
+#
+# Freshness is the mutators' responsibility: every routine that reassigns
+# `A.colptr`, `A.rowval`, or `A.nzval` calls `_invalidate_cache!` first, so a
+# wrapper found here always describes the current buffers. Comparing pointers
+# instead would be unsound — a buffer released back to the CUDA pool can be
+# handed straight back out at the same address, and the wrapper would then pass
+# the check while describing an array of a different length.
 
 @inline function _as_cusparse(
     A::PortableSparseCSC{Tv,Int32,V,Vi}
 ) where {Tv,V<:CuVector,Vi<:CuVector{Int32}}
     cached = A._cache[]
-    if cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} &&
-       pointer(cached.nzVal) == pointer(A.nzval) &&
-       pointer(cached.rowVal) == pointer(A.rowval) &&
-       pointer(cached.colPtr) == pointer(A.colptr)
-        return cached
-    end
+    cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} && return cached
     wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
         A.colptr, A.rowval, A.nzval, (A.m, A.n)
     )

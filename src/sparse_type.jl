@@ -56,9 +56,11 @@ Krylov.jl and LinearSolve.jl solvers.
 
 The `_cache` field is an opaque slot reserved for backend extensions to store
 reusable artifacts (e.g. `TortuosityCUDAExt` caches a `CuSparseMatrixCSC`
-wrapper there so each `mul!` call does not rebuild it). Extensions must
-validate the cache is fresh before using it — `A.colptr`, `A.rowval`, or
-`A.nzval` may be reassigned by in-place mutators like [`dropzeros!`](@ref).
+wrapper there so each `mul!` call does not rebuild it). A cached artifact
+references `A.colptr`, `A.rowval`, and `A.nzval` directly, so any mutator that
+*reassigns* one of those must call [`_invalidate_cache!`](@ref) first —
+otherwise the stale artifact keeps the replaced buffers alive and, if they are
+released, points into freed memory.
 """
 mutable struct PortableSparseCSC{
     T,Ti<:Integer,V<:AbstractVector{T},Vi<:AbstractVector{Ti}
@@ -81,6 +83,19 @@ function PortableSparseCSC(
     m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V
 ) where {T,V<:AbstractVector{T},Ti<:Integer,Vi<:AbstractVector{Ti}}
     return PortableSparseCSC{T,Ti,V,Vi}(m, n, colptr, rowval, nzval)
+end
+
+"""
+    _invalidate_cache!(A::PortableSparseCSC)
+
+Drop whatever a backend extension left in `A._cache`. Call it before
+reassigning `A.colptr`, `A.rowval`, or `A.nzval`: the cached artifact holds the
+old buffers, so leaving it in place pins storage the matrix no longer uses and
+leaves a wrapper that would read freed memory once that storage is released.
+"""
+function _invalidate_cache!(A::PortableSparseCSC)
+    A._cache[] = nothing
+    return nothing
 end
 
 Base.size(A::PortableSparseCSC) = (A.m, A.n)
