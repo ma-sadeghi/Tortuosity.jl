@@ -227,8 +227,10 @@ function build_adjacency_matrix(
 
     # Step 3: scatter COO entries into CSC position using atomic counters
     # Initialize write offsets from colptr[1:n]
+    # A view, not a slice: `colptr[1:n]` would materialise a second copy on the
+    # device only to copy it again.
     write_offsets = similar(conns, Ti, n)
-    copyto!(write_offsets, colptr[1:n])
+    copyto!(write_offsets, @view colptr[1:n])
 
     rowval = similar(conns, Ti, nedges)
     nzval = similar(conns, Tv, nedges)
