@@ -105,16 +105,17 @@ function _build_connectivity_list_ka(img; inds=nothing)
     owns_idx = isnothing(inds)
 
     if isnothing(inds)
-        linear_indices_gpu = findall(img)
-        num_true = length(linear_indices_gpu)
+        # An inclusive scan over the mask *is* the pore numbering: at a pore
+        # voxel the running count is that voxel's ordinal. `findall` would build
+        # a `CartesianIndex{3}` per pore voxel first — 24 B each, larger than
+        # anything else in the pipeline — only to hand out the same numbers.
+        # Solid voxels inherit the running count and are masked back to zero,
+        # which is the sentinel every kernel downstream tests for.
+        idx_gpu = similar(img, Int32)
+        cumsum!(vec(idx_gpu), vec(img))
+        num_true = Int(Array(@view vec(idx_gpu)[end:end])[1])
         num_true == 0 && return Matrix{Int}(undef, 0, 2)
-        idx_gpu = fill!(similar(img, Int32), Int32(0))
-        wg = min(num_true, 256)
-        fill_idx_kernel!(backend, wg)(idx_gpu, linear_indices_gpu, num_true; ndrange=num_true)
-        # No sync — next kernel on same stream waits automatically, and the
-        # allocator is stream-ordered too, so the index list can go now. It is
-        # `CartesianIndex{3}` at 24 B per pore voxel, the largest array here.
-        _free!(linear_indices_gpu)
+        idx_gpu .*= img
     else
         if size(inds) != size(img)
             error("Provided `inds` array must have the same dimensions as `img`")

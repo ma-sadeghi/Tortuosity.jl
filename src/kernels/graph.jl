@@ -4,20 +4,6 @@ using KernelAbstractions
 using Atomix
 
 """
-    fill_idx_kernel!(idx_gpu, linear_indices, num_true)
-
-KA kernel: write sequential indices (1, 2, ...) into `idx_gpu` at positions
-given by `linear_indices`. Maps each `true` voxel to its pore-voxel number.
-"""
-@kernel function fill_idx_kernel!(idx_gpu, @Const(linear_indices), num_true)
-    thread_idx = @index(Global)
-    if thread_idx <= num_true
-        @inbounds original_linear_idx = linear_indices[thread_idx]
-        @inbounds idx_gpu[original_linear_idx] = thread_idx
-    end
-end
-
-"""
     histogram_connections_kernel!(d_histogram, im_gpu, idx_gpu, nx, ny, nz)
 
 KA kernel: build a histogram counting connections per neighbor node. Each thread
