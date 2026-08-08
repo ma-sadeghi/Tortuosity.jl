@@ -20,8 +20,13 @@ face (length Δx/2), and one from the face to cell `b`'s center. With
 
 i.e. the harmonic mean of the two node diffusivities. That simplified form
 is the one we broadcast — it is ~3× faster on GPU than the literal
-`1/(1/(2·a) + 1/(2·b))` (three reciprocals vs one divide) and bit-identical
-in Float32.
+`1/(1/(2·a) + 1/(2·b))` (three reciprocals vs one divide).
+
+The two are *not* bit-identical: in `Float32` they round differently for
+roughly half of all input pairs, by at most 3 ULP over a survey of 2·10⁵
+random pairs. That is orders of magnitude below the `O(dx²)` discretisation
+error, so it does not affect the solve — but do not rely on exact equality
+when comparing against a reference implementation that uses the other form.
 
 # Arguments
 - `node_vals`: diffusivity value for each node (1D vector, length = number of nodes).
@@ -100,6 +105,12 @@ function SteadyDiffusionProblem(img; axis, D=nothing, gpu=nothing, verbose=false
 
     nnodes = sum(img)
     @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
+    # With one voxel along the transport axis the inlet and outlet faces are the
+    # same voxels, so both Dirichlet values land on the same nodes and the
+    # solution is silently meaningless. Easy to hit by accident: `atleast_3d`
+    # promotes a 2D image to `(m, n, 1)`, so asking for `axis=:z` on 2D data
+    # arrives here. `TransientDiffusionProblem` already rejects this.
+    @assert size(img, axis_dim(axis)) > 1 "Image must have at least 2 voxels along the chosen axis"
     # Auto-detect GPU: use if backend is available and image is large enough.
     # When the image is big enough to benefit from GPU but no backend has been
     # loaded, nudge the user once — the alternative is a silent CPU fallback

@@ -111,7 +111,9 @@ function overlap_indices_fast(a::AbstractArray, b::Set)
         thread_indices[tid] = local_indices
     end
 
-    return vcat(thread_indices...)
+    # `reduce` rather than splatting `vcat`: with no chunks at all `vcat()`
+    # returns `Any[]`, which would silently change the return type.
+    return reduce(vcat, thread_indices; init=Int[])
 end
 
 function overlap_indices_fast(a::AbstractArray, b::AbstractArray)
@@ -142,6 +144,12 @@ julia> find_chunk_bounds(; nelems=10, ndivs=3)
 ```
 """
 function find_chunk_bounds(; nelems::Int, ndivs::Int)
+    # An empty input gives `chunk_size == 0`, and `1:0:0` is not a valid range —
+    # it throws `ArgumentError: step cannot be zero`. Reachable through the
+    # public API: `apply_dirichlet_bc_fast!` calls `overlap_indices_fast` on the
+    # nonzero row indices of `A`, which is empty whenever the pore space has no
+    # face-connected pairs at all.
+    nelems == 0 && return Tuple{Int,Int}[]
     chunk_size = ceil(Int, nelems / ndivs)
     chunks = [(i, min(i + chunk_size - 1, nelems)) for i in 1:chunk_size:nelems]
     return chunks
