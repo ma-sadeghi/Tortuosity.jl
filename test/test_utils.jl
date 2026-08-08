@@ -1,7 +1,9 @@
+using HDF5
 using Test
 using Tortuosity
 using Tortuosity.Imaginator: phase_fraction
-import Tortuosity: find_true_indices, build_reverse_lookup
+import Tortuosity: args_to_dict, build_reverse_lookup, export_to_hdf5,
+    find_true_indices, format_args_dict
 
 # Set up fixtures
 img = ones(UInt8, (32, 32, 32))
@@ -55,5 +57,67 @@ end
     lookup = build_reverse_lookup(mat)
     for (i, idx) in enumerate(expected)
         @test lookup[idx] == i
+    end
+end
+
+# --- Command-line argument plumbing (used by the batch-run scripts) ---
+
+@testset "args_to_dict" begin
+    @test args_to_dict(["--fpath=img.h5", "--gpu_id=2"]) ==
+          Dict("fpath" => "img.h5", "gpu_id" => "2")
+
+    @testset "arguments that do not match --key=value are ignored" begin
+        @test args_to_dict(["--verbose", "positional", "--n=5"]) == Dict("n" => "5")
+        @test isempty(args_to_dict(String[]))
+        @test isempty(args_to_dict(["nothing", "to", "see"]))
+    end
+
+    @testset "values may contain paths and punctuation" begin
+        d = args_to_dict(["--path_export=/tmp/out-1.h5", "--axis=:x"])
+        @test d["path_export"] == "/tmp/out-1.h5"
+        @test d["axis"] == ":x"
+    end
+
+    @testset "a later occurrence of a key wins" begin
+        # `Dict` construction from a generator keeps the last pair.
+        @test args_to_dict(["--n=1", "--n=9"])["n"] == "9"
+    end
+end
+
+@testset "format_args_dict" begin
+    d = Dict("fpath" => "in.h5", "path_export" => "out.h5", "gpu_id" => "3")
+    fpath, path_export, gpu_id = format_args_dict(d)
+    @test fpath == "in.h5"
+    @test path_export == "out.h5"
+    @test gpu_id === 3
+
+    @testset "missing and malformed entries surface as errors" begin
+        @test_throws KeyError format_args_dict(Dict("fpath" => "in.h5"))
+        bad = Dict("fpath" => "in.h5", "path_export" => "out.h5", "gpu_id" => "first")
+        @test_throws ArgumentError format_args_dict(bad)
+    end
+end
+
+# --- HDF5 export ---
+
+@testset "export_to_hdf5" begin
+    path = joinpath(mktempdir(), "export.h5")
+    field = rand(4, 5, 6)
+    export_to_hdf5(path; concentration=field, tau=1.75, axis="x")
+
+    @test isfile(path)
+    h5open(path, "r") do fid
+        # Every keyword becomes a dataset named after the keyword.
+        @test Set(keys(fid)) == Set(["concentration", "tau", "axis"])
+        @test read(fid["concentration"]) == field
+        @test read(fid["tau"]) == 1.75
+        @test read(fid["axis"]) == "x"
+    end
+
+    @testset "writing again truncates rather than appends" begin
+        export_to_hdf5(path; only_this=[1.0, 2.0])
+        h5open(path, "r") do fid
+            @test Set(keys(fid)) == Set(["only_this"])
+        end
     end
 end

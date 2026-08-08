@@ -46,8 +46,24 @@ const _has_gpu = _has_cuda || _has_metal
         include("test_utils.jl")
     end
 
+    @testset verbose = true "Geometry and indexing helpers" begin
+        include("test_geometry_ops.jl")
+    end
+
+    @testset verbose = true "Image generation (Imaginator)" begin
+        include("test_imaginator.jl")
+    end
+
+    @testset verbose = true "Linear-system assembly" begin
+        include("test_assembly.jl")
+    end
+
     @testset verbose = true "Basic geometries" begin
         include("test_basic.jl")
+    end
+
+    @testset verbose = true "Steady-state physics invariants" begin
+        include("test_steady_physics.jl")
     end
 
     @testset verbose = true "Blobs (Gaussian noise)" begin
@@ -58,12 +74,28 @@ const _has_gpu = _has_cuda || _has_metal
         include("test_transient.jl")
     end
 
+    @testset verbose = true "Transient physics and observables" begin
+        include("test_transient_physics.jl")
+    end
+
+    @testset verbose = true "Cavern detection" begin
+        include("test_caverns.jl")
+    end
+
     @testset verbose = true "PortableSparseCSC operations" begin
         include("test_sparse_ops.jl")
     end
 
     @testset verbose = true "Cross-implementation parity" begin
         include("test_impl_parity.jl")
+    end
+
+    @testset verbose = true "Input validation and error paths" begin
+        include("test_errors.jl")
+    end
+
+    @testset verbose = true "Golden-value regression" begin
+        include("test_regression_golden.jl")
     end
 
     @testset verbose = true "Example scripts" begin

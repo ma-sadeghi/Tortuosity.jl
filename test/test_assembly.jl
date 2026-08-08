@@ -1,0 +1,491 @@
+# Structural invariants of the assembled linear system.
+#
+# The steady solver is three stages — connectivity list → weighted adjacency
+# matrix → graph Laplacian → Dirichlet elimination — and each stage carries
+# undocumented-by-construction assumptions that the next stage depends on.
+# Most notably `build_adjacency_matrix` builds CSC arrays *directly* from the
+# connectivity list ("sorted by column, then row"), skipping `sparse()`
+# entirely; if a future rewrite of the connectivity builder emits rows in a
+# different order the resulting matrix is silently malformed rather than
+# throwing. The tests here pin those invariants so that can't happen quietly.
+
+using Test
+using LinearAlgebra
+using SparseArrays
+using Tortuosity
+using Tortuosity:
+    Imaginator,
+    axis_faces,
+    build_adjacency_matrix,
+    build_connectivity_list,
+    build_pore_index,
+    tortuosity,
+    _build_connectivity_list_cpu,
+    find_boundary_nodes,
+    interpolate_edge_values,
+    laplacian,
+    reconstruct_field
+
+# Fixtures span the interesting structural cases: a fully-connected box, a
+# geometry with solid slabs (so degrees vary), and irregular pore space.
+function assembly_fixtures()
+    imgs = Tuple{String,Array{Bool,3}}[]
+    push!(imgs, ("open 5x6x7", ones(Bool, 5, 6, 7)))
+    let img = ones(Bool, 8, 8, 8)
+        img[:, :, 1:4] .= false
+        push!(imgs, ("half-solid 8^3", img))
+    end
+    let img = ones(Bool, 6, 6, 6)
+        img[2:5, 2:5, 2:5] .= false     # hollow shell: every voxel is a surface voxel
+        push!(imgs, ("hollow shell 6^3", img))
+    end
+    for seed in (3, 11)
+        img = Array{Bool}(Imaginator.blobs(; shape=(12, 12, 12), porosity=0.6, blobiness=1, seed=seed))
+        img = Array{Bool}(Imaginator.trim_nonpercolating_paths(img; axis=:x))
+        count(img) >= 8 || continue
+        push!(imgs, ("trimmed blob 12^3 seed=$seed", img))
+    end
+    return imgs
+end
+
+const ASSEMBLY_IMAGES = assembly_fixtures()
+
+# Count face-adjacent pore pairs by brute force, independent of the kernel.
+function count_adjacent_pairs(img)
+    nx, ny, nz = size(img)
+    pairs = 0
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        img[i, j, k] || continue
+        i < nx && img[i + 1, j, k] && (pairs += 1)
+        j < ny && img[i, j + 1, k] && (pairs += 1)
+        k < nz && img[i, j, k + 1] && (pairs += 1)
+    end
+    return pairs
+end
+
+# Assert the CSC arrays describe a well-formed matrix with sorted row indices
+# within each column — what SparseArrays and CUSPARSE both assume.
+function check_csc_wellformed(A::SparseMatrixCSC)
+    colptr = SparseArrays.getcolptr(A)
+    rows = rowvals(A)
+    @test colptr[1] == 1
+    @test colptr[end] == nnz(A) + 1
+    @test issorted(colptr)
+    @test all(1 .<= rows .<= size(A, 1))
+    for j in 1:size(A, 2)
+        @test issorted(@view rows[colptr[j]:(colptr[j + 1] - 1)])
+    end
+end
+
+# --- Connectivity list ---
+
+@testset "build_connectivity_list — $(label)" for (label, img) in ASSEMBLY_IMAGES
+    conns = build_connectivity_list(img)
+    n = count(img)
+
+    @testset "indices are in range and there are no self-loops" begin
+        @test size(conns, 2) == 2
+        @test all(1 .<= conns .<= n)
+        @test all(conns[k, 1] != conns[k, 2] for k in 1:size(conns, 1))
+    end
+
+    @testset "edge count matches a brute-force adjacency count" begin
+        # Each adjacent pair appears once in each direction.
+        @test size(conns, 1) == 2 * count_adjacent_pairs(img)
+    end
+
+    @testset "the edge set is symmetric" begin
+        forward = Set((conns[k, 1], conns[k, 2]) for k in 1:size(conns, 1))
+        @test length(forward) == size(conns, 1)   # no duplicated edges
+        @test forward == Set((j, i) for (i, j) in forward)
+    end
+
+    @testset "rows are grouped by column and ascending within a column" begin
+        # `build_adjacency_matrix` writes CSC arrays straight from this ordering.
+        @test issorted(@view conns[:, 2])
+        for j in unique(@view conns[:, 2])
+            rows_in_col = conns[findall(==(j), @view conns[:, 2]), 1]
+            @test issorted(rows_in_col)
+        end
+    end
+
+    @testset "node degrees equal the number of pore face-neighbours" begin
+        degrees = zeros(Int, n)
+        for k in 1:size(conns, 1)
+            degrees[conns[k, 2]] += 1
+        end
+        @test sum(degrees) == size(conns, 1)
+        @test all(0 .<= degrees .<= 6)
+    end
+end
+
+@testset "build_connectivity_list — 2D input is promoted to 3D" begin
+    img2d = Bool[1 1 0; 1 1 1; 0 1 1]
+    @test build_connectivity_list(img2d) == build_connectivity_list(reshape(img2d, 3, 3, 1))
+end
+
+@testset "build_connectivity_list — precomputed inds give the same result" begin
+    img = ASSEMBLY_IMAGES[2][2]
+    idx = similar(img, Int)
+    idx[img] .= 1:count(img)
+    @test _build_connectivity_list_cpu(img; inds=idx) == _build_connectivity_list_cpu(img)
+end
+
+# --- Edge-weight interpolation ---
+
+@testset "interpolate_edge_values" begin
+    conns = [1 2; 2 3; 3 1]
+    D = [1.0, 4.0, 9.0]
+    g = interpolate_edge_values(D, conns)
+
+    @testset "is the harmonic mean of the two node values" begin
+        a, b = D[conns[:, 1]], D[conns[:, 2]]
+        @test g ≈ @. 2 * a * b / (a + b)
+        # The docstring justifies the simplified form as bit-equivalent to the
+        # literal two-half-cell-resistors-in-series expression. Pin that claim.
+        @test g ≈ @. 1 / (1 / (2a) + 1 / (2b))
+    end
+
+    @testset "in Float32 the simplified form tracks the literal one to a few ULP" begin
+        # `2ab/(a+b)` and `1/(1/(2a)+1/(2b))` are algebraically equal but round
+        # differently: they disagree for roughly half of all Float32 pairs. The
+        # bound matters because Float32 is the element type of every GPU solve,
+        # and because a reference implementation written the other way must be
+        # compared with a tolerance rather than for exact equality.
+        ulp_diff(x, y) = abs(Int(reinterpret(Int32, x)) - Int(reinterpret(Int32, y)))
+
+        a32 = Float32[1, 4, 9, 0.5, 1e-3, 7.25, 1e3, 2.5, 1e-6]
+        b32 = Float32[4, 9, 1, 2.5, 1e3, 0.125, 1e-3, 2.5, 1e6]
+        conns32 = hcat(1:length(a32), (length(a32) + 1):(2 * length(a32)))
+        simplified = interpolate_edge_values(vcat(a32, b32), conns32)
+        literal = @. 1.0f0 / (1.0f0 / (2 * a32) + 1.0f0 / (2 * b32))
+
+        @test eltype(simplified) === Float32
+        @test all(ulp_diff.(simplified, literal) .<= 3)
+
+        # Equal node values are the common case (uniform D) and are exact.
+        @test interpolate_edge_values(Float32[2.5, 2.5], [1 2]) == Float32[2.5]
+    end
+
+    @testset "reduces to the common value when both nodes agree" begin
+        uniform = fill(2.5, 3)
+        @test interpolate_edge_values(uniform, conns) ≈ fill(2.5, 3)
+    end
+
+    @testset "is bounded by the two node values and symmetric" begin
+        a, b = D[conns[:, 1]], D[conns[:, 2]]
+        @test all(min.(a, b) .<= g .<= max.(a, b))
+        @test interpolate_edge_values(D, conns[:, [2, 1]]) ≈ g
+    end
+
+    @testset "a near-zero node value chokes the edge" begin
+        # Solid voxels enter as tiny diffusivities; the harmonic mean must
+        # collapse toward the small value rather than the average.
+        @test interpolate_edge_values([1.0, 1e-8], [1 2]) ≈ [2e-8] rtol = 1e-6
+    end
+end
+
+# --- Adjacency matrix and Laplacian ---
+
+@testset "build_adjacency_matrix / laplacian — $(label)" for (label, img) in ASSEMBLY_IMAGES
+    conns = build_connectivity_list(img)
+    n = count(img)
+    nedges = size(conns, 1)
+    w = collect(range(0.5, 2.0; length=nedges))
+    am = build_adjacency_matrix(conns; n=n, weights=w)
+
+    @testset "produces a well-formed CSC matrix" begin
+        @test size(am) == (n, n)
+        @test nnz(am) == nedges
+        check_csc_wellformed(am)
+    end
+
+    @testset "matches SparseArrays.sparse on the same triplets" begin
+        reference = sparse(conns[:, 1], conns[:, 2], w, n, n)
+        @test am == reference
+    end
+
+    @testset "scalar weights broadcast to every edge" begin
+        am1 = build_adjacency_matrix(conns; n=n)
+        @test all(nonzeros(am1) .== 1)
+        @test nnz(am1) == nedges
+    end
+
+    @testset "Laplacian is symmetric with zero row sums" begin
+        # Symmetric weights ⇒ symmetric adjacency ⇒ symmetric Laplacian.
+        am_sym = build_adjacency_matrix(conns; n=n, weights=ones(nedges))
+        L = laplacian(am_sym)
+        @test issymmetric(Array(L))
+        # Zero row sum is the discrete conservation statement: a constant field
+        # produces no net flux anywhere.
+        @test maximum(abs, L * ones(n)) < 1e-10
+        @test maximum(abs, vec(sum(Array(L); dims=1))) < 1e-10
+    end
+
+    @testset "Laplacian is a symmetric M-matrix" begin
+        am_sym = build_adjacency_matrix(conns; n=n, weights=ones(nedges))
+        L = Array(laplacian(am_sym))
+        d = diag(L)
+        @test all(d .>= 0)
+        offdiag = L - Diagonal(d)
+        @test all(offdiag .<= 0)
+        # Diagonal equals the node degree (number of pore neighbours).
+        @test d ≈ -vec(sum(offdiag; dims=2))
+    end
+end
+
+@testset "laplacian — positive semi-definite with the constant null vector" begin
+    img = ones(Bool, 4, 4, 4)
+    conns = build_connectivity_list(img)
+    am = build_adjacency_matrix(conns; n=count(img), weights=ones(size(conns, 1)))
+    L = Symmetric(Array(laplacian(am)))
+    λ = eigvals(L)
+    @test minimum(λ) > -1e-10                 # PSD
+    @test count(<(1e-10), λ) == 1             # one connected component
+end
+
+@testset "fully-open box has the exact expected edge count" begin
+    nx, ny, nz = 5, 6, 7
+    conns = build_connectivity_list(ones(Bool, nx, ny, nz))
+    expected = 2 * ((nx - 1) * ny * nz + nx * (ny - 1) * nz + nx * ny * (nz - 1))
+    @test size(conns, 1) == expected
+end
+
+# --- Dirichlet elimination and the assembled SteadyDiffusionProblem ---
+
+@testset "SteadyDiffusionProblem — assembled system, $(label)" for (label, img) in ASSEMBLY_IMAGES
+    n = count(img)
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
+    A = sim.prob.A
+    b = sim.prob.b
+
+    inlet_face, outlet_face = axis_faces(:x)
+    inlet = find_boundary_nodes(img, inlet_face)
+    outlet = find_boundary_nodes(img, outlet_face)
+
+    @testset "shape, element type, and CSC health" begin
+        @test size(A) == (n, n)
+        @test length(b) == n
+        @test eltype(A) === Float64
+        @test eltype(b) === Float64
+        check_csc_wellformed(A)
+    end
+
+    @testset "stays symmetric after Dirichlet elimination" begin
+        # Symmetry is what makes CG (KrylovJL_CG) a valid solver here — losing
+        # it during an optimisation would degrade convergence silently.
+        @test issymmetric(Array(A))
+    end
+
+    @testset "boundary rows reduce to diag·x = diag·val" begin
+        Ad = Array(A)
+        @test all(isfinite, b)
+        for node in inlet
+            row = Ad[node, :]
+            @test count(!iszero, row) == 1
+            @test row[node] > 0
+            @test b[node] ≈ row[node] * 1.0
+        end
+        for node in outlet
+            row = Ad[node, :]
+            @test count(!iszero, row) == 1
+            # An outlet value of 0 makes b[node] zero either way, so the
+            # surviving diagonal is the only thing distinguishing a correctly
+            # eliminated row from an entirely blank (singular) one.
+            @test row[node] > 0
+            @test b[node] ≈ 0.0
+        end
+    end
+
+    @testset "the solution satisfies the assembled system it came from" begin
+        u = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
+        @test norm(A * u .- b) <= 1e-8 * max(1.0, norm(b))
+    end
+
+    @testset "solution honours the imposed boundary values" begin
+        u = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
+        @test all(isapprox.(u[inlet], 1.0; atol=1e-8))
+        @test all(isapprox.(u[outlet], 0.0; atol=1e-8))
+    end
+
+    @testset "assembly is deterministic" begin
+        sim2 = SteadyDiffusionProblem(img; axis=:x, gpu=false)
+        @test sim2.prob.A == A
+        @test sim2.prob.b == b
+    end
+end
+
+@testset "KNOWN BUG: an isolated boundary voxel loses its Dirichlet value" begin
+    # A zero-degree boundary node has a zero diagonal, so the `diag·x = diag·val`
+    # encoding collapses to `0 = 0`, `dropzeros!` deletes the row, and the
+    # prescribed value is never applied. The voxel keeps c = 0 while sitting on
+    # a c = 1 face, which pulls the inlet-slice mean below the imposed drop and
+    # reports a tortuosity below 1 — physically impossible.
+    #
+    # Reachable on any untrimmed image: 33 of the 36 blob fixtures in
+    # test_gpu_parity.jl contain such a voxel. Fixing it means scaling those
+    # rows by 1 instead, which is the identity for every well-connected image
+    # but changes results for most real ones and diverges from the frozen CUDA
+    # reference in bench/old_baseline.jl — so it needs its own change.
+    #
+    # The `@test_broken`s below record the intended behaviour. When the fix
+    # lands they will report "Unexpectedly Pass"; flip them to `@test` then.
+    duct = falses(12, 6, 6)
+    duct[:, 3:4, 3:4] .= true
+    iso = copy(duct)
+    iso[1, 6, 6] = true                        # on the inlet face, touching nothing
+
+    sim = SteadyDiffusionProblem(iso; axis=:x, gpu=false)
+    node = build_pore_index(BitArray(iso))[1, 6, 6]
+    A = Array(sim.prob.A)
+
+    # Current behaviour: the row is empty and the RHS entry is zero.
+    @test all(iszero, A[node, :])
+    @test sim.prob.b[node] == 0
+    @test_broken A[node, node] > 0
+
+    c = reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u, iso)
+    @test c[1, 6, 6] == 0                      # …so it never sees the inlet value
+    @test_broken c[1, 6, 6] ≈ 1.0 atol = 1e-9
+
+    # The consequence that actually bites: a tortuosity below the open-pore
+    # limit, from a solve that reports success.
+    τ = tortuosity(c, iso; axis=:x)
+    @test τ < 1
+    @test_broken τ > 1
+end
+
+@testset "a pore space with no connected pairs still assembles" begin
+    # Every pore voxel isolated ⇒ the Laplacian has no stored entries ⇒
+    # `apply_dirichlet_bc_fast!` calls `overlap_indices_fast` on an empty index
+    # vector. That used to throw `ArgumentError: step cannot be zero` from
+    # inside the chunking helper.
+    img = falses(4, 1, 1)
+    img[1, 1, 1] = true
+    img[3, 1, 1] = true
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
+    @test size(sim.prob.A) == (2, 2)
+    @test length(sim.prob.b) == 2
+end
+
+@testset "SteadyDiffusionProblem — show" begin
+    sim = SteadyDiffusionProblem(ones(Bool, 4, 5, 6); axis=:y, gpu=false)
+    io = IOBuffer()
+    show(io, sim)
+    s = String(take!(io))
+    @test occursin("SteadyDiffusionProblem", s)
+    @test occursin("shape=(4, 5, 6)", s)
+    @test occursin("axis=y", s)
+    @test occursin("gpu=false", s)
+end
+
+@testset "Dirichlet elimination — exact contract, $(label)" for (label, img) in ASSEMBLY_IMAGES
+    # These six identities pin `apply_dirichlet_bc_fast!` completely, in terms of
+    # the pre-elimination Laplacian `L`. They are written as a specification
+    # rather than a spot check because MATRIX_FREE_PLAN.md replaces the
+    # assembled matrix with a stencil operator that has to reproduce exactly this
+    # convention: an edge survives only when both endpoints are free, a boundary
+    # row keeps its *original* diagonal, and the eliminated coupling is folded
+    # into the RHS once at setup.
+    n = count(img)
+    conns = build_connectivity_list(img)
+    L = Array(laplacian(build_adjacency_matrix(conns; n=n, weights=ones(size(conns, 1)))))
+
+    inlet_face, outlet_face = axis_faces(:x)
+    inlet = find_boundary_nodes(img, inlet_face)
+    outlet = find_boundary_nodes(img, outlet_face)
+    bc = vcat(inlet, outlet)
+    vals = vcat(ones(length(inlet)), zeros(length(outlet)))
+    free = setdiff(1:n, bc)
+
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
+    A = Array(sim.prob.A)
+    b = sim.prob.b
+
+    @test A[free, free] ≈ L[free, free]                 # free–free block untouched
+    @test all(iszero, A[free, bc])                      # coupling eliminated…
+    @test all(iszero, A[bc, free])                      # …symmetrically
+    @test diag(A)[bc] ≈ diag(L)[bc]                     # original diagonal kept
+    @test b[bc] ≈ diag(L)[bc] .* vals
+    @test b[free] ≈ -L[free, bc] * vals                 # folded-in boundary load
+end
+
+@testset "with uniform weights the RHS counts inlet neighbours" begin
+    # The same folding rule, spelled out concretely: for D = 1 and an inlet value
+    # of 1, a free node's RHS entry is simply how many inlet voxels touch it.
+    img = ones(Bool, 8, 6, 6)
+    img[3:5, 2:4, 2:4] .= false
+    n = count(img)
+    conns = build_connectivity_list(img)
+    inlet = find_boundary_nodes(img, :left)
+    outlet = find_boundary_nodes(img, :right)
+    bc = Set(vcat(inlet, outlet))
+    inlet_set = Set(inlet)
+
+    neighbours_from_inlet = zeros(Int, n)
+    for k in 1:size(conns, 1)
+        src, dst = conns[k, 1], conns[k, 2]
+        dst in bc && continue
+        src in inlet_set && (neighbours_from_inlet[dst] += 1)
+    end
+
+    b = SteadyDiffusionProblem(img; axis=:x, gpu=false).prob.b
+    free = setdiff(1:n, collect(bc))
+    @test b[free] ≈ Float64.(neighbours_from_inlet[free])
+    @test any(>(0), b[free])                            # the check is not vacuous
+end
+
+@testset "Dirichlet elimination matches an independent reduced-system solve" begin
+    # Build the Laplacian, partition it into free/boundary blocks, and solve
+    # L_ff x_f = -L_fb x_b densely. This is the textbook route and shares no
+    # code with apply_dirichlet_bc_fast!, so agreement is real corroboration
+    # rather than a tautology.
+    checked = 0
+    for (label, img) in ASSEMBLY_IMAGES
+        n = count(img)
+        # The blob fixtures sit just under 1000 nodes; a dense solve at that
+        # size costs milliseconds. An earlier 700-node cap silently excluded
+        # exactly the two irregular geometries this cross-check exists for.
+        n <= 2000 || continue
+        conns = build_connectivity_list(img)
+        L = Array(laplacian(build_adjacency_matrix(conns; n=n, weights=ones(size(conns, 1)))))
+
+        inlet_face, outlet_face = axis_faces(:x)
+        inlet = find_boundary_nodes(img, inlet_face)
+        outlet = find_boundary_nodes(img, outlet_face)
+        bc = vcat(inlet, outlet)
+        length(unique(bc)) == length(bc) || continue
+        vals = vcat(ones(length(inlet)), zeros(length(outlet)))
+        free = setdiff(1:n, bc)
+
+        x_ref = zeros(n)
+        x_ref[bc] = vals
+        if !isempty(free)
+            x_ref[free] = L[free, free] \ (-L[free, bc] * vals)
+        end
+
+        sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
+        u = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
+        @test u ≈ x_ref atol = 1e-7
+        checked += 1
+    end
+    # Guard against the `continue`s quietly emptying the loop: this is the only
+    # check in the file that shares no code with `apply_dirichlet_bc_fast!`, so
+    # a silently-skipped run would look identical to a passing one.
+    @test checked == length(ASSEMBLY_IMAGES)
+end
+
+@testset "open box reproduces the exact linear profile" begin
+    # For a uniform open grid the discrete solution is the continuous one: the
+    # second difference of a linear ramp vanishes, and the lateral no-flux
+    # condition is satisfied identically. Any assembly error — a mis-scaled
+    # weight, a dropped edge, a wrong boundary row — perturbs this.
+    N = 12
+    img = ones(Bool, N, N, N)
+    for (ax, d) in zip((:x, :y, :z), (1, 2, 3))
+        sim = SteadyDiffusionProblem(img; axis=ax, gpu=false)
+        c = reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u, img)
+        ramp = reshape(1 .- (0:(N - 1)) ./ (N - 1), ntuple(i -> i == d ? N : 1, 3))
+        @test maximum(abs, c .- ramp) < 1e-8
+    end
+end
