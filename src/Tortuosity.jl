@@ -18,6 +18,21 @@ const _gpu_adapt = Ref{Any}(identity)
 """True for GPU arrays; extensions override for CuArray, MtlArray, etc."""
 _on_gpu(::AbstractArray) = false
 
+"""
+    _free!(x)
+
+Release the storage behind `x` now instead of waiting for the garbage
+collector, and return `x`'s slot to the allocator. `x` must not be read
+afterwards.
+
+Assembly runs a chain of stages that each allocate device arrays the size of
+the connectivity list; without this the earlier stages' arrays stay reachable
+while the next one allocates, so the pool has to hold several of them at once.
+No-op for host arrays and for anything that is not an array (a scalar `D`, say);
+GPU backends override it in their extension.
+"""
+_free!(x) = nothing
+
 include("utils.jl")
 include("geometry.jl")
 include("imgen.jl")

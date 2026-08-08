@@ -296,8 +296,11 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, voxel_size,
     gd = D isa Number ? D : interpolate_edge_values(D_dev[img_dev], conns)
 
     am = build_adjacency_matrix(conns; n=nnodes, weights=gd)
+    _free!(conns)
+    _free!(gd)
 
     A = laplacian(am)
+    _free!(am)
 
     nonzeros(A) .= nonzeros(A) ./ (-voxel_size^2)
 

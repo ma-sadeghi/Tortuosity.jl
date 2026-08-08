@@ -98,6 +98,16 @@ function _invalidate_cache!(A::PortableSparseCSC)
     return nothing
 end
 
+# Releasing a matrix means releasing its three arrays; the cached artifact has
+# to go first or it is left describing freed storage.
+function _free!(A::PortableSparseCSC)
+    _invalidate_cache!(A)
+    _free!(A.colptr)
+    _free!(A.rowval)
+    _free!(A.nzval)
+    return nothing
+end
+
 Base.size(A::PortableSparseCSC) = (A.m, A.n)
 SparseArrays.nnz(A::PortableSparseCSC) = length(A.nzval)
 SparseArrays.nonzeros(A::PortableSparseCSC) = A.nzval
@@ -290,6 +300,7 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
     ones_v = fill!(similar(am.nzval, n), one(T))
     degrees = fill!(similar(am.nzval, m), zero(T))
     mul!(degrees, am, ones_v)
+    _free!(ones_v)
 
     # Count the diagonals L will have to add, then size it from that count.
     diag_missing = similar(am.colptr, n)
@@ -303,6 +314,7 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
     L_colptr = similar(am.colptr, n + 1)
     _laplacian_colptr_kernel!(backend)(L_colptr, am.colptr, extra_scan, n; ndrange=n)
     KernelAbstractions.synchronize(backend)
+    _free!(extra_scan)
 
     # Size the entry arrays from the column pointers we just built, not from
     # `nnz(am) + total_extra`. Those agree only when the input's stored-value
@@ -321,6 +333,8 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
         degrees, diag_missing, n; ndrange=n,
     )
     KernelAbstractions.synchronize(backend)
+    _free!(degrees)
+    _free!(diag_missing)
 
     return PortableSparseCSC(m, n, L_colptr, L_rowval, L_nzval)
 end

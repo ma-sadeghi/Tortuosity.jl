@@ -100,6 +100,9 @@ function _build_connectivity_list_ka(img; inds=nothing)
 
     idx_gpu = nothing
     num_true = 0
+    # Only the index array we build ourselves is ours to release; one passed in
+    # through `inds` belongs to the caller.
+    owns_idx = isnothing(inds)
 
     if isnothing(inds)
         linear_indices_gpu = findall(img)
@@ -108,7 +111,10 @@ function _build_connectivity_list_ka(img; inds=nothing)
         idx_gpu = fill!(similar(img, Int32), Int32(0))
         wg = min(num_true, 256)
         fill_idx_kernel!(backend, wg)(idx_gpu, linear_indices_gpu, num_true; ndrange=num_true)
-        # No sync — next kernel on same stream waits automatically
+        # No sync — next kernel on same stream waits automatically, and the
+        # allocator is stream-ordered too, so the index list can go now. It is
+        # `CartesianIndex{3}` at 24 B per pore voxel, the largest array here.
+        _free!(linear_indices_gpu)
     else
         if size(inds) != size(img)
             error("Provided `inds` array must have the same dimensions as `img`")
@@ -137,6 +143,7 @@ function _build_connectivity_list_ka(img; inds=nothing)
     total_conns = Int(Array(@view d_bucket_write_counters[end:end])[1]) +
                   Int(Array(@view d_histogram[end:end])[1])
     total_conns == 0 && return Matrix{Int}(undef, 0, 2)
+    _free!(d_histogram)
 
     # Pass 2: write connections
     conns_gpu = similar(idx_gpu, Int32, total_conns, 2)
@@ -144,6 +151,8 @@ function _build_connectivity_list_ka(img; inds=nothing)
         conns_gpu, d_bucket_write_counters, img, idx_gpu, nx, ny, nz; ndrange=N,
     )
     KernelAbstractions.synchronize(backend)
+    _free!(d_bucket_write_counters)
+    owns_idx && _free!(idx_gpu)
 
     return conns_gpu
 end

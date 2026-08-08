@@ -198,8 +198,14 @@ function SteadyDiffusionProblem(
     # NOTE: D[img] since D might contain non-conducting values (e.g., when using a subdomain)
     gd = isnothing(D_dev) ? D0 : interpolate_edge_values(D_dev[img_dev], conns)
     am = build_adjacency_matrix(conns; n=nnodes, weights=gd)
+    # Each stage's inputs are dead the moment the next one has them, and each is
+    # the size of the connectivity list. Releasing them here rather than at the
+    # next GC keeps only one such set on the device at a time.
+    _free!(conns)
+    _free!(gd)
     # For diffusion, L of the adjacency matrix is the coefficient matrix
     A = laplacian(am)
+    _free!(am)
 
     # Apply a fixed concentration drop of 1.0 between inlet and outlet
     bc_nodes = vcat(inlet_nodes, outlet_nodes)

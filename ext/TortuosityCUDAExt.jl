@@ -21,6 +21,8 @@ end
 Tortuosity._on_gpu(::CuArray) = true
 Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrixCSC) = true
 
+Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
+
 # --- Fast path: wrap PortableSparseCSC as CuSparseMatrixCSC for CUSPARSE SpMV ---
 # CUSPARSE expects Int32 indices. Wrapping is cheap (just stores pointers), but
 # within a Krylov solve `mul!` is called hundreds of times so even cheap
