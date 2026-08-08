@@ -42,6 +42,43 @@ function interpolate_edge_values(node_vals, conns)
 end
 
 """
+    _warn_nonpercolating(img, axis, check)
+
+Warn when part of the pore space does not span the domain from inlet to outlet
+along `axis`.
+
+Such voxels are not an error and nothing is changed: they simply carry no
+steady flux while still counting toward porosity, so the reported tortuosity
+`τ = ε / D_eff` includes stagnant volume. Worth surfacing because the image
+usually looks fine and the number that comes out looks plausible.
+
+`check` follows the same three-state convention as the `gpu` keyword:
+`nothing` decides automatically, `true`/`false` force it. The automatic choice
+is by size — the check labels connected components over the full grid, which
+allocates an `Int` array the shape of `img`. That is a few hundred MB and well
+under a second up to ~50M voxels (measured: 0.31 s against 5.6 s of problem
+construction at 256³, i.e. ~6% overhead), but at 800³ it would be several GB,
+so it is skipped there unless explicitly requested.
+"""
+function _warn_nonpercolating(img, axis::Symbol, check::Union{Nothing,Bool})
+    do_check = isnothing(check) ? length(img) <= 50_000_000 : check
+    do_check || return nothing
+
+    n_pore = count(img)
+    n_dead = n_pore - count(Imaginator.trim_nonpercolating_paths(img; axis=axis))
+    n_dead == 0 && return nothing
+
+    pct = round(100 * n_dead / n_pore; digits=2)
+    @warn "$(n_dead) of $(n_pore) pore voxels ($(pct)%) are not connected from \
+           inlet to outlet along axis :$(axis). They carry no steady flux but \
+           still count toward porosity, so the reported tortuosity includes \
+           that stagnant volume. Pass the image through \
+           `Imaginator.trim_nonpercolating_paths(img; axis=:$(axis))` first to \
+           exclude them, or set `warn_nonpercolating=false` to silence this."
+    return nothing
+end
+
+"""
     SteadyDiffusionProblem{A}
 
 Holds the data for a steady-state diffusion problem on a binary pore image.
@@ -80,9 +117,16 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
 - `gpu`: `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect
   (uses GPU when a backend package is loaded *and* the image has ≥100k pore
   voxels). See [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
+- `warn_nonpercolating`: warn when part of the pore space does not span the
+  domain along `axis`. Nothing is changed either way — such voxels carry no
+  steady flux but still count toward porosity, so `τ` includes stagnant volume.
+  `nothing` (default) runs the check for images up to ~50M voxels and skips it
+  above that; `true`/`false` force it. See [`_warn_nonpercolating`](@ref).
 - `verbose`: print progress messages. Default: `false`.
 """
-function SteadyDiffusionProblem(img; axis, D=nothing, gpu=nothing, verbose=false)
+function SteadyDiffusionProblem(
+    img; axis, D=nothing, gpu=nothing, warn_nonpercolating=nothing, verbose=false,
+)
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
     @assert img isa AbstractArray{Bool} "Image must be a boolean array"
@@ -111,6 +155,7 @@ function SteadyDiffusionProblem(img; axis, D=nothing, gpu=nothing, verbose=false
     # promotes a 2D image to `(m, n, 1)`, so asking for `axis=:z` on 2D data
     # arrives here. `TransientDiffusionProblem` already rejects this.
     @assert size(img, axis_dim(axis)) > 1 "Image must have at least 2 voxels along the chosen axis"
+    _warn_nonpercolating(img, axis, warn_nonpercolating)
     # Auto-detect GPU: use if backend is available and image is large enough.
     # When the image is big enough to benefit from GPU but no backend has been
     # loaded, nudge the user once — the alternative is a silent CPU fallback

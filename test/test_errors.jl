@@ -69,6 +69,41 @@ const NO_GPU_BACKEND = isnothing(Tortuosity._preferred_gpu_backend[])
     end
 end
 
+@testset "non-percolating pore space is warned about, not altered" begin
+    # A duct spanning the domain, plus a detached blob that does not.
+    img = falses(12, 8, 8)
+    img[:, 3:5, 3:5] .= true
+    img[5:7, 7, 7] .= true
+
+    @testset "warns when part of the pore space is stranded" begin
+        sim = @test_logs (:warn,) match_mode = :any SteadyDiffusionProblem(
+            img; axis=:x, gpu=false,
+        )
+        @test sim isa SteadyDiffusionProblem
+    end
+
+    @testset "silent when every pore voxel percolates" begin
+        clean = falses(12, 8, 8)
+        clean[:, 3:5, 3:5] .= true
+        @test_logs SteadyDiffusionProblem(clean; axis=:x, gpu=false)
+        @test_logs SteadyDiffusionProblem(ones(Bool, 6, 6, 6); axis=:y, gpu=false)
+    end
+
+    @testset "can be silenced, and forced" begin
+        @test_logs SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+        @test_logs (:warn,) match_mode = :any SteadyDiffusionProblem(
+            img; axis=:x, gpu=false, warn_nonpercolating=true,
+        )
+    end
+
+    @testset "the warning changes nothing about the assembled system" begin
+        quiet = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+        loud = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=true)
+        @test quiet.prob.A == loud.prob.A
+        @test quiet.prob.b == loud.prob.b
+    end
+end
+
 # --- TransientDiffusionProblem ---
 
 @testset "TransientDiffusionProblem input validation" begin
