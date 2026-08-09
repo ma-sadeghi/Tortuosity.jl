@@ -129,13 +129,14 @@ end
 # --- SpMV kernel ---
 
 @kernel function _spmv_kernel!(
-    y, @Const(colptr), @Const(rowval), @Const(nzval), @Const(x), n
+    y, @Const(colptr), @Const(rowval), @Const(nzval), @Const(x), alpha, n
 )
     j = @index(Global)
     if j <= n
+        @inbounds xj = alpha * x[j]
         @inbounds for idx in colptr[j]:(colptr[j + 1] - 1)
             r = rowval[idx]
-            v = nzval[idx] * x[j]
+            v = nzval[idx] * xj
             Atomix.@atomic y[r] += v
         end
     end
@@ -159,11 +160,26 @@ end
 function LinearAlgebra.mul!(
     y::AbstractVector, A::PortableSparseCSC, x::AbstractVector
 )
-    fill!(y, zero(eltype(y)))
+    return mul!(y, A, x, one(eltype(A)), zero(eltype(A)))
+end
+
+# The 5-argument form some Krylov solvers reach for. Without it the fallback is
+# `generic_matvecmul!`, which reads `A` element by element and dies on the
+# scalar-indexing error above — latent on every backend but CUDA, which has its
+# own method in the extension.
+function LinearAlgebra.mul!(
+    y::AbstractVector, A::PortableSparseCSC, x::AbstractVector,
+    alpha::Number, beta::Number,
+)
+    if iszero(beta)
+        fill!(y, zero(eltype(y)))
+    elseif !isone(beta)
+        y .*= beta
+    end
     n = A.n
-    if n > 0 && nnz(A) > 0
+    if n > 0 && nnz(A) > 0 && !iszero(alpha)
         backend = get_backend(A.nzval)
-        _spmv_kernel!(backend)(y, A.colptr, A.rowval, A.nzval, x, n; ndrange=n)
+        _spmv_kernel!(backend)(y, A.colptr, A.rowval, A.nzval, x, alpha, n; ndrange=n)
         KernelAbstractions.synchronize(backend)
     end
     return y

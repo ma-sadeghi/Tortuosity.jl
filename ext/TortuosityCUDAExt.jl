@@ -47,17 +47,26 @@ Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
     return wrapped
 end
 
-# Fallback when index type is not Int32 — convert. This path allocates so should
-# be avoided in the hot loop by constructing PortableSparseCSC with Int32 indices.
-# Not cached: this path is only hit on misconfiguration.
+# Fallback when the index type is not Int32: CUSPARSE needs Int32, so `colptr`
+# and `rowval` are converted. Cached like the fast path — uncached this
+# reconverted both index arrays on *every* `mul!`, several GB per Krylov
+# iteration on a large matrix, which reads as an unexplained slowdown rather
+# than as an error. Construct with Int32 indices to skip the conversion.
+#
+# Unlike the fast path this caches copies of the index arrays, so it relies on
+# `rowval`/`colptr` never being edited in place — the mutators here either only
+# touch `nzval` or reassign, and reassignment invalidates the cache.
 function _as_cusparse(
     A::PortableSparseCSC{Tv,Ti,V,Vi}
 ) where {Tv,Ti,V<:CuVector,Vi<:CuVector}
-    colptr32 = convert(CuVector{Int32}, A.colptr)
-    rowval32 = convert(CuVector{Int32}, A.rowval)
-    return CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
-        colptr32, rowval32, A.nzval, (A.m, A.n)
+    cached = A._cache[]
+    cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} && return cached
+    wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
+        convert(CuVector{Int32}, A.colptr), convert(CuVector{Int32}, A.rowval),
+        A.nzval, (A.m, A.n),
     )
+    A._cache[] = wrapped
+    return wrapped
 end
 
 # CUSPARSE-accelerated mul! for PortableSparseCSC backed by CuVector storage
