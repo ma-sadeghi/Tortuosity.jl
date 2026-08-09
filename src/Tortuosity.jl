@@ -44,6 +44,7 @@ include("assembly.jl")
 include("numpytools.jl")
 include("pdetools.jl")
 include("simulations.jl")
+include("preconditioner.jl")
 include("transient.jl")
 include("transient_measurements.jl")
 include("transient_fitting.jl")
@@ -62,6 +63,7 @@ export TransientDiffusionProblem
 # Steady-state analysis
 export solve
 export solve!
+export two_level_preconditioner
 export tortuosity
 export effective_diffusivity
 export formation_factor

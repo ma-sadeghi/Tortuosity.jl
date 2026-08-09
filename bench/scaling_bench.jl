@@ -31,6 +31,10 @@
 #                (SteadyDiffusionProblem), solve (KrylovJL_CG), post
 #                (reconstruct_field + tortuosity). This pass carries the
 #                headline numbers; every later change reports deltas on it.
+#   pass=precond the same path with a two-level preconditioner handed to the
+#                solver, which is opt-in rather than the default. Adds a
+#                `precond` stage for building it. Reported separately so the
+#                default-path numbers stay comparable across the whole history.
 #   pass=stages  the same assembly opened up into its internal steps, for
 #                attribution: h2d, poreindex, count, colptr, entries. Mirrors
 #                the body of SteadyDiffusionProblem and build_steady_system; if
@@ -123,10 +127,12 @@ julia --project=benchmarks bench/scaling_bench.jl [SIZES...] [FLAGS]
   --cpu-max=N         largest size the CPU path is run at (default 200)
   --repeats=K         repeats of the API pass (default: auto by size)
   --no-stages         skip the per-stage attribution pass
+  --no-precond        skip the preconditioned pass
   --force             re-measure cells already present in the CSV
 
 Env overrides: TORTUOSITY_BENCH_{CACHE,RESULTS,DEVICES,CPU_MAX,REPEATS,STAGES,
-FORCE,SEED,POROSITY,BLOBINESS}. See the header comment for the output format.
+PRECOND,FORCE,SEED,POROSITY,BLOBINESS}. See the header comment for the output
+format.
 """
 
 env(key, default) = get(ENV, "TORTUOSITY_BENCH_$(key)", default)
@@ -139,6 +145,7 @@ function parse_args(args)
         "cpu-max" => env("CPU_MAX", "200"),
         "repeats" => env("REPEATS", "auto"),
         "stages" => env("STAGES", "1"),
+        "precond" => env("PRECOND", "1"),
         "force" => env("FORCE", "0"),
     )
     for a in args
@@ -147,6 +154,8 @@ function parse_args(args)
             exit(0)
         elseif a == "--no-stages"
             opts["stages"] = "0"
+        elseif a == "--no-precond"
+            opts["precond"] = "0"
         elseif a == "--force"
             opts["force"] = "1"
         elseif _flag(a) && occursin('=', a)
@@ -203,7 +212,7 @@ function emit!(path, row::Dict{String,Any})
     return nothing
 end
 
-const TERMINAL_STAGE = Dict("api" => "post", "stages" => "dirichlet")
+const TERMINAL_STAGE = Dict("api" => "post", "precond" => "post", "stages" => "dirichlet")
 
 """
 Cells already measured to a deterministic outcome, so a re-run can skip them.
@@ -347,39 +356,59 @@ The public API path, stage by stage: this is the pass every later change is
 compared against. Emits one row per stage; a stage that fails marks the stages
 after it `skipped` so the CSV records the whole cell rather than trailing off.
 """
-function run_api_pass!(csv, base_row, img; gpu::Bool)
+function run_api_pass!(csv, base_row, img; gpu::Bool, precond::Bool=false)
+    pass = precond ? "precond" : "api"
+    stages = precond ? ["setup", "precond", "solve", "post"] : ["setup", "solve", "post"]
     row(stage, m; extra...) = merge(
         copy(base_row),
         Dict{String,Any}(
-            "pass" => "api", "stage" => stage, "status" => m.status, "note" => m.note,
+            "pass" => pass, "stage" => stage, "status" => m.status, "note" => m.note,
             "wall_s" => m.wall, "peak_dev_bytes" => m.peak, "base_dev_bytes" => m.base,
             "retained_dev_bytes" => m.retained, "maxrss_bytes" => m.maxrss,
         ),
         Dict{String,Any}(String(k) => v for (k, v) in extra),
     )
-    skipped(stage) = merge(
-        copy(base_row), Dict{String,Any}("pass" => "api", "stage" => stage, "status" => "skipped"),
-    )
+    skip_after!(stage) = for s in stages[(findfirst(==(stage), stages) + 1):end]
+        emit!(csv, merge(
+            copy(base_row),
+            Dict{String,Any}("pass" => pass, "stage" => s, "status" => "skipped"),
+        ))
+    end
 
     setup = measure(; gpu=gpu, reclaim_first=true) do
         SteadyDiffusionProblem(img; axis=:x, gpu=gpu, warn_nonpercolating=false)
     end
     if setup.status != "ok"
         emit!(csv, row("setup", setup))
-        emit!(csv, skipped("solve"))
-        emit!(csv, skipped("post"))
+        skip_after!("setup")
         return setup.status
     end
     sim = setup.val
     emit!(csv, row("setup", setup;
         nnodes=length(sim.prob.b), nnz=length(SparseArrays.nonzeros(sim.prob.A))))
 
+    Pl = nothing
+    if precond
+        built = measure(; gpu=gpu) do
+            two_level_preconditioner(sim)
+        end
+        if built.status != "ok"
+            emit!(csv, row("precond", built))
+            skip_after!("precond")
+            return built.status
+        end
+        Pl = built.val
+        emit!(csv, row("precond", built;
+            note=Pl === nothing ? "no coarse space" : "nc=$(Pl.nc) block=$(Pl.block)"))
+    end
+
     solved = measure(; gpu=gpu) do
-        solve(sim.prob, KrylovJL_CG(); reltol=RELTOL, verbose=false)
+        Pl === nothing ? solve(sim.prob, KrylovJL_CG(); reltol=RELTOL, verbose=false) :
+        solve(sim.prob, KrylovJL_CG(); Pl=Pl, reltol=RELTOL, verbose=false)
     end
     if solved.status != "ok"
         emit!(csv, row("solve", solved))
-        emit!(csv, skipped("post"))
+        skip_after!("solve")
         return solved.status
     end
     sol = solved.val
@@ -511,25 +540,28 @@ gib(b) = b === nothing ? nothing : b / 2^30
 
 function print_summary(path)
     rows = read_rows(path)
-    api = filter(r -> r["pass"] == "api", rows)
+    api = filter(r -> r["pass"] in ("api", "precond"), rows)
     isempty(api) && return nothing
     # Threads are part of the key, not a footnote: a CPU row measured on one
-    # thread and one measured on four are different measurements.
-    keys_ = unique([(parse(Int, r["n"]), r["device"], r["threads"]) for r in api])
-    sort!(keys_; by=k -> (k[2], k[1], k[3]))
+    # thread and one measured on four are different measurements. So is the
+    # pass, which decides whether the solver was given a preconditioner.
+    keys_ = unique([(parse(Int, r["n"]), r["device"], r["threads"], r["pass"]) for r in api])
+    sort!(keys_; by=k -> (k[2], k[4], k[1], k[3]))
 
     println()
     println("=== bench/scaling_bench.jl — API pass (median over repeats) ===")
-    println("peak = max device usage over the setup/solve/post stages; e2e = their sum")
+    println("peak = max device usage over the stages of the pass; e2e = their sum")
     println("base = device usage before setup (CUDA context etc.); subtract it for problem-only memory")
+    println("pass=api is the default path; pass=precond hands the solver a two-level preconditioner")
     @printf(
-        "%5s %7s %8s %9s %12s %14s %10s %10s %10s %10s %9s %8s %8s\n",
-        "N", "device", "threads", "status", "nnodes", "nnz", "setup_s", "solve_s",
-        "e2e_s", "peak_GiB", "base_GiB", "iters", "tau",
+        "%5s %7s %7s %8s %8s %12s %14s %9s %9s %9s %9s %9s %8s %8s\n",
+        "N", "device", "threads", "pass", "status", "nnodes", "nnz", "setup_s",
+        "prec_s", "solve_s", "e2e_s", "peak_GiB", "iters", "tau",
     )
-    for (n, dev, nthreads) in keys_
+    for (n, dev, nthreads, pass) in keys_
         cell = filter(
-            r -> parse(Int, r["n"]) == n && r["device"] == dev && r["threads"] == nthreads,
+            r -> parse(Int, r["n"]) == n && r["device"] == dev &&
+                 r["threads"] == nthreads && r["pass"] == pass,
             api,
         )
         stage_of(s) = filter(r -> r["stage"] == s, cell)
@@ -539,16 +571,17 @@ function print_summary(path)
         statuses = unique([r["status"] for r in cell])
         status = "oom" in statuses ? "OOM" : ("error" in statuses ? "ERROR" : "ok")
         t_setup, t_solve, t_post = med(setup, "wall_s"), med(solve_, "wall_s"), med(post, "wall_s")
-        e2e = sum(x for x in (t_setup, t_solve, t_post) if x !== nothing; init=0.0)
+        t_prec = med(stage_of("precond"), "wall_s")
+        e2e = sum(x for x in (t_setup, t_prec, t_solve, t_post) if x !== nothing; init=0.0)
         peaks = Float64[x for x in (_num(r["peak_dev_bytes"]) for r in cell) if x !== nothing]
         peak = maximum(peaks; init=0.0)
         f(x) = x === nothing ? "-" : @sprintf("%.3f", x)
         g(x) = x === nothing ? "-" : @sprintf("%.0f", x)
         @printf(
-            "%5d %7s %8s %9s %12s %14s %10s %10s %10s %10s %9s %8s %8s\n",
-            n, dev, nthreads, status,
+            "%5d %7s %7s %8s %8s %12s %14s %9s %9s %9s %9s %9s %8s %8s\n",
+            n, dev, nthreads, pass, status,
             g(med(setup, "nnodes")), g(med(setup, "nnz")),
-            f(t_setup), f(t_solve), f(e2e), f(gib(peak)), f(gib(med(setup, "base_dev_bytes"))),
+            f(t_setup), f(t_prec), f(t_solve), f(e2e), f(gib(peak)),
             g(med(solve_, "iters")), f(med(post, "tau")),
         )
     end
@@ -626,6 +659,7 @@ function main(args)
     devices = [strip(d) for d in split(opts["devices"], ',') if !isempty(strip(d))]
     cpu_max = parse(Int, opts["cpu-max"])
     do_stages = opts["stages"] == "1"
+    do_precond = opts["precond"] == "1"
     force = opts["force"] == "1"
     seed = parse(Int, env("SEED", "42"))
     porosity = parse(Float64, env("POROSITY", "0.5"))
@@ -652,6 +686,7 @@ function main(args)
         isempty(active) && continue
         nreps = opts["repeats"] == "auto" ? REPEAT_PLAN(n) : parse(Int, opts["repeats"])
         wanted = [(d, "api", r) for d in active for r in 1:nreps]
+        do_precond && append!(wanted, [(d, "precond", r) for d in active for r in 1:nreps])
         do_stages && append!(wanted, [(d, "stages", 1) for d in active])
         if all(w -> (n, w[1], nthreads, w[2], w[3]) in done, wanted)
             @info "skip $(n)^3 — already in $(csv)"
@@ -666,15 +701,20 @@ function main(args)
                 "n" => n, "nvoxels" => n^3, "device" => dev,
                 "threads" => Threads.nthreads(),
             )
-            for rep in 1:nreps
-                (n, dev, nthreads, "api", rep) in done && continue
-                @info "n=$(n) dev=$(dev) pass=api rep=$(rep)/$(nreps)"
-                st = run_api_pass!(csv, merge(base, Dict{String,Any}("rep" => rep)), img; gpu=gpu)
-                GC.gc(true)
-                gpu && CUDA.reclaim()
-                if st in ("oom", "oom_host")
-                    @warn "n=$(n) dev=$(dev): $(st) on the api pass — not repeating"
-                    break
+            for pass in (do_precond ? ("api", "precond") : ("api",))
+                for rep in 1:nreps
+                    (n, dev, nthreads, pass, rep) in done && continue
+                    @info "n=$(n) dev=$(dev) pass=$(pass) rep=$(rep)/$(nreps)"
+                    st = run_api_pass!(
+                        csv, merge(base, Dict{String,Any}("rep" => rep)), img;
+                        gpu=gpu, precond=(pass == "precond"),
+                    )
+                    GC.gc(true)
+                    gpu && CUDA.reclaim()
+                    if st in ("oom", "oom_host")
+                        @warn "n=$(n) dev=$(dev): $(st) on the $(pass) pass — not repeating"
+                        break
+                    end
                 end
             end
             if do_stages && !((n, dev, nthreads, "stages", 1) in done)

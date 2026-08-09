@@ -86,6 +86,10 @@ const _has_gpu = _has_cuda || _has_metal
         include("test_sparse_ops.jl")
     end
 
+    @testset verbose = true "Two-level preconditioner" begin
+        include("test_preconditioner.jl")
+    end
+
     @testset verbose = true "Cross-implementation parity" begin
         include("test_impl_parity.jl")
     end
