@@ -68,6 +68,19 @@ function reconstruct_slice(u, pore_index::Array{Int,3}, axis::Symbol, idx::Int)
     ind_slice = selectdim(pore_index, ax, idx)
     c = fill(NaN, size(ind_slice))
     mask = ind_slice .> 0
-    c[mask] .= Array(u)[ind_slice[mask]]
+    inds = ind_slice[mask]
+    # Gather on whichever device `u` lives on and bring back only the slice.
+    # `Array(u)[inds]` would copy the entire solution to the host to read one
+    # face of it — at 800³ that is 1 GB moved to serve 2.6 MB, on every call,
+    # and `flux` calls this twice each time a stop condition fires.
+    c[mask] .= if _on_gpu(u)
+        d_inds = similar(u, Int32, length(inds))
+        copyto!(d_inds, Int32.(inds))
+        vals = Array(u[d_inds])
+        _free!(d_inds)
+        vals
+    else
+        u[inds]
+    end
     return c
 end
