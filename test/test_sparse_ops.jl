@@ -570,3 +570,39 @@ end
     # so the claim is still true and is deliberately left standing.
     A = base(); dropzeros!(A); @test A.symmetric
 end
+
+@testset "the symmetric SpMV kernel agrees with the atomic scatter" begin
+    # A matrix declared symmetric takes a different kernel: one thread reduces
+    # a column into a single output entry instead of scattering it across `y`
+    # with atomics. It visits each output's terms in the order the scatter
+    # would, so `y = A*x` agrees to the last bit. The 5-argument form only
+    # agrees to rounding: the scatter scales `y` by `beta` in a pass of its own
+    # and folds `alpha` into `x[j]`, where the gather computes
+    # `alpha*acc + beta*y[j]` -- same value, different association.
+    for label in ("tridiagonal", "random")
+        S = label == "tridiagonal" ?
+            sparse(SymTridiagonal(fill(2.0, 40), fill(-1.0, 39))) :
+            (M = sprandn(40, 40, 0.15); sparse(Symmetric(M + M')))
+        @testset "$label" begin
+            scatter = sparse_to_portable(S)
+            gather = sparse_to_portable(S)
+            gather.symmetric = true
+            x = randn(40)
+
+            y1, y2 = zeros(40), zeros(40)
+            @test mul!(y1, scatter, x) == mul!(y2, gather, x)
+            @test y2 ≈ Array(S) * x
+
+            y1 .= 1:40
+            y2 .= 1:40
+            @test mul!(y1, scatter, x, 0.5, 2.0) ≈ mul!(y2, gather, x, 0.5, 2.0)
+            @test y2 ≈ 0.5 .* (Array(S) * x) .+ 2.0 .* collect(1.0:40)
+
+            # alpha = 0 must still apply beta, and beta = 0 must not read y.
+            y1 .= 3.0; y2 .= 3.0
+            @test mul!(y1, scatter, x, 0.0, 2.0) ≈ mul!(y2, gather, x, 0.0, 2.0)
+            fill!(y2, NaN)
+            @test !any(isnan, mul!(y2, gather, x, 1.0, 0.0))
+        end
+    end
+end
