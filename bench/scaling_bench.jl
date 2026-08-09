@@ -32,9 +32,9 @@
 #                (reconstruct_field + tortuosity). This pass carries the
 #                headline numbers; every later change reports deltas on it.
 #   pass=stages  the same assembly opened up into its internal steps, for
-#                attribution: h2d, bcnodes, conns, adjacency, laplacian,
-#                dirichlet. Mirrors the body of SteadyDiffusionProblem; if
-#                that body changes, update this pass to match.
+#                attribution: h2d, poreindex, count, colptr, entries. Mirrors
+#                the body of SteadyDiffusionProblem and build_steady_system; if
+#                either changes, update this pass to match.
 #
 # Memory measurement
 # ------------------
@@ -400,7 +400,7 @@ function run_stages_pass!(csv, base_row, img; gpu::Bool)
     skipped(stage) = merge(
         copy(base_row), Dict{String,Any}("pass" => "stages", "stage" => stage, "status" => "skipped"),
     )
-    remaining = ["h2d", "bcnodes", "conns", "adjacency", "laplacian", "dirichlet"]
+    remaining = ["h2d", "poreindex", "count", "colptr", "entries"]
     function bail!(stage, m)
         emit!(csv, row(stage, m))
         for s in remaining[(findfirst(==(stage), remaining) + 1):end]
@@ -410,7 +410,12 @@ function run_stages_pass!(csv, base_row, img; gpu::Bool)
     end
 
     T = gpu ? Float32 : Float64
+    Ti = gpu ? Int32 : Int
     nnodes = count(img)
+    nx, ny, nz = size(img)
+    bcdim, nbc = 1, nx                      # axis=:x
+    D0 = one(T)
+    wg = (64, 4, 1)
 
     m = measure(; gpu=gpu, reclaim_first=true) do
         d = gpu ? Tortuosity._gpu_adapt[](img) : img
@@ -421,45 +426,56 @@ function run_stages_pass!(csv, base_row, img; gpu::Bool)
     img_dev = m.val
     emit!(csv, row("h2d", m; nnodes=nnodes))
 
-    inlet, outlet = Tortuosity.axis_faces(:x)
     m = measure(; gpu=gpu) do
-        (Tortuosity.find_boundary_nodes(img, inlet), Tortuosity.find_boundary_nodes(img, outlet))
+        idx = similar(img_dev, Ti)
+        cumsum!(vec(idx), vec(img_dev))
+        idx .*= img_dev
+        return idx
     end
-    m.status == "ok" || return bail!("bcnodes", m)
-    inlet_nodes, outlet_nodes = m.val
-    emit!(csv, row("bcnodes", m))
+    m.status == "ok" || return bail!("poreindex", m)
+    idx = m.val
+    backend = Tortuosity.get_backend(idx)
+    emit!(csv, row("poreindex", m))
 
     m = measure(; gpu=gpu) do
-        Tortuosity.build_connectivity_list(img_dev)
+        counts = similar(idx, Ti, nnodes)
+        b = similar(idx, T, nnodes)
+        Tortuosity._steady_count_kernel!(backend, wg)(
+            counts, b, idx, nothing, nx, ny, nz, bcdim, nbc, D0; ndrange=(nx, ny, nz),
+        )
+        Tortuosity.KernelAbstractions.synchronize(backend)
+        return counts, b
     end
-    m.status == "ok" || return bail!("conns", m)
-    conns = m.val
-    nedges = size(conns, 1)
-    emit!(csv, row("conns", m; nedges=nedges))
+    m.status == "ok" || return bail!("count", m)
+    counts, b = m.val
+    emit!(csv, row("count", m))
 
     m = measure(; gpu=gpu) do
-        Tortuosity.build_adjacency_matrix(conns; n=nnodes, weights=T(1))
+        scan = accumulate(+, counts)
+        Tortuosity._free!(counts)
+        cp = similar(idx, Ti, nnodes + 1)
+        Tortuosity._build_colptr_kernel!(backend)(cp, scan, nnodes; ndrange=max(nnodes, 1))
+        Tortuosity.KernelAbstractions.synchronize(backend)
+        Tortuosity._free!(scan)
+        return cp
     end
-    m.status == "ok" || return bail!("adjacency", m)
-    am = m.val
-    emit!(csv, row("adjacency", m; nnz=length(SparseArrays.nonzeros(am))))
+    m.status == "ok" || return bail!("colptr", m)
+    colptr = m.val
+    nnz_A = Int(Array(@view colptr[end:end])[1]) - 1
+    emit!(csv, row("colptr", m; nnz=nnz_A))
 
     m = measure(; gpu=gpu) do
-        Tortuosity.laplacian(am)
+        rowval = similar(idx, Ti, nnz_A)
+        nzval = similar(b, T, nnz_A)
+        Tortuosity._steady_fill_kernel!(backend, wg)(
+            rowval, nzval, colptr, idx, nothing, nx, ny, nz, bcdim, nbc, D0;
+            ndrange=(nx, ny, nz),
+        )
+        Tortuosity.KernelAbstractions.synchronize(backend)
+        return rowval, nzval
     end
-    m.status == "ok" || return bail!("laplacian", m)
-    A = m.val
-    emit!(csv, row("laplacian", m; nnz=length(SparseArrays.nonzeros(A))))
-
-    b = gpu ? Tortuosity._gpu_adapt[](zeros(T, nnodes)) : zeros(T, nnodes)
-    bc_nodes = vcat(inlet_nodes, outlet_nodes)
-    bc_vals = vcat(fill(T(1), length(inlet_nodes)), fill(T(0), length(outlet_nodes)))
-    gpu && (bc_vals = Tortuosity._gpu_adapt[](bc_vals))
-    m = measure(; gpu=gpu) do
-        Tortuosity.apply_dirichlet_bc_fast!(A, b; nodes=bc_nodes, vals=bc_vals)
-    end
-    m.status == "ok" || return bail!("dirichlet", m)
-    emit!(csv, row("dirichlet", m; nnz=length(SparseArrays.nonzeros(A))))
+    m.status == "ok" || return bail!("entries", m)
+    emit!(csv, row("entries", m; nnz=nnz_A))
     return "ok"
 end
 

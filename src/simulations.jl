@@ -175,12 +175,6 @@ function SteadyDiffusionProblem(
                Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
     end
 
-    # Compute boundary nodes BEFORE GPU transfer (cheap CPU operation)
-    verbose && @info "Setting up boundary conditions..."
-    inlet, outlet = axis_faces(axis)
-    inlet_nodes = find_boundary_nodes(img, inlet)
-    outlet_nodes = find_boundary_nodes(img, outlet)
-
     # Move to GPU if needed. Keep `img` on CPU for the struct (postprocessing
     # helpers like tortuosity() expect a CPU mask); `img_dev` is the copy
     # handed to the kernels.
@@ -188,35 +182,21 @@ function SteadyDiffusionProblem(
     T = gpu ? Float32 : Float64
     img_dev = gpu ? _gpu_adapt[](img) : img
     D_dev = isnothing(D) ? nothing : (gpu ? _gpu_adapt[](D) : D)
-    # Built on the device rather than allocated on the host and uploaded: the
-    # host array was zeroed twice and then sent over PCIe to be zeroed again.
-    b = gpu ? fill!(similar(img_dev, T, nnodes), zero(T)) : zeros(T, nnodes)
-    D0 = T(1)
 
-    verbose && @info "Building connectivity list and adjacency matrices..."
-    conns = build_connectivity_list(img_dev)
-
-    # Voxel size = 1 => gd = D*A/l = D (since D is at nodes -> interpolate to edges)
-    # NOTE: D[img] since D might contain non-conducting values (e.g., when using a subdomain)
-    gd = isnothing(D_dev) ? D0 : interpolate_edge_values(D_dev[img_dev], conns)
-    am = build_adjacency_matrix(conns; n=nnodes, weights=gd)
-    # Each stage's inputs are dead the moment the next one has them, and each is
-    # the size of the connectivity list. Releasing them here rather than at the
-    # next GC keeps only one such set on the device at a time.
-    _free!(conns)
-    _free!(gd)
-    # For diffusion, L of the adjacency matrix is the coefficient matrix
-    A = laplacian(am)
-    _free!(am)
-
-    # Apply a fixed concentration drop of 1.0 between inlet and outlet
-    bc_nodes = vcat(inlet_nodes, outlet_nodes)
-    bc_vals = vcat(fill(T(1), length(inlet_nodes)), fill(T(0), length(outlet_nodes)))
-    # For GPU: transfer bc_vals to GPU
+    # Assemble the Dirichlet-eliminated Laplacian in one shot. A fixed
+    # concentration drop of 1.0 between inlet and outlet is the boundary
+    # condition, and the two faces are implied by `axis`.
+    verbose && @info "Assembling the linear system..."
+    A, b = build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T)
     if gpu
-        bc_vals = _gpu_adapt[](bc_vals)
+        # The device copies are dead the moment the system is built; releasing
+        # them here rather than at the next GC frees ~2.4 GiB at 800³ before the
+        # solver starts allocating its Krylov vectors. Only the copies we made
+        # are ours to release — `_gpu_adapt` hands a `D` that is already a device
+        # array of the right eltype straight back.
+        _free!(img_dev)
+        D_dev === D || _free!(D_dev)
     end
-    apply_dirichlet_bc_fast!(A, b; nodes=bc_nodes, vals=bc_vals)
 
     return SteadyDiffusionProblem(img, axis, LinearProblem(A, b))
 end
