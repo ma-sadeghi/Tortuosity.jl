@@ -507,3 +507,40 @@ end
     @test nnz(L) == 0
     @test L.colptr == [1]
 end
+
+@testset "_cg_workspace mirrors Krylov's CgWorkspace" begin
+    # `_cg_workspace` fills a `CgWorkspace` field by field so that the solution
+    # vector can be `u` instead of a fresh allocation LinearSolve discards a
+    # line later. That stays correct only while `CgWorkspace` has the fields it
+    # has today: a new length-n vector would arrive empty and the solver would
+    # read off the end of it. Compare against a constructor-built workspace so
+    # a Krylov upgrade that adds one is caught here rather than at 800^3.
+    Krylov = Tortuosity.LinearSolve.Krylov
+    n = 6
+    A = sparse_to_portable(sparse(Matrix{Float64}(I, n, n)))
+    u = zeros(n)
+    ours = Tortuosity._cg_workspace(A, ones(n), u)
+    theirs = Krylov.CgWorkspace(n, n, Vector{Float64})
+
+    @test typeof(ours) === typeof(theirs)
+    @test ours.x === u
+    @test (ours.m, ours.n) == (theirs.m, theirs.n)
+    for f in fieldnames(typeof(theirs))
+        getfield(theirs, f) isa AbstractVector || continue
+        @test length(getfield(ours, f)) == length(getfield(theirs, f))
+    end
+end
+
+@testset "solving through LinearSolve leaves the solution in the cache's own u" begin
+    # The workspace's `x` is `u`, so `solve!` has nothing to copy back. If the
+    # aliasing were ever lost the answer would still be right but a second
+    # solution vector would be live for the whole solve.
+    n = 8
+    A = sparse_to_portable(sparse(Matrix{Float64}(2I, n, n)))
+    b = collect(1.0:n)
+    prob = Tortuosity.LinearProblem(A, b)
+    cache = Tortuosity.LinearSolve.init(prob, KrylovJL_CG(); reltol=1e-12)
+    sol = solve!(cache)
+    @test cache.cacheval.x === cache.u
+    @test sol.u ≈ b ./ 2
+end

@@ -193,28 +193,69 @@ end
 
 # --- LinearSolve integration ---
 #
-# `init_cacheval(...; zeroinit=true)` is meant to give `init` a placeholder
-# Krylov workspace that `solve!` discards and rebuilds at full size. LinearSolve
-# only knows how to build an empty one for `Matrix` and `SparseMatrixCSC`;
-# anything else falls through to `KS(A, b)`, so a `PortableSparseCSC` has its
-# full workspace — four n-length vectors for CG — allocated twice, both live at
-# the moment the second is built. Build the placeholder at zero length instead,
-# taking the storage type from `b` so it stays on the right device and costs
-# nothing.
+# `init_cacheval` is called twice per solve: `init` asks for a placeholder with
+# `zeroinit=true`, then `solve!` asks for the real workspace with
+# `zeroinit=false`. LinearSolve's generic path costs a full solution vector on
+# each call when the matrix is a `PortableSparseCSC`:
+#
+#  1. The placeholder is only built empty for `Matrix` and `SparseMatrixCSC`;
+#     anything else falls through to `KS(A, b)`, so the full workspace — four
+#     n-length vectors for CG — is allocated twice, both live at the moment the
+#     second one is built. Building it at zero length costs nothing, taking the
+#     storage type from `b` so it stays on the right device.
+#  2. The real workspace's own solution vector is dead on arrival: LinearSolve
+#     replaces it with `u` (`solver.x = u`) as soon as the constructor returns.
+#     Releasing it afterwards is not enough — it is allocated *before* the
+#     workspace's other vectors, so by then the device is already holding all
+#     four and the peak has been reached. On a pooled allocator a release only
+#     hands the block back to the pool, which the driver still counts as in use.
+#     It has to not be allocated at all: worth 0.95 GiB at 800³.
+#
+# Doing (2) means knowing which of a workspace's vectors the algorithm actually
+# uses, so it is done for CG — the algorithm this package ships — and every
+# other algorithm keeps LinearSolve's generic path and only gets (1).
 function LinearSolve.init_cacheval(
     alg::LinearSolve.KrylovJL, A::PortableSparseCSC, b, u, Pl, Pr, maxiters::Int,
     abstol, reltol, verbose::Union{LinearSolve.LinearVerbosity,Bool},
     assumptions::LinearSolve.OperatorAssumptions; zeroinit=true,
 )
-    zeroinit || return @invoke LinearSolve.init_cacheval(
+    if zeroinit
+        KS = LinearSolve.get_KrylovJL_solver(alg.KrylovAlg)
+        workspace = KS(0, 0, LinearSolve.Krylov.ktypeof(b))
+        workspace.x = u
+        return workspace
+    end
+    alg.KrylovAlg === LinearSolve.Krylov.cg! && return _cg_workspace(A, b, u)
+    return @invoke LinearSolve.init_cacheval(
         alg::LinearSolve.KrylovJL, A::Any, b::Any, u::Any, Pl::Any, Pr::Any,
         maxiters::Int, abstol::Any, reltol::Any,
         verbose::Union{LinearSolve.LinearVerbosity,Bool},
         assumptions::LinearSolve.OperatorAssumptions; zeroinit=false,
     )
-    KS = LinearSolve.get_KrylovJL_solver(alg.KrylovAlg)
-    workspace = KS(0, 0, LinearSolve.Krylov.ktypeof(b))
+end
+
+"""
+    _cg_workspace(A, b, u)
+
+Build a `Krylov.CgWorkspace` for `A` whose solution vector *is* `u`.
+
+Identical to what `CgWorkspace(A, b)` produces except that `x` is aliased to `u`
+rather than freshly allocated — which is what LinearSolve does to it anyway, one
+line after the constructor returns. `Δx`, `z` and `npc_dir` are left empty
+exactly as the constructor leaves them; Krylov grows those lazily, and only when
+a preconditioner, a trust region or a line search is in play.
+
+Reaching into the workspace's fields means this has to keep step with Krylov's
+definition of `CgWorkspace`, which the test suite checks by comparing against a
+constructor-built workspace field by field.
+"""
+function _cg_workspace(A, b, u)
+    workspace = LinearSolve.Krylov.CgWorkspace(0, 0, LinearSolve.Krylov.ktypeof(b))
+    workspace.m, workspace.n = size(A)
     workspace.x = u
+    workspace.r = similar(u)
+    workspace.p = similar(u)
+    workspace.Ap = similar(u)
     return workspace
 end
 
