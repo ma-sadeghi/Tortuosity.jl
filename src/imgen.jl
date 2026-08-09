@@ -140,7 +140,13 @@ function trim_nonpercolating_paths(img; axis)
     labels = label_components(img)
     labels_percolating = intersect(labels[inlet], labels[outlet])
     setdiff!(labels_percolating, 0)  # Remove background label
-    img_percolating = in.(labels, Ref(Set(labels_percolating)))  # Ref to avoid broadcasting
+    # `label_components` numbers components densely from 1, with 0 for
+    # background, so a label is already an index: membership is a table lookup
+    # rather than a hash probe. The probe ran once per voxel — 512M times at
+    # 800³, single-threaded — which was the real cost of this function.
+    keep = zeros(Bool, maximum(labels) + 1)
+    keep[labels_percolating .+ 1] .= true
+    img_percolating = (label -> @inbounds keep[label + 1]).(labels)
     return img_percolating
 end
 
