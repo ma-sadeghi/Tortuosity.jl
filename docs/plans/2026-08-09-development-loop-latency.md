@@ -239,4 +239,16 @@ The measurement harness lived in a session scratchpad and is **not** preserved �
 
 Format: `date — id(s) — status — measured effect — commit sha (and repo) — reviewer verdict`.
 
-*(empty — not started)*
+### Phase 0 baseline (measured 2026-08-09 on the working tree, not the isolated copy)
+
+| quantity | value | how it was taken |
+| --- | --- | --- |
+| full `Pkg.test()` assertions | **11576 pass / 11576 total** | `julia --startup-file=no --project=. -e "using Pkg; Pkg.test()"`, root testset `Tortuosity.jl` |
+| full `Pkg.test()` wall | **265.41 s** (testsets 3m36.8s = 216.8 s) | same run; 48.6 s, 18 %, before the first assertion |
+| **edit→green, one test file, fresh process** | **173.9 s** | edit `src/transient.jl` → `julia --startup-file=no --project=. edit_to_green.jl` (TestEnv activate → `using Tortuosity` → assert probe → `include test/test_transient.jl`, 175 assertions, 26.6 s of testset). Precompile inside that: `Tortuosity` 29.0 s + `TortuosityCUDAExt` 92.0 s = 127 s. |
+
+This is the number Phase 1 is judged against. It is **higher than the ~106 s in the body of this plan** because the body's figure was a CPU-only path measured on an isolated copy, whereas the real test environment resolves CUDA, so a source edit also rebuilds `TortuosityCUDAExt` (92 s of the 174 s). The honest baseline for the loop an agent actually runs is 173.9 s.
+
+Confirmed en route: the CUDA 13.3.0 / CUDA.jl-precompiled-for-13.2.0 mismatch flagged as unchecked in the Measurement appendix **is** present in the real test environment — it warns on every extension precompile.
+
+### Item log
