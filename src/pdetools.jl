@@ -1,3 +1,11 @@
+# Post-hoc Dirichlet elimination. Nothing in the package calls it any more:
+# `build_steady_system` eliminates the boundary values while it assembles, and
+# the transient path zeroes rows instead of eliminating. What is left here is
+# the reference statement of the convention — the readable, obviously-correct
+# form that `test_assembly.jl` and `test_impl_parity.jl` check the fused
+# assembler against, and that `bench/` times the fused path against. Keep it
+# working; do not put it back on the production path.
+#
 # A Dirichlet value is imposed as `diag[i] * x[i] = diag[i] * val[i]`, which
 # preserves the original diagonal and keeps `A` symmetric. That encoding
 # degenerates when the node has no neighbours: its degree, and therefore its
@@ -22,8 +30,9 @@ _unit_where_zero(d) = ifelse.(iszero.(d), one(eltype(d)), d)
     apply_dirichlet_bc!(A::SparseMatrixCSC, b; nodes, vals)
 
 Reference implementation of Dirichlet BC application. Uses single-threaded
-`overlap_indices`. Kept as a readable baseline for verifying the optimized
-[`apply_dirichlet_bc_fast!`](@ref).
+`overlap_indices`. Kept as a readable baseline for verifying
+[`apply_dirichlet_bc_fast!`](@ref), which is itself parity material rather than
+production code — see the note at the top of this file.
 
 Zeroes out rows and columns of `A` for boundary nodes, sets the diagonal
 to its original value, and adjusts `b` so that `x[nodes] .= vals` upon solve.
@@ -52,6 +61,10 @@ Apply Dirichlet boundary conditions to the linear system `A x = b` in place.
 Zeroes out rows and columns of `A` for boundary `nodes`, preserves the original
 diagonal, and adjusts `b` so that `x[nodes] .= vals` upon solve. Uses
 multi-threaded `overlap_indices_fast` on CPU and KA kernels on GPU.
+
+The parity reference for [`build_steady_system`](@ref), which produces the same
+`(A, b)` without ever building the pre-elimination Laplacian. No production
+caller remains — see the note at the top of this file.
 
 # Keyword Arguments
 - `nodes`: vector of node indices where Dirichlet conditions are applied.

@@ -375,8 +375,10 @@ end
 end
 
 @testset "Dirichlet elimination — exact contract, $(label)" for (label, img) in ASSEMBLY_IMAGES
-    # These six identities pin `apply_dirichlet_bc_fast!` completely, in terms of
-    # the pre-elimination Laplacian `L`. They are written as a specification
+    # These six identities pin the elimination convention completely, in terms of
+    # the pre-elimination Laplacian `L`, and they are checked against what
+    # `SteadyDiffusionProblem` actually builds — `build_steady_system`, which
+    # never forms `L` at all. They are written as a specification
     # rather than a spot check because MATRIX_FREE_PLAN.md replaces the
     # assembled matrix with a stencil operator that has to reproduce exactly this
     # convention: an edge survives only when both endpoints are free, a boundary
@@ -438,7 +440,7 @@ end
 @testset "Dirichlet elimination matches an independent reduced-system solve" begin
     # Build the Laplacian, partition it into free/boundary blocks, and solve
     # L_ff x_f = -L_fb x_b densely. This is the textbook route and shares no
-    # code with apply_dirichlet_bc_fast!, so agreement is real corroboration
+    # code with build_steady_system, so agreement is real corroboration
     # rather than a tautology.
     checked = 0
     for (label, img) in ASSEMBLY_IMAGES
@@ -470,7 +472,7 @@ end
         checked += 1
     end
     # Guard against the `continue`s quietly emptying the loop: this is the only
-    # check in the file that shares no code with `apply_dirichlet_bc_fast!`, so
+    # check in the file that shares no code with `build_steady_system`, so
     # a silently-skipped run would look identical to a passing one.
     @test checked == length(ASSEMBLY_IMAGES)
 end
