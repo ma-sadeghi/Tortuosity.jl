@@ -9,135 +9,250 @@ superseded-by: "-"
 related: 2026-08-08-matrix-path-optimization.md
 ---
 
-> **Status: draft.** Design spec for replacing the assembled sparse Laplacian with a matrix-free operator, so images beyond ~850³ fit in GPU memory. Not started. **Its motivating evidence was superseded on 2026-08-08** by the matrix-path optimization campaign — the 800³ OOM no longer reproduces, bytes-per-pore-voxel fell 198 → ~76, and "setup cost collapses" is retired as a benefit because assembled setup is now 0.409 s. Read the refresh box below before quoting any number from this file. The remaining case is still strong but rests on one argument: the assembled-CSC floor of ~55 B/pore-voxel is structural, and only deleting `rowval`+`nzval` gets past it.
+> **Status: draft.** Campaign plan for adding a matrix-free stencil operator beside the assembled sparse path, so images beyond the assembled ceiling (~850³ on a 24 GiB card) become solvable and every size below it gets cheaper. Not started; the five open decisions were settled by Amin on 2026-08-09 (see Decisions) and the campaign is ready to launch. This is the second full version of the document: the 2026-08-08 draft predated the matrix-path optimization campaign and was rewritten from scratch on 2026-08-09 against that campaign's outcomes plus fresh prototype measurements. The headline evidence: a 60-line prototype apply kernel already beats CUSPARSE CSR SpMV **1.80× at 800³** with Float32 parity, a threaded CPU apply beats `SparseArrays` `mul!` **7.3×**, and a **1000³ image (499 M unknowns) — unrepresentable by the assembled path — solved end-to-end through the production LinearSolve path** in 381 s unpreconditioned, peaking at 15.5 GiB of 23.9 — all measured on this machine, 2026-08-09.
 
-# Matrix-free operator plan
+# Matrix-free operator campaign plan
 
-Design notes for replacing the assembled sparse Laplacian with a matrix-free operator, so large images (≥800³) fit in GPU memory. This document is the handoff spec — it records the measured evidence, the proposed design, and the open decisions.
+Execution plan for a matrix-free 7-point stencil operator as a peer of the assembled sparse path. **Both paths are keepers**: Amin has ruled that the assembled matrix path remains a first-class, permanently supported option — this campaign adds a second production path, it does not replace the first.
 
-## Motivation: the measured failure
+## How this document relates to its first draft
 
-> ## ⚠ REFRESHED 2026-08-08 — the evidence below is superseded
->
-> **The assembled-path optimization campaign (`2026-08-08-matrix-path-optimization.md`) has landed, and the premise of this document has changed.** The original motivating measurements are kept below for the historical record, struck through where they no longer hold. **Read this box before quoting any number from this file.**
->
-> | N | peak device memory: as-measured 2026-08-08 (was) | outcome |
-> | --- | --- | --- |
-> | 200³ | **1.718 GiB** (was 3.25) | solves |
-> | 400³ | **4.156 GiB** (was 13.78) | solves |
-> | 600³ | **10.750 GiB** (never previously completed) | solves, e2e 71.8 s |
-> | 800³ | **21.637 GiB of 23.89** (was OOM) | **solves, e2e 207.8 s, τ 1.884** |
->
-> **The 800³ OOM no longer reproduces.** Setup at 800³ went from 384 s (and, in the originally reported session, a throw) to **0.39 s**. `dropzeros!` is off the steady path entirely — boundary conditions are now applied *during* assembly (`src/assembly.jl`), so the temporaries that used to throw are never allocated.
->
-> **What this does to the case for matrix-free:**
->
-> - **Bytes per pore voxel: ~198 → ~85** (21.637 GiB peak less the 1.375 GiB CUDA context, over 254.6 M pore voxels). The matrix-free target of ~29 B/voxel is now a **~2.9× improvement, not ~6.8×**. Still a large win, but it must be argued on the new baseline.
-> - **"Setup cost collapses" is no longer a selling point.** Assembled setup at 800³ is 0.39 s — matrix-free cannot meaningfully beat that. Delete this from the case.
-> - **The ceiling claim needs restating.** This document said the assembled path caps out "around 700³"; it now completes 800³ with 2.25 GiB of headroom. The assembled-CSC floor of ~55 B/pore-voxel still caps it near 850³, so matrix-free's move to ~1200³ stands — but it is a jump from 850³, not from 700³.
-> - **The real remaining case for matrix-free is unchanged and still strong**: the ~55 B/voxel assembled floor is structural, and only deleting `rowval`+`nzval` gets past it.
-> - **The solve, not assembly, is now the bottleneck** — 99.0–99.8 % of end-to-end at 600–800³ (800³: setup 0.39 s, solve 205.7 s). Matrix-free changes SpMV bandwidth per iteration, so its speed case should be made on *per-iteration cost*, which is now where all the time is.
-> - Several code shapes this document anticipated needing **already exist**: fused assembly, inline edge weights, and BCs applied during assembly all landed in `src/assembly.jl`. The "an edge contributes only when both endpoints are non-BC" rule described below is implemented there and is bit-identical to the old pipeline across ~30 verified image configurations.
+The original version of this file was a design sketch written from code reading on 2026-08-08, before the matrix-path campaign ran. That campaign (`2026-08-08-matrix-path-optimization.md`, complete, 39 commits) invalidated most of the draft's motivating numbers: the 800³ OOM it cited no longer exists, the "setup cost collapses" benefit is retired (assembled setup is 0.409 s at 800³), and its memory table described a pipeline that has since been deleted. Rather than patch the draft again, this version was rewritten whole. What survives of the draft unchanged: the core observation, the Dirichlet-by-construction boundary rule, and the drop-in interface strategy. What is new: prototype measurements replacing every load-bearing estimate, the preconditioner interaction (the draft predated B24), the corrected memory ceilings, and the campaign structure.
 
-~~An 800³ image exhausts a 23.89 GiB GPU during problem construction.~~ Reproduced with `Imaginator.blobs(shape=(800,800,800), porosity=0.5, blobiness=1.0, seed=42)`, `axis=:x`, `gpu=true`, on an RTX PRO 5000 Blackwell.
+## The core observation (unchanged from the draft)
 
-*Historical — superseded by the table above:*
+The steady operator is a **7-point stencil on a regular Cartesian grid, masked by the pore image**. Every matrix entry is recoverable in O(1) from the pore-index array and the six neighbour offsets — the assembled matrix caches values that cost a few flops to recompute. Neither consumer needs the matrix as a matrix: `KrylovJL_CG` and the transient `ROCK4` path both need only `mul!`. There is no random entry access, no factorization, and — after B24 — the one preconditioner that matters builds its coarse space from a pass over stored entries that can equally be a pass over the grid.
 
-| N | pore voxels | edges | peak device memory | outcome |
+## Why matrix-free, argued on the post-campaign baseline
+
+The matrix-path campaign's final audit round ended on exactly this sentence: *"The largest remaining shares of the 800³ preconditioned e2e are CUSPARSE SpMV (~27 %) and Krylov's own vector ops (~24 %) — neither is Tortuosity code, and neither is improvable without going matrix-free."* This campaign is that sentence's follow-through. The case has three legs, in priority order.
+
+### 1. Scale — the primary case
+
+The assembled path is structurally finished at ~850³ on this card, by two independent walls that land in the same place:
+
+- **Memory wall.** Measured solve peak at 800³ is 20.588 GiB, of which 1.375 GiB is CUDA context → 40.3 bytes per grid voxel. Scaling to the 22.51 GiB data budget gives **~843³ at zero headroom**. The dominant term, `rowval` + `nzval` at 6.89 nnz per pore node (~55 B/pore-voxel), is the floor of the representation — no assembled-path work can remove it.
+- **Int32 wall.** `nnz` = 1.754 B at 800³ crosses `typemax(Int32)` at **~856³**. Moving to `Int64` indices to pass it would *raise* bytes per voxel by ~27 % and pull the memory wall down to ~780³. The two walls interlock: the assembled path cannot buy scale with either currency.
+
+The matrix-free operator stores no edges: its solve-time state is one `Int32` full-grid index array plus the Krylov vectors. Measured-constant arithmetic (ε = 0.497, Float32, data budget 22.51 GiB):
+
+| configuration | bytes/grid-voxel | N at zero headroom | N at ≥2 GiB headroom |
+| --- | --- | --- | --- |
+| assembled, default solve (measured) | 40.3 | ~843³ | ~818³ |
+| assembled, preconditioned (measured) | 43.2 | ~824³ | ~800³ |
+| matrix-free, default solve | 14 | ~1200³ | ~1160³ |
+| matrix-free, preconditioned | 17 | ~1125³ | ~1090³ |
+| matrix-free, variable `D` (+node `D`) | 16 | ~1147³ | ~1110³ |
+| matrix-free, preconditioned + compressed idx (M10) | 13.2 | ~1223³ | ~1185³ |
+
+Composition of the matrix-free 14 B/voxel: `idx` (Int32, full grid) 4 B + five pore vectors (`b`, `u`, `r`, `p`, `Ap`, Float32 at ε ≈ 0.5) 10 B. The preconditioner adds Krylov's `z` (2 B) and `agg` (Int16, 1 B) — same accounting that measured 21.959 GiB assembled at 800³. **The honest claim is ~1100³ preconditioned / ~1150³ default on this card** — the first draft's "~1200³" did not survive counting `z` and `agg`. The `Int32` ceiling stops binding entirely: the largest index becomes `nnodes`, which crosses `typemax(Int32)` only at ~1630³, far past the memory wall. At 800³ the matrix-free solve peak is a projected **~8.1 GiB + context ≈ 9.5 GiB** against today's 21.96 — memory freed at every size, not only at the frontier.
+
+CPU scale moves the same way: an 800³ CPU solve needs ~12 GB matrix-free in the CPU path's Float64 (~7 GB if Float32 were used) against ~30 GB assembled — it drops from workstation-only to feasible on an ordinary 16–32 GB machine, which matters for the JOSS PuMA comparison.
+
+**The scale claim is demonstrated, not projected.** In this planning session a prototype operator solved a fresh 1000³ blob (seed 42, ε 0.499, `nnodes` = 498 957 533) end-to-end through the production path — `LinearProblem(op, b)` + `KrylovJL_CG` at `reltol=1e-6`, with the `init_cacheval` workspace hook mirrored — on the 23.889 GiB card:
+
+| quantity | measured (2026-08-09) |
+| --- | --- |
+| matrix-free setup (`cumsum!` + RHS kernel) | 0.135 s |
+| apply cost | 30.77 ms (1.95× the 800³ apply — linear in voxels, as expected) |
+| solve | **381.4 s, 4805 iterations, retcode `Success`** |
+| device peak | ≤15.5 GiB → **≥8.4 GiB headroom** |
+| solution sanity | mean 0.482, extrema [0.0000, 1.0002] |
+
+Two side findings worth recording: Float32 CG **converged cleanly at half a billion unknowns** (campaign 1's κ·eps concern did not bite, again), and unpreconditioned iterations continue their ~O(N) growth (3620 → 4805). The growth is exactly what M5 exists to remove: with the two-level preconditioner's flat ~200–230 iterations, 1000³ projects to **~20–25 s** — the size frontier moves 1.95× in voxels while e2e stays where 800³ is today. At 200³ the same prototype matched the assembled path at **identical iteration count (1044 = 1044)**, exact RHS parity, and 7.5e-7 solution agreement.
+
+### 2. Speed — the secondary case
+
+Measured on this machine, 2026-08-09 (RTX PRO 5000 Blackwell, campaign blob fixtures, seed 42, ε 0.5, medians; prototype = raw CUDA kernel mirroring `assembly.jl` semantics, Float32, uniform `D`):
+
+| N | CUSPARSE CSR `mul!` | prototype apply | speedup | parity (rel L2) |
 | --- | --- | --- | --- | --- |
-| 200³ | 4.01 M | 22.8 M | ~~3.25 GiB~~ | solves |
-| 400³ | 31.9 M | 186 M | ~~13.78 GiB~~ | solves |
-| 800³ | 254.6 M | 1.503 B | ~~23.89 GiB (100 %)~~ | ~~`CUDA.OutOfGPUMemoryError`~~ |
+| 200³ | 0.338 ms | 0.199 ms | 1.70× | 1.1e-7 |
+| 400³ | 3.174 ms | 2.242 ms | 1.42× | 1.1e-7 |
+| 600³ | 11.459 ms | 6.905 ms | 1.66× | 1.1e-7 |
+| 800³ | 28.439 ms | 15.791 ms | **1.80×** | 1.1e-7 |
 
-~~The throw site is `dropzeros!` (`src/kernels/sparse.jl:252`) called from `apply_dirichlet_bc_fast!` (`src/pdetools.jl:90`), requesting 6.548 GiB.~~ CUDA reported 40.46 GiB of pool reserved against a 23.89 GiB device, meaning stages 2–4 only "succeeded" by spilling into host memory over PCIe — **and that fragmentation is now believed to be why the OOM was seen at all**, since a clean session completes the same construction. `apply_dirichlet_bc_fast!` no longer has any production caller.
+The 28.439 ms CSR figure reproduces the campaign's recorded 28.0 ms, so the baseline is consistent. Two further facts from the same session:
 
-Where the memory goes at 800³ (`nnodes` = 254.6 M, `nedges` = 1.503 B, `nnz_L` = 1.758 B):
+- **Tuning headroom is real and quantified.** The prototype's effective bandwidth against its compulsory traffic (`idx` once per grid voxel + `x`/`y` once per pore voxel ≈ 4.1 GB at 800³) is ~259 GB/s, on a device where CUSPARSE itself sustains ~600 GB/s. A tuned kernel reaching CUSPARSE's bandwidth on matrix-free traffic would apply in ~7 ms — **~4× over CSR**. The 1.8× is a raw-CUDA figure; the portable KA port currently pays it back down to 1.38× (see the KA-port gap below), so the honest bracket entering the campaign is **1.4–1.8× before tuning, ~4× as the tuning ceiling**.
+- **CPU, 16 threads:** `SparseArrays` `mul!` 36.5 ms → threaded stencil 5.0 ms at 200³ (**7.3×**, parity 1.4e-16); 281.9 ms → 39.5 ms at 400³ (7.1×). This exceeds what blocked item B17 promised (3.31× at 4 threads), and it needs no change to any published `SparseMatrixCSC` object — the operator is a new type, so the API question is faced once, deliberately, instead of retrofitted.
 
-| allocation | size |
-| --- | --- |
-| `conns` — COO edge list, `Int32[nedges, 2]` | 11.2 GiB |
-| adjacency matrix — `rowval` + `nzval` + `colptr` | 12.2 GiB |
-| Laplacian — `nnz + n` entries | 14.0 GiB |
-| `dropzeros!` temporaries (`flags`, `flags_Ti`, `scan_inclusive`, `new_rowval`, `new_nzval`) | ~28 GiB transient |
+End-to-end projections at 800³ from measured shares (SpMV replaced at 15.8 ms / at a tuned ~7 ms; everything else unchanged — these are projections, to be replaced by Phase 2 measurements):
 
-That is roughly 198 bytes per pore voxel.
+| path | today | with prototype apply | with tuned apply |
+| --- | --- | --- | --- |
+| GPU default (3620 iters × 51.9 ms) | 189.7 s | ~144 s (−24 %) | ~115 s (−39 %) |
+| GPU preconditioned (202 iters × 91.8 ms) | 20.7 s | ~18.1 s (−12 %) | ~16.5 s (−20 %) |
+| CPU 200³ default (1087 iters × 40.1 ms) | 43.9 s | ~9.7 s (−78 %) | — |
 
-## The core observation
+The preconditioned-path gain is modest because B24 already made iterations flat — after the swap, Krylov's own vector ops become the largest cost, and campaign 1 measured that fusing them is a ≤6 % dead end. **Speed alone would not justify this campaign; scale does, and speed comes with it.**
 
-The operator is a **7-point stencil on a regular Cartesian grid, masked by the pore image**. Every matrix entry is recoverable from the pore mask and the six neighbour offsets in O(1) — the assembled matrix caches a value that costs three flops to recompute.
+### 3. Structure — the tertiary case
 
-Neither consumer needs the matrix as a matrix. Both need only its action:
+No CUSPARSE dependency on the apply path: one KA kernel serves CUDA, CPU, Metal and AMDGPU. The portable backends currently run `_spmv_kernel!`'s 1.758 B atomic adds per SpMV at 800³ — matrix-free deletes that entire class of problem (unverifiable here per A28: no such hardware; the claim is architectural, not measured). CPU threading arrives free through the KA backend. And the CUDA extension's cache/invalidation machinery — `_as_cusparse`, the `symmetric` flag discipline, F2's silent invariant — has no matrix-free counterpart, because there is nothing to cache.
 
-- `SteadyDiffusionProblem` hands it to `KrylovJL_CG`, which calls `mul!`.
-- `TransientDiffusionProblem` uses it as `dc/dt = A*c` for `ROCK4`, which calls `mul!` (and estimates the spectral radius by power iteration on the same action).
+## What campaign 1 settled — do not re-litigate
 
-There is no random entry access, no factorization, and no preconditioner that inspects entries.
+Facts the previous campaign measured that this plan builds on; the numbers live in `2026-08-08-matrix-path-optimization.md`:
 
-## Proposed design
+- The solve is 99.0–99.8 % of e2e at 600–800³; assembly is 0.19 % and needs nothing.
+- The whole cheap-preconditioner family (Jacobi, polynomial/Neumann) **loses** — measured, monotonically. Only the two-level coarse space wins, and it wins −89 %. Jacobi's rejection carries over to matrix-free unchanged: the diagonal is the degree, bounded by 6.
+- Warm-start (B25) has no mechanism through LinearSolve; fused/pipelined CG recovers ≤6 % and means vendoring a solver. Both stay rejected.
+- LinearSolve's workspace allocation had to be tamed by hand (`init_cacheval` + `_cg_workspace`, items A20/A29) — the operator type must plug into the same hook or the double-workspace regression returns.
+- CSR SpMV made GPU τ run-to-run reproducible; τ is quoted to ≤3 significant figures. The matrix-free apply is a fixed-order per-row sum — deterministic by construction, same quoting rule.
+- The assembled CPU chain is pinned bit-identical by 56 `==` comparisons over purpose-built fixtures including zero-degree pore voxels interior and on both Dirichlet faces (F6). Those fixtures are this campaign's parity harness, ready-made.
+- Open blockers B17 (CPU SpMV via type change), B23 (tolerance policy has no home), B24-as-default (the −89 % is opt-in) all waited on one API decision — a Tortuosity-owned solve entry point. Amin approved the additive entry point on 2026-08-09 (Decision 2); this campaign implements it in M4, which resolves B23 and B24-as-default outright.
 
-Introduce an operator type — `MaskedLaplacian{T} <: AbstractMatrix{T}` — implementing exactly the interface surface `PortableSparseCSC` already implements and that LinearSolve/Krylov require: `size`, `eltype`, and `LinearAlgebra.mul!(y, A, x)`. Because `PortableSparseCSC` is already accepted by `LinearProblem` with only the 3-argument `mul!`, this is a proven drop-in path.
+## Design
 
-Stored state — no edges, no `nzval`, no `rowval`, no `colptr`:
+### Operator type
 
-- `idx::AbstractArray{Int32,3}` — grid position to compact pore index, `0` for solid. This doubles as the pore mask (`idx > 0` means pore), so the boolean image need not be resident on the device at all.
-- `D` — only when diffusivity is variable, kept as a full-grid field rather than per-edge weights.
-- `bc_mask::AbstractVector{Bool}` — length `nnodes`. For the steady inlet/outlet case the BC nodes are exactly the pore voxels on the two faces normal to `axis`, so a kernel could test `i == 1 || i == nx` with zero storage; the mask is kept for generality at negligible cost.
+`MaskedLaplacian{T} <: AbstractMatrix{T}` (working name), stored state:
 
-`mul!` is a single row-parallel kernel. Launch over grid voxels; a thread skips solids, otherwise owns output node `p = idx[i,j,k]`, reads its six neighbours from `idx`, accumulates in a register, and writes `y[p]` exactly once:
+- `idx::AbstractArray{Int32,3}` — grid position → compact pore ordinal, 0 at solids. Built by the same `cumsum!`-and-mask idiom as `build_steady_system`, and **numbering-identical to the assembled path's**, so `sol.u` is the same pore-ordered vector and `reconstruct_field`, `tortuosity`, `effective_diffusivity`, `formation_factor` work unmodified.
+- `axis`/`nbc` — Dirichlet membership stays a coordinate test (`_is_bc(_face_coord(i,j,k,d), nbc)`), exactly as `assembly.jl` does it. **The first draft's `bc_mask` vector is dropped** — it stored what a two-comparison test computes.
+- For variable `D`: a node-compacted `Float32` diffusivity vector (2 B/grid-voxel), gathered like `x`; edge weights recomputed inline via the same `_edge_weight` harmonic mean. Storage form to be confirmed by measurement (M9).
+
+No `colptr`, no `rowval`, no `nzval`, no edge list, no `symmetric` flag, no cache.
+
+### Apply kernel
+
+One KA kernel, shared CPU/GPU like `assembly.jl`'s pair, launched over grid voxels at `wg=(64,4,1)`; a thread skips solids, owns output `p = idx[i,j,k]`, walks the six neighbours **in `_NEIGHBOURS` order** (fixed order → deterministic sums), accumulates degree and off-diagonal action in registers, writes `y[p]` once:
+
+- free row: `y[p] = deg·x[p] − Σ_{q pore nb, non-BC} w·x[q]`, where `deg` sums **all** pore neighbours (BC included) — this reproduces the assembled convention that elimination keeps the original diagonal;
+- BC row: `y[p] = d·x[p]` with `d = deg`, or 1 when `deg == 0` (`_unit_where_zero`);
+- empty row (isolated free voxel): `y[p] = 0` falls out of `deg == 0` with no branch.
+
+The kernel must **share** `_edge_weight`, `_is_bc`, `_face_coord`, `_NEIGHBOURS` with `assembly.jl` rather than restate them — one source of truth for the stencil semantics is what makes parity with the assembled path structural rather than coincidental. Both 3- and 5-argument `mul!` (the 5-arg form is a two-line epilogue change; ROCK4 and some Krylov methods want it). The prototype validated this exact semantics to 1.1e-7 (Float32) and 1.4e-16 (Float64) against assembled matrices on blob fixtures.
+
+### RHS
+
+A sibling kernel emits `b` directly (the folded-in Dirichlet load: `Σ w` over inlet-face BC neighbours for free rows; `d` or 0 for BC rows) — the prototype's version matched `build_steady_system`'s `b` to the last bit at 200³. Setup is then `cumsum!` + one kernel: the operator constructor is strictly cheaper than assembled setup, which was already 0.409 s at 800³.
+
+### LinearSolve integration
+
+`LinearProblem(op, b)` + `KrylovJL_CG` works today with only `size`/`eltype`/`mul!` — proven by the prototype end-to-end through the production `solve` call. The operator gets the same `LinearSolve.init_cacheval` specialization `PortableSparseCSC` has (zero-length placeholder, `_cg_workspace` aliasing `x = u`); prefer hoisting that method to dispatch on `Union{PortableSparseCSC, MaskedLaplacian}` or a small abstract type over copy-pasting it. The existing field-by-field workspace test extends to the operator.
+
+### Preconditioner port — required, not optional
+
+B24 is worth −89 % and must compose. Two of its three inputs are representation-independent (`agg` from the image, restrict/prolong/coarse-solve on vectors); the two that read the matrix need matrix-free replacements:
+
+- `_coarse_stencil_kernel!` iterates **stored entries** of `A` to accumulate `WᵀAW`. Replacement: a grid-pass kernel of the same shape as the apply kernel — each pore voxel contributes its diagonal to `(agg[p], agg[p])` and each edge its `−w` to `(agg[p], agg[q])`, same slot arithmetic. Everything downstream (host assembly, shift, Float64 Cholesky, block-drop rule) is untouched.
+- `inv_lambda = 1/(2·maximum(nzval))`. For uniform `D` the max diagonal on any percolating blob is exactly `6·D0` — use the closed form. For variable `D`, fold a max-reduction into the RHS kernel's pass.
+
+Acceptance: preconditioned iteration counts and τ at 200–800³ match the assembled preconditioned path (202 iters at 800³) to within fp-reordering noise.
+
+### Constructor integration
+
+`SteadyDiffusionProblem` grows `matrixfree::Bool=false` (Decision 1), routing construction to the operator instead of `build_steady_system`. **Default stays assembled** — mid-JOSS-review, the default path's behavior must not move (see Constraints). Alongside it lands the Tortuosity-owned solve entry point (Decision 2): an additive `solve(sim, …)`-form function — never a shadowed LinearSolve name — that owns path choice, preconditioner default (two-level on by default there), and tolerance policy, resolving campaign 1's B23 and B24-as-default in passing; `solve(sim.prob, alg)` keeps working unchanged. The transient path is out of scope (Decision 3): `TransientDiffusionProblem` keeps the assembled pipeline; the matrix-free transient operator (row-only BC rule, possibly time-dependent `b(t)`) is a named follow-on, M12.
+
+## Prototype provenance
+
+The measurements above came from three throwaway scripts run in this planning session (2026-08-09) against the campaign's cached blob fixtures (`tempdir()/tortuosity_bench_blobs`, seed 42, ε 0.5): a raw-CUDA apply-kernel race vs CUSPARSE with parity checks; a KA-port overhead check; and an end-to-end LinearSolve-path solve demonstration. Phase 0 recreates them as a committed `bench/` harness — the numbers in this plan are quotable but not yet reproducible from the repo, which is exactly the F13 mistake campaign 1 logged; fixing that is Phase 0's first job.
+
+### The KA-port gap — measured, and a design tension to resolve
+
+The numbers above are from a **raw CUDA** kernel. A line-for-line KernelAbstractions port (the pattern `assembly.jl` uses, and what a portable production kernel would be) produced **bit-identical output** but measurably slower launches: 1.18× at 400³, **1.36× at 800³** (20.57 ms vs 15.10 ms — still 1.38× faster than CUSPARSE). For `assembly.jl` this overhead never mattered (setup is 0.19 % of e2e); the apply runs hundreds to thousands of times per solve, so here it does. Three ways out, to be settled by measurement in M8: shrink the KA overhead in place (the usual suspects are `@index(Global, NTuple)`'s per-thread division arithmetic and the dynamic ndrange — static ranges and manual index math inside a KA kernel are both legal), keep the KA kernel as the portable path and add a CUDA-specialized kernel in `ext/TortuosityCUDAExt.jl` (the exact precedent the CUSPARSE `mul!` override already sets), or accept 1.38× if tuning erases the gap anyway. Do not accept the naive port without measuring — a third of the apply win is at stake.
+
+## Non-negotiable constraints
+
+1. **Golden values are frozen.** `GOLDEN_STEADY` and `GOLDEN_VARIABLE_D` in `test/test_regression_golden.jl` never change. They exercise the default (assembled) path, which this campaign does not touch behaviorally, so they cannot legitimately move. Matrix-free results are verified *against* them at the same tolerances via new tests.
+2. **The suite floor is 11576 assertions, green, GPU included.** Never weaken, skip, or delete a test to make a change pass. New parity tests only add.
+3. **The assembled path stays default and behaviorally untouched.** JOSS review is in flight; `solve(sim.prob, KrylovJL_CG())` on an unmodified construction must produce today's numbers. Refactors that share helpers (`_edge_weight` etc.) are fine; anything that changes assembled output is a blocker.
+4. **Both paths are first-class, permanently.** Amin's directive. The assembled path is not deprecated, not test-only, not "the reference implementation" — it is a supported production path (and the only one CUSPARSE-backed). The first draft's line that `PortableSparseCSC` "stops being the production path" is superseded.
+5. **`Int32` overflow work stays out of scope** (Amin's standing deferral) — but note the operator narrows the exposure rather than widening it: its binding index is `nnodes` (~1630³) instead of `nnz` (~856³).
+6. Unattended-run rules from campaign 1 apply verbatim: blockers are logged and skipped, never decided unilaterally; failures are reverted, never left red; goldens are never updated unattended.
+
+## Optimization inventory — M-series
+
+Statuses are all `pending`; est. gains marked **measured** come from this session's prototypes, everything else is arithmetic or projection. Maintain this table exactly as campaign 1 maintained its inventory: add discoveries with fresh ids, correct estimates with measurements, retire honestly, re-rank as the bottleneck moves.
+
+| id | item | gain | complexity | phase |
+| --- | --- | --- | --- | --- |
+| M1 | `MaskedLaplacian` type + KA apply kernel (3- and 5-arg `mul!`), CPU+GPU shared, helpers shared with `assembly.jl` | apply vs CSR at 800³ GPU: 1.80× raw / 1.38× naive KA port — **measured (prototype)**; 7.3× vs stdlib at 200³ CPU/16t | ~200 lines, the campaign's core | 1 |
+| M2 | LinearSolve workspace hook for the operator (shared dispatch with `PortableSparseCSC`) | avoids +2 n-vectors at solve peak — measured in campaign 1 | ~10 lines | 1 |
+| M3 | RHS kernel + operator constructor (`build_steady_operator` beside `build_steady_system`) | setup ≤ assembled's 0.409 s — **b parity measured exact** | ~60 lines | 1 |
+| M4 | `SteadyDiffusionProblem` `matrixfree=false` keyword + the Tortuosity-owned solve entry point (Decisions 1–2): path choice, preconditioner default, tolerance policy in one place | unlocks user access; makes B24's −89 % the entry point's default; resolves B23 | ~30–50 lines | 2 |
+| M5 | Two-level preconditioner port: grid-pass `WᵀAW` kernel + `inv_lambda` closed form / fused max | keeps the −89 %; **required** for the flagship sizes | ~80 lines | 2 |
+| M6 | Parity + edge-case tests: apply vs assembled on the F6 fixture suite × {uniform, variable D} × 3 axes; e2e τ vs goldens; 5-arg `mul!`; empty columns; zero-degree BC nodes; workspace field-by-field | correctness backbone | additive tests only | 1–2 |
+| M7 | Bench harness: `mf` pass in `bench/scaling_bench.jl`, sizes extended to 1000³/1100³, fixtures cached; commit the prototype scripts' successors | makes every number here repo-reproducible | moderate | 0, 2 |
+| M8 | Apply-kernel tuning: close the measured KA-vs-raw gap (1.36× at 800³) or specialize per-backend in the CUDA ext; launch-config sweep, `Int32` in-kernel index arithmetic, `@Const`/read-only paths, plane/slab tiling for `idx` reuse (each `idx` value is read by 7 threads), occupancy | measured headroom 259 → ~600 GB/s ⇒ apply ~7 ms at 800³, ~4× vs CSR | open-ended; audit-round stop rule | 3 |
+| M9 | Variable-`D` apply variant + storage decision (node-compacted vs full-grid `D`) | closes feature parity; +2 B/voxel | kernel branch + measurement | 2–3 |
+| M10 | Compressed `idx`: pore bitmask + per-block popcount prefix (rank query) replaces the Int32 array — 4 B/voxel → ~0.19 B/voxel | ceiling ~1125³ → ~1185³ preconditioned; possibly *faster* (less compulsory traffic) | +1 real concept; gate on M8 measurements | 3 |
+| M11 | CPU threaded apply — free through the KA CPU backend | CPU solve projected −70 %+ at 200³ — **measured 7.3× on the SpMV share** | none beyond M1 | 1 |
+| M12 | Transient matrix-free operator (row-only BC rule, `b(t)`, ROCK4 spectral bound via `mul!` power iteration) | transient memory/speed | **follow-on, out of scope** (Decision 3); interacts with A30 | — |
+| M13 | Docs: operator docstrings, README/docs positioning of the two paths, JOSS-safe wording | — | small | 4 |
+
+### Considered and rejected at planning time
+
+Logged so nobody re-investigates; reasoning per campaign convention.
+
+- **Stored `bc_mask` vector** (was in the first draft) — Dirichlet membership is a two-comparison coordinate test in-kernel; storing it buys nothing and costs 1 B/pore-voxel. Rejected; the draft is corrected by this revision.
+- **Stored diagonal vector** (the draft's Open decision 3) — the degree accumulates for free in the same six neighbour reads the apply already does; a stored diagonal adds 2–4 B/voxel to save ~6 flops on a bandwidth-bound kernel. Rejected by arithmetic.
+- **Jacobi preconditioning** — B3's measured rejection carries over: post-elimination the diagonal is the degree (1…6), a bounded row rescaling that leaves the O(N²) low-frequency mode untouched; and for uniform interior it is exactly the identity. Revisit only for strongly variable `D`, per campaign 1.
+- **Full-grid vectors** (no `idx`, no gathers, perfectly structured stencil) — doubles every Krylov vector at ε = 0.5 (solid entries), and dots/norms then run over solids too. Worse memory *and* worse vector-op traffic at this package's porosities. Reject; revisit only if a high-porosity (ε ≳ 0.75) workload ever becomes primary.
+- **fp16 anything** — campaign 1 established CG needs fp32 vectors to converge at `reltol=1e-6`; the apply's traffic is dominated by `idx` and the vectors, so an fp16 weight buys nothing (weights are computed, not stored).
+- **Multi-axis batching** (solve `:x`/`:y`/`:z` concurrently in freed memory) — the operator differs per axis (BC rule), so there is no shared-operator multi-RHS; three concurrent solves would contend for bandwidth with no reuse. Nothing to build; τ-over-axes stays sequential.
+
+## Verification protocol
+
+The assembled path is the executable specification, exactly as campaign 1 left it:
+
+1. **Apply parity**: `mul!` vs `PortableSparseCSC`/`SparseMatrixCSC` on the F6 fixture suite (7 images including interior and Dirichlet-face zero-degree voxels) × {uniform, variable `D`} × 3 axes × random vectors — Float64 to ~1e-14 rel, Float32 to ~1e-6 rel. Both 3- and 5-arg forms.
+2. **RHS parity**: `b` exact-equal on CPU Float64 (integer-valued sums), tolerance on GPU Float32.
+3. **End-to-end**: matrix-free τ agrees with the golden tables at golden tolerances on all seeds/axes, and with the assembled GPU path at Float32 tolerance at bench sizes. A golden mismatch is a matrix-free bug by definition — never a golden update.
+4. **Preconditioner parity** (M5): iteration counts within a few of the assembled preconditioned path at 200–800³; τ unchanged.
+5. **Workspace hook**: field-by-field CgWorkspace comparison, extended from the existing test.
+6. **Determinism**: two identical solves produce identical τ (the apply's fixed summation order makes this strictly checkable, like the CSR path).
+
+Suite mechanics per campaign 1: scratch-env fast loop while iterating (~15 s), full `Pkg.test()` at phase boundaries in the background, foreground green run at the end; floor 11576 assertions.
+
+## Execution
+
+### Phases
+
+- **Phase 0 — harness and baseline.** Branch `perf/matrix-free` off `main` (suite verified green first). Commit this plan. Recreate the prototype scripts as a committed benchmark pass (M7 first half): `mf` variant in `bench/scaling_bench.jl` or a sibling, so apply-vs-CSR and solve numbers are repo-reproducible. Generate and cache ≥1000³ blob fixtures (host-RAM caution: `blobs` at 1100³+ may need chunked or Float32 generation — new fixture sizes carry no goldens, so B27's Float32 blocker does not apply to them; log whatever is done). Re-run the assembled bench at 200–800³ to confirm the campaign-1 baseline still reproduces at HEAD.
+- **Phase 1 — the operator (the main event).** M1 + M2 + M3 + M11 with M6's parity tests landing in the same commits. Exit: parity suite green on CPU and GPU, apply at least at the measured naive-KA level (≥1.38× vs CSR at 800³ — closing the KA gap belongs to Phase 3, not here), LinearSolve path solving end-to-end via `LinearProblem(op, b)`.
+- **Phase 2 — integration and the preconditioner.** M4 (the `matrixfree` keyword and the solve entry point, per Decisions 1–2), M5, M9, second half of M7. Exit: 800³ preconditioned matrix-free e2e measured ≤ assembled's 20.7 s; 1000³ certified end-to-end on the bench; iteration-parity acceptance met.
+- **Phase 3 — the frontier and the speed rounds.** Certify the largest solvable sizes (target ≥1100³ preconditioned; M10 if the arithmetic is needed to get there or M8 shows it is free speed). Alternate audit and implementation rounds on M8 exactly like campaign 1's Phase 4, with the same printed stop convention (`AUDIT ROUND <n>: <k> candidates surfaced, <m> accepted`; `PHASE 3 COMPLETE: 0 accepted candidates`).
+- **Phase 4 — verification and consolidation.** Independent adversarial review of the whole diff; foreground full suite; final bench at all sizes both paths; M13 docs; refresh this file's numbers and the matrix-path plan's cross-references; final report in this file.
+
+### Orchestration
+
+Per Amin's standing preference: the master stays context-light and directs; all reading, editing, testing and measuring is delegated; one write-agent at a time; every write is checked by an independent read-only reviewer who re-runs tests and benchmarks; agents report in campaign 1's compact format; the Progress log in this file — not anyone's context — is the state. The full protocol, including the `/goal` evaluator-visibility rules, is in `2026-08-08-matrix-path-optimization.md` §Orchestration protocol and applies verbatim.
+
+### Git discipline
+
+Branch `perf/matrix-free`; one conventional commit per accepted change referencing inventory ids; never `git add -A` or `commit -a` (path-scope to `src/`, `test/`, `ext/`, `bench/`, plus this file); no pushes; no attribution trailers. Commit authorization for unattended runs is per-campaign, granted when Amin starts it.
+
+### Goal condition (paste to `/goal` when starting)
 
 ```
-y[p] = diag[p] * x[p] - Σ_{q ∈ pore neighbours of p} w[p,q] * x[q]
+/goal Execute the plan in docs/plans/2026-08-08-matrix-free-operator.md to completion. Read that file first, then resume from its Progress log. The condition is met when, and only when, your visible message text contains the exact line: CAMPAIGN COMPLETE - all conditions met. Print that line only after you have personally verified all five: (1) every M-series inventory item except M12 is terminal (done, rejected, BLOCKED or REVERTED) in the Progress log; (2) Phase 3 ended on the printed diminishing-returns stop condition; (3) a full Pkg.test() run is green with assertions at or above 11576; (4) the benchmark harness has been re-run at all sizes including the largest certified size, on both the assembled and matrix-free paths; (5) the Final report is written into this plan file. Constraints: never modify golden tau values, never weaken or skip a test, never use git add -A or git commit -a, never leave the tree red, never change the assembled path's default behavior. Stop after 60 turns if not complete, print CAMPAIGN HALTED and a status summary.
 ```
 
-Edge weights are recomputed inline rather than looked up: `w = 1` for uniform `D`, and the harmonic mean `2·D_a·D_b/(D_a + D_b)` for variable `D`. `diag[p] = Σ w[p,q]`, also accumulated inline.
+## Decisions — settled by Amin, 2026-08-09
 
-### Boundary conditions
+The five questions this plan was drafted with were put to Amin on 2026-08-09 and ruled on as recommended. They are recorded here as rulings; the campaign executes them without revisiting.
 
-The current path maintains symmetry by zeroing BC rows, zeroing BC columns, restoring the diagonal, then compacting with `dropzeros!`. Matrix-free replaces all of that with one rule: **an edge contributes only when both endpoints are non-BC**. That is symmetric by construction, which matters because CG requires it, and it is much harder to get wrong than the zero-rows/zero-cols/drop dance. For a BC node `p` the row reduces to `y[p] = diag[p] * x[p]`, matching the existing convention of preserving the original diagonal. The RHS contribution `w[p,q] · val[p]` for interior `q` adjacent to BC `p` is folded in once at setup.
+1. **API spelling: `matrixfree::Bool=false` on `SteadyDiffusionProblem`.** The smallest surface. Flipping the *default* is explicitly not part of this campaign — it is its own post-JOSS decision, to be made with the final benchmark table in hand.
+2. **The solve entry point: approved, additive form.** Tortuosity owns a `solve(sim, …)`-form entry point — a new function, never a shadowed LinearSolve name — implemented in this campaign as part of M4. It owns path choice, preconditioner default (two-level on by default there), and tolerance/iteration policy, which resolves campaign 1's B23 and B24-as-default together. `solve(sim.prob, alg)` keeps working unchanged, so the JOSS-frozen surface does not move.
+3. **Scope: steady only.** The transient operator (M12) gets its own follow-on plan; it has a different BC rule and a time-dependence wrinkle, and A30 (assembled transient port) remains open in parallel.
+4. **Certified size targets: 1000³ and 1100³ preconditioned** on the 24 GiB card as the campaign headline, with 1200³ attempted only if M10 lands. Fixture generation cost and disk (raw caches reach ~1.3 GB each) are the practical constraints.
+5. **Float32 stays, with true-residual monitoring.** The prototype's 1000³ Float32 CG converged to `reltol=1e-6` with retcode `Success` and a physically sane field, so no mixed-precision machinery is needed at the target sizes. Certification runs at ≥1000³ include a true-residual check (recursive-vs-true residual drift is the known failure mode); a Float64 variant (which halves the size ceiling) is considered only if 1100³ certification actually stalls.
 
-## Expected memory
+## Relationship to the matrix-path campaign's open items
 
-At 800³ with uniform `D`:
+- **B17** (CPU SpMV type change, blocked): the matrix-free CPU path delivers more than B17 promised without touching `SparseMatrixCSC` publics. B17 stays open *for the assembled path*, but its urgency drops to near zero once M11 lands; recommend re-triaging it to rejected-unless-someone-asks after this campaign.
+- **B23 / B24-as-default**: resolved — the entry point was approved on 2026-08-09 (Decision 2) and this campaign implements it in M4.
+- **A30** (transient port to fused assembly): untouched by this campaign; if M12 ever lands, A30's GPU motivation shrinks to maintenance; judge then.
+- **A28** (portable `_free!`): unchanged; the operator allocates less, so the no-op matters less.
+- **F13** (benchmarks not repo-reproducible): this campaign's Phase 0 explicitly closes the same gap for its own numbers.
 
-| allocation | size |
-| --- | --- |
-| `idx` (`Int32`, full grid) | 1.91 GiB |
-| ~5 Krylov working vectors (`Float32`, `nnodes`) | 4.77 GiB |
-| `bc_mask` (`Bool`, `nnodes`) | 0.24 GiB |
-| **total** | **~6.9 GiB** |
+## Progress log
 
-That is ~29 bytes per pore voxel against the current **~85** (~~198~~ — see the refresh box at the top; the assembled path was optimized on 2026-08-08 and now peaks at 21.637 GiB at 800³, of which 1.375 GiB is CUDA context). It moves the ceiling on a 24 GiB card from roughly **850³** (~~700³~~ — the assembled path now completes 800³ with 2.25 GiB of headroom, and its structural ~55 B/pore-voxel CSC floor is what caps it near 850³) to roughly **1200³**.
+**This log is the campaign's state.** Read it before doing anything; append one line per terminal item, including rejections, blockers, and reverts. An empty log means Phase 0 has not run.
 
-## Secondary benefits
+Format: `date — id(s) — status — memory delta — speed delta — commit sha — reviewer verdict`.
 
-**Less SpMV memory traffic, and no atomics on the portable path.** Note that on CUDA `mul!` is already overridden to call CUSPARSE (`ext/TortuosityCUDAExt.jl:63`), so the atomic KA kernel `_spmv_kernel!` (`src/sparse_type.jl:100`) is *not* the CUDA hot path — that kernel, which performs `Atomix.@atomic y[r] += v` for every nonzero (1.758 B atomic adds per SpMV at 800³), is what Metal, AMDGPU, and CPU use. Matrix-free removes those atomics entirely on those backends. On CUDA the win is bandwidth: assembled SpMV reads `rowval` + `nzval` + gathered `x` at ~12 bytes per nonzero (~83 bytes per row at 6.9 nnz/row), while matrix-free reads six `idx` lookups plus six gathered `x` values (~48 bytes per row), and it skips any CSC-to-CSR handling inside CUSPARSE. Treat the CUDA speedup as "expected but must be measured", not assumed.
-
-~~**Setup cost collapses.** No `findall`, no histogram pass, no exclusive scan, no COO scatter, no separate Laplacian assembly, no `dropzeros!`. Construction reduces to a single prefix sum building `idx`.~~ **RETIRED as a benefit.** The assembled path already did all of this on 2026-08-08: `findall`, the histogram pass, the COO scatter, the separate Laplacian assembly and `dropzeros!` are all gone from the steady path, and construction at 800³ takes **0.39 s**. Matrix-free cannot meaningfully improve on that. Do not carry this argument forward.
-
-**The `Int32` ceiling moves out of the way.** Index overflow risk currently lives on `nedges`/`nnz`, which are ~5.9× `nnodes` (measured 5.90 edges per pore voxel at ε = 0.5). Deleting the edge list makes `nnodes` the largest index, moving the `Int32` wall from ~900³ to ~1600³ — past the ~1200³ memory wall. Memory becomes the binding constraint again, which makes deferring the `Int32` work a deliberate choice rather than a gamble. It still needs fixing eventually.
-
-## Scope and compatibility
-
-The public API is unchanged. `sol.u` remains a length-`nnodes` pore-ordered vector, so `reconstruct_field`, `tortuosity`, `effective_diffusivity`, and `formation_factor` keep working unmodified.
-
-`PortableSparseCSC` stays in the codebase. It stops being the production path and becomes the parity reference for tests.
-
-Files affected: `src/simulations.jl` (construction site), a new operator source file, and `src/transient.jl` if the transient path is migrated. `bench/gpu_bench.jl` and `bench/cpu_bench.jl` reach into `build_connectivity_list`, `build_adjacency_matrix`, `laplacian`, and `apply_dirichlet_bc_fast!` directly and will need updating.
-
-## Verification
-
-`test/test_impl_parity.jl` and `test/test_gpu_parity.jl` already provide the harness. The assembled path becomes the executable specification for the new one: assert that matrix-free `mul!` matches `PortableSparseCSC` `mul!` to `Float32` tolerance on small images, across uniform and variable `D`, all three axes, and with boundary conditions applied. End-to-end, assert that `tortuosity` agrees with the existing CPU `Float64` reference values.
-
-## Status of this document
-
-This is a design sketch produced from reading, not from measuring. Whoever implements it has full authority to depart from it: pursue approaches it does not mention, rewrite parts that turn out to be wrong, add code and abstractions where they genuinely serve the goal, and contradict any analysis here that measurement disproves. The same decision heuristic and staff-engineer agency described in `2026-08-08-matrix-path-optimization.md` apply. The design below is a starting point and a record of what was already investigated — not a boundary.
-
-## Open decisions
-
-1. **Steady-only first, or steady and transient together?** The transient operator needs the same treatment but has a wrinkle: `bc_inlet`/`bc_outlet` may be `f(t)`, so the operator and RHS are time-dependent. Recommendation: land steady first, transient as a follow-up.
-2. **Benchmark suite.** Update `bench/` in the same change, or keep it pinned to the assembled path as a comparison baseline?
-3. **Jacobi preconditioning.** The diagonal is available for free in the matrix-free formulation (one `Float32` vector, 0.95 GiB at 800³, or recomputed inline). Worth evaluating for CG convergence, but it is a separate concern from memory.
-
-## Relationship to assembled-path optimization
-
-Optimizing the existing assembled implementation is a prerequisite, not competing work. The redundancies it removes — fused connectivity-to-CSC assembly, inline edge weights, boundary conditions applied during assembly, atomic-free symmetric SpMV — are the same code shapes the matrix-free operator needs, so that effort carries forward rather than being discarded.
+*(empty — campaign not started)*
