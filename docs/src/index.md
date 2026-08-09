@@ -13,17 +13,23 @@ using Pkg
 Pkg.add("Tortuosity")
 ```
 
-**Requirements:** Julia 1.10+. GPU acceleration is optional — load the corresponding package (`CUDA.jl`, `Metal.jl`, or `AMDGPU.jl`) to activate it. See [GPU backends](@ref) below.
+**Requirements:** Julia 1.10+. GPU acceleration is optional — install and load the corresponding package (`CUDA.jl`, `Metal.jl`, or `AMDGPU.jl`) to activate it. See [GPU backends](@ref) below.
 
 ## Optional dependencies
 
-Parts of the API live in package extensions, so `using Tortuosity` stays light for people who do not need them. Each is installed with Tortuosity; you only have to load it.
+Parts of the API live in package extensions, so `using Tortuosity` stays light for people who do not need them. `Pkg.add("Tortuosity")` does **not** install them — Julia resolves only a package's hard dependencies — so add the ones you need yourself, then load them before calling the entry points they back.
 
-| Load this | To use |
-|-----------|--------|
-| `using ImageFiltering` | `Imaginator.blobs`, `Imaginator.apply_gaussian_blur` |
-| `using LsqFit`         | `fit_effective_diffusivity`, `fit_voxel_diffusivity` |
-| `using HDF5`           | `export_to_hdf5` |
+| Add and load this | To use |
+|-------------------|--------|
+| `ImageFiltering` | `Imaginator.blobs`, `Imaginator.apply_gaussian_blur` |
+| `LsqFit`         | `fit_effective_diffusivity`, `fit_voxel_diffusivity` |
+| `HDF5`           | `Tortuosity.export_to_hdf5` |
+
+```julia
+using Pkg
+Pkg.add("ImageFiltering")   # and "LsqFit" and/or "HDF5", as needed
+using ImageFiltering
+```
 
 Calling one of these without its package raises an error naming the package to load. Everything else — problem construction, solving, the observables, `Imaginator.trim_nonpercolating_paths` — works with `using Tortuosity` alone.
 
@@ -51,9 +57,11 @@ Tortuosity ships CPU kernels unconditionally. GPU kernels live in package extens
 | Metal   | [`Metal.jl`](https://github.com/JuliaGPU/Metal.jl) | Apple Silicon |
 | AMDGPU  | [`AMDGPU.jl`](https://github.com/JuliaGPU/AMDGPU.jl) | AMD GPUs (ROCm) |
 
-To activate a backend, load the corresponding package **before** constructing a simulation:
+Backend packages are optional dependencies too, so install the one matching your hardware, then load it **before** constructing a simulation:
 
 ```julia
+using Pkg; Pkg.add("CUDA")   # or "Metal" / "AMDGPU"
+
 using CUDA      # or: using Metal  / using AMDGPU
 using Tortuosity
 

@@ -39,8 +39,9 @@ end
 Apply an isotropic Gaussian blur with standard deviation `sigma` in each dimension
 using symmetric boundary padding.
 
-Requires `ImageFiltering.jl`, an optional dependency: run `using ImageFiltering`
-before calling this.
+Requires `ImageFiltering.jl`, an optional dependency that does not install with
+Tortuosity: run `Pkg.add("ImageFiltering")`, then `using ImageFiltering`, before
+calling this.
 """
 function apply_gaussian_blur(img, sigma)
     return _gaussian_blur(img, sigma)
@@ -104,8 +105,9 @@ The algorithm: random noise → Gaussian blur (σ = mean(shape) / 40 / blobiness
 - `blobiness`: controls feature size (higher = finer features).
 - `seed`: random seed for reproducibility. Default: `nothing`.
 
-Requires `ImageFiltering.jl`, an optional dependency: run `using ImageFiltering`
-before calling this.
+Requires `ImageFiltering.jl`, an optional dependency that does not install with
+Tortuosity: run `Pkg.add("ImageFiltering")`, then `using ImageFiltering`, before
+calling this.
 """
 function blobs(; shape, porosity, blobiness, seed=nothing)
     Random.seed!(seed)

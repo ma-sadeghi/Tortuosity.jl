@@ -6,13 +6,13 @@ All notable changes to Tortuosity.jl are recorded here. Versions follow [Julia's
 
 ### Breaking
 
-Three dependencies moved into package extensions, so they are no longer loaded by `using Tortuosity`. They still install with the package — you only have to load them before calling the entry points that need them. This is a breaking interface change for callers of those entry points.
+Three dependencies moved into package extensions, so they are no longer installed or loaded by `using Tortuosity`. `Pkg.add` them yourself, then load them before calling the entry points that need them. This is a breaking interface change for callers of those entry points.
 
-| Load this | Before calling |
-|-----------|----------------|
-| `using ImageFiltering` | `Imaginator.blobs`, `Imaginator.apply_gaussian_blur` |
-| `using LsqFit`         | `fit_effective_diffusivity`, `fit_voxel_diffusivity` |
-| `using HDF5`           | `export_to_hdf5` |
+| Add and load this | Before calling |
+|-------------------|----------------|
+| `ImageFiltering` | `Imaginator.blobs`, `Imaginator.apply_gaussian_blur` |
+| `LsqFit`         | `fit_effective_diffusivity`, `fit_voxel_diffusivity` |
+| `HDF5`           | `Tortuosity.export_to_hdf5` |
 
 Calling one of them without its package raises an error naming the package to load, rather than an `UndefVarError`. Everything else — problem construction, solving, the observables, `Imaginator.trim_nonpercolating_paths` — is unaffected.
 

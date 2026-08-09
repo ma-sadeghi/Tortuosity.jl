@@ -59,7 +59,8 @@ Where `τ` is the fitted tortuosity (`D_pore * φ / D_eff`) and `D_eff` is
 the effective diffusivity. If `prob.D` is a scalar field, `D_pore` is set
 to `mean(prob.D[img])`.
 
-Requires `LsqFit.jl`, an optional dependency: run `using LsqFit` before calling this.
+Requires `LsqFit.jl`, an optional dependency that does not install with
+Tortuosity: run `Pkg.add("LsqFit")`, then `using LsqFit`, before calling this.
 """
 function fit_effective_diffusivity(
     t, c_hist, prob::TransientDiffusionProblem, method::Symbol;
@@ -184,7 +185,8 @@ independently.
 If `fit_depth == false`: `(taus, SE_taus, voxels)`
 If `fit_depth == true`: `(taus, xs, SE_taus, SE_xs, voxels)`
 
-Requires `LsqFit.jl`, an optional dependency: run `using LsqFit` before calling this.
+Requires `LsqFit.jl`, an optional dependency that does not install with
+Tortuosity: run `Pkg.add("LsqFit")`, then `using LsqFit`, before calling this.
 """
 function fit_voxel_diffusivity(
     sol::TransientSolution, prob::TransientDiffusionProblem;
