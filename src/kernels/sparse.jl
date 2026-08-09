@@ -47,6 +47,7 @@ function set_diag!(A::PortableSparseCSC{Tv}, vals::AbstractVector) where {Tv}
 
     backend = get_backend(A.nzval)
     wg = min(N_diag, 256)
+    _invalidate_cache!(A)
     set_diag_kernel!(backend, wg)(A.nzval, A.rowval, A.colptr, cu_vals, N_diag; ndrange=N_diag)
     KernelAbstractions.synchronize(backend)
     return nothing
@@ -146,6 +147,7 @@ function zero_rows_cols!(A::PortableSparseCSC, idxs::AbstractVector{<:Integer})
     valid_cols = filter(i -> 1 <= i <= num_cols, idxs_Ti)
 
     backend = get_backend(A.nzval)
+    _invalidate_cache!(A)
 
     # Zero rows
     unique_rows = unique(valid_rows)
@@ -195,6 +197,7 @@ function _zero_rows_only!(A::PortableSparseCSC, rows::AbstractVector{<:Integer})
     isempty(valid_rows) && return false
 
     backend = get_backend(A.nzval)
+    _invalidate_cache!(A)
     is_target_row = fill!(similar(A.nzval, Bool, num_rows), false)
     gpu_rows = similar(A.rowval, length(valid_rows))
     copyto!(gpu_rows, valid_rows)

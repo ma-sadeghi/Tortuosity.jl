@@ -55,12 +55,19 @@ Implements `mul!(y, A, x)` via a KA SpMV kernel, enabling use with
 Krylov.jl and LinearSolve.jl solvers.
 
 The `_cache` field is an opaque slot reserved for backend extensions to store
-reusable artifacts (e.g. `TortuosityCUDAExt` caches a `CuSparseMatrixCSC`
-wrapper there so each `mul!` call does not rebuild it). A cached artifact
-references `A.colptr`, `A.rowval`, and `A.nzval` directly, so any mutator that
-*reassigns* one of those must call [`_invalidate_cache!`](@ref) first —
-otherwise the stale artifact keeps the replaced buffers alive and, if they are
-released, points into freed memory.
+reusable artifacts (e.g. `TortuosityCUDAExt` caches a CUSPARSE wrapper there so
+each `mul!` call does not rebuild it). A cached artifact references `A.colptr`,
+`A.rowval`, and `A.nzval` directly.
+
+`symmetric` records that the *builder* knew `A == transpose(A)` exactly. It is
+not checked and never inferred: a matrix is symmetric only if it was
+constructed that way. Its one consumer is the CUSPARSE fast path, which reads a
+symmetric CSC as CSR — the same bytes, the same product, but a gather rather
+than an atomic scatter.
+
+Both are claims about the *current* contents, so any mutation invalidates them:
+call [`_invalidate_cache!`](@ref) before changing anything. Every mutator in
+`kernels/sparse.jl` does.
 """
 mutable struct PortableSparseCSC{
     T,Ti<:Integer,V<:AbstractVector{T},Vi<:AbstractVector{Ti}
@@ -70,31 +77,40 @@ mutable struct PortableSparseCSC{
     colptr::Vi
     rowval::Vi
     nzval::V
+    symmetric::Bool
     _cache::Base.RefValue{Any}
 
     function PortableSparseCSC{T,Ti,V,Vi}(
-        m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V
+        m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V, symmetric::Bool=false
     ) where {T,Ti<:Integer,V<:AbstractVector{T},Vi<:AbstractVector{Ti}}
-        return new{T,Ti,V,Vi}(Int(m), Int(n), colptr, rowval, nzval, Base.RefValue{Any}(nothing))
+        return new{T,Ti,V,Vi}(
+            Int(m), Int(n), colptr, rowval, nzval, symmetric, Base.RefValue{Any}(nothing),
+        )
     end
 end
 
 function PortableSparseCSC(
-    m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V
+    m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V; symmetric::Bool=false
 ) where {T,V<:AbstractVector{T},Ti<:Integer,Vi<:AbstractVector{Ti}}
-    return PortableSparseCSC{T,Ti,V,Vi}(m, n, colptr, rowval, nzval)
+    return PortableSparseCSC{T,Ti,V,Vi}(m, n, colptr, rowval, nzval, symmetric)
 end
 
 """
     _invalidate_cache!(A::PortableSparseCSC)
 
-Drop whatever a backend extension left in `A._cache`. Call it before
-reassigning `A.colptr`, `A.rowval`, or `A.nzval`: the cached artifact holds the
-old buffers, so leaving it in place pins storage the matrix no longer uses and
-leaves a wrapper that would read freed memory once that storage is released.
+Drop everything `A` remembers about its own contents: the artifact a backend
+extension left in `A._cache`, and the `symmetric` claim.
+
+Call it before any mutation, whether that mutation reassigns `A.colptr`,
+`A.rowval` and `A.nzval` or edits them in place. A reassignment leaves the
+cached artifact pinning storage the matrix no longer uses, and reading freed
+memory once that storage is released. An in-place edit leaves the artifact
+valid but can make the symmetry claim false, and the CUSPARSE fast path would
+then quietly compute `transpose(A) * x`.
 """
 function _invalidate_cache!(A::PortableSparseCSC)
     A._cache[] = nothing
+    A.symmetric = false
     return nothing
 end
 

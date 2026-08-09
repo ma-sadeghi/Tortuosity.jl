@@ -222,7 +222,11 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64)
     KernelAbstractions.synchronize(backend)
     _free!(idx)
 
-    A = on_gpu ? PortableSparseCSC(nnodes, nnodes, colptr, rowval, nzval) :
+    # Symmetric to the last bit: an edge contributes `-w` to both `A[p, q]` and
+    # `A[q, p]` from the same `_edge_weight` call, which is itself symmetric in
+    # its two arguments, and Dirichlet elimination empties a boundary node's row
+    # and its column alike. `test_assembly.jl` pins this.
+    A = on_gpu ? PortableSparseCSC(nnodes, nnodes, colptr, rowval, nzval; symmetric=true) :
         SparseMatrixCSC(nnodes, nnodes, colptr, rowval, nzval)
     return A, b
 end

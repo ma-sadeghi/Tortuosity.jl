@@ -271,13 +271,18 @@ end
 # is free by construction: pore ordinals are monotone in linear grid index, so
 # emitting the six face neighbours in offset order needs no sort to achieve it.
 #
-# CUSPARSE does not require it, though — CUDA.jl runs CSC SpMV as a transposed
-# CSR operation, which scatters and is therefore order-independent. Nothing in
-# the package enforces the ordering on a matrix a caller assembles some other
-# way, so the tolerance is still tested, against a matrix whose columns are
-# shuffled here rather than one that happened to come out unsorted from
-# assembly: if a future CUDA.jl or CUSPARSE starts requiring sorted indices,
+# CUSPARSE does not require it, though. CUDA.jl hands it a native descriptor for
+# whichever format the wrapper carries — a CSC one for a matrix of unknown
+# symmetry, a CSR one for a matrix its builder declared symmetric — and CUSPARSE
+# reads each column's (or row's) entries in whatever order they are stored.
+# Nothing in the package enforces the ordering on a matrix a caller assembles
+# some other way, so the tolerance is still tested, against a matrix whose
+# columns are shuffled here rather than one that happened to come out unsorted
+# from assembly: if a future CUDA.jl or CUSPARSE starts requiring sorted indices,
 # this fails loudly rather than quietly returning a wrong tortuosity.
+#
+# The assembled matrix below goes down the CSR path and the shuffled ones down
+# the CSC path, so both are covered.
 
 @testset "CUSPARSE SpMV tolerates unsorted row indices within a column" begin
     # CPU mask with gpu=true: the constructor moves it across itself, so this

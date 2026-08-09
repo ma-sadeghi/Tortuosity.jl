@@ -544,3 +544,29 @@ end
     @test cache.cacheval.x === cache.u
     @test sol.u ≈ b ./ 2
 end
+
+@testset "the symmetry claim survives only an untouched matrix" begin
+    # `symmetric` says the builder knew `A == transpose(A)`, and the CUSPARSE
+    # fast path turns that into reading the CSC arrays as CSR. A mutator that
+    # left the claim set after breaking symmetry would make every later SpMV
+    # return `transpose(A) * x` — a plausible wrong answer, with no error
+    # anywhere — so each mutator is checked on its own.
+    #
+    # Symmetric tridiagonal: [2 -1 0; -1 2 -1; 0 -1 2].
+    base(; nz=Float64[2, -1, -1, 2, -1, -1, 2]) = PortableSparseCSC(
+        3, 3, [1, 3, 6, 8], [1, 2, 1, 2, 3, 2, 3], nz; symmetric=true,
+    )
+    @test base().symmetric
+    @test !PortableSparseCSC(3, 3, [1, 3, 6, 8], [1, 2, 1, 2, 3, 2, 3],
+                             Float64[2, -1, -1, 2, -1, -1, 2]).symmetric
+
+    A = base(); set_diag!(A, [5.0, 5.0, 5.0]); @test !A.symmetric
+    A = base(); zero_rows_cols!(A, [2]); @test !A.symmetric
+    A = base(); Tortuosity._zero_rows_only!(A, [2]); @test !A.symmetric
+    A = base(); zero_rows!(A, [2]); @test !A.symmetric
+    A = base(; nz=Float64[2, 0, -1, 2, -1, -1, 2]); dropzeros!(A); @test !A.symmetric
+
+    # A `dropzeros!` with nothing to drop returns without touching the matrix,
+    # so the claim is still true and is deliberately left standing.
+    A = base(); dropzeros!(A); @test A.symmetric
+end
