@@ -58,6 +58,8 @@ You can always override the auto-selected window by passing an explicit
 Where `τ` is the fitted tortuosity (`D_pore * φ / D_eff`) and `D_eff` is
 the effective diffusivity. If `prob.D` is a scalar field, `D_pore` is set
 to `mean(prob.D[img])`.
+
+Requires `LsqFit.jl`, an optional dependency: run `using LsqFit` before calling this.
 """
 function fit_effective_diffusivity(
     t, c_hist, prob::TransientDiffusionProblem, method::Symbol;
@@ -128,7 +130,7 @@ function fit_effective_diffusivity(
         error("Built-in diffusivity fitting only supports method ':conc', ':mass', and ':flux'.")
     end
 
-    fit = curve_fit(model, xdata, ydata, param)
+    fit = _curve_fit(model, xdata, ydata, param)
     D_app = fit.param[1]  # apparent diffusivity: D_pore / τ
     τ = D_pore / D_app
     D_eff = φ * D_app
@@ -181,6 +183,8 @@ independently.
 # Returns
 If `fit_depth == false`: `(taus, SE_taus, voxels)`
 If `fit_depth == true`: `(taus, xs, SE_taus, SE_xs, voxels)`
+
+Requires `LsqFit.jl`, an optional dependency: run `using LsqFit` before calling this.
 """
 function fit_voxel_diffusivity(
     sol::TransientSolution, prob::TransientDiffusionProblem;
@@ -231,8 +235,8 @@ function fit_voxel_diffusivity(
     for i in voxels
         ydata = map(A -> A[i], sol.u[idx_min:idx_max])
 
-        fit = curve_fit(model, xdata, ydata, p0)
-        sigma = stderror(fit)
+        fit = _curve_fit(model, xdata, ydata, p0)
+        sigma = _stderror(fit)
 
         push!(taus, fit.param[1] * D_pore)
         push!(SE_taus, sigma[1])

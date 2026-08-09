@@ -7,6 +7,7 @@ This page covers advanced features of the transient solver: per-voxel tortuosity
 Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this by fitting the concentration history at individual voxels to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate.
 
 ```@example advtrans
+using LsqFit  # optional dependency behind fit_voxel_diffusivity
 using Plots
 using Tortuosity
 

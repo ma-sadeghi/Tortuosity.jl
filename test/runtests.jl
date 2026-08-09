@@ -20,6 +20,11 @@ end
 
 using Tortuosity
 
+# Optional dependencies of the package: loading them here activates the
+# extensions that back the fitting and image-generation entry points, which the
+# test files exercise throughout.
+using LsqFit
+
 # Try to enable a GPU backend. CUDA is the oracle for test_gpu_parity.jl;
 # any functional backend is enough for test_gpu_e2e.jl.
 const _has_cuda = try

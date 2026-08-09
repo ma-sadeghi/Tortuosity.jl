@@ -7,7 +7,6 @@ using NaNStatistics
 using SparseArrays
 using OrdinaryDiffEqStabilizedRK
 using OrdinaryDiffEqStabilizedRK: ROCK4, ODEProblem
-using LsqFit
 using PrecompileTools: @compile_workload
 
 # GPU backend registration (populated by package extensions)
@@ -93,7 +92,10 @@ export slab_cumulative_flux
 # Precompile a representative end-to-end workload so the first user-visible
 # `solve` doesn't pay inference cost. Touches the steady linear path
 # (KrylovJL_CG via LinearSolve), the transient ROCK4 path (with SavingCallback),
-# the porous-media observables, and the LsqFit-based effective-diffusivity fit.
+# and the porous-media observables. Paths that need an optional dependency are
+# precompiled by that dependency's extension instead, so nobody pays for a
+# package they did not load: the effective-diffusivity fit lives in
+# TortuosityLsqFitExt.
 # Intentionally CPU-only and tiny (12³ image): the goal is type coverage, not
 # correctness — accuracy is verified in the test suite. See issue #30.
 @compile_workload begin
@@ -117,8 +119,6 @@ export slab_cumulative_flux
     flux(tsol.u, prob.D, prob.voxel_size, prob.img, prob.axis; ind=1, pore_index=prob.pore_index)
     mass_uptake(tsol.u, prob)
     slice_concentration(tsol.u, prob.img, prob.axis, 1; pore_index=prob.pore_index, pore_only=true)
-
-    fit_effective_diffusivity(tsol, prob, :mass)
 end
 
 end  # module Tortuosity

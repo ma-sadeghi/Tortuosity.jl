@@ -1,6 +1,7 @@
 # %%
 # Imports
 
+using LsqFit  # optional dependency, needed by fit_effective_diffusivity
 using Plots
 using Printf
 using Tortuosity

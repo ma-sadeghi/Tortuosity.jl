@@ -12,3 +12,9 @@ end
 
 # HDF5 — see `export_to_hdf5` in utils.jl
 _h5open(args...; kwargs...) = _weakdep_error("HDF5", "export_to_hdf5")
+
+# LsqFit — see `fit_effective_diffusivity` and `fit_voxel_diffusivity` in
+# transient_fitting.jl
+const _FITTERS = "fit_effective_diffusivity and fit_voxel_diffusivity"
+_curve_fit(args...; kwargs...) = _weakdep_error("LsqFit", _FITTERS)
+_stderror(args...; kwargs...) = _weakdep_error("LsqFit", _FITTERS)
