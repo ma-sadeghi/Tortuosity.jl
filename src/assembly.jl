@@ -181,9 +181,13 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
     on_gpu = _on_gpu(img)
-    # Int32 halves the index traffic on the device; the host path keeps Int so
-    # its CSC stays a plain SparseMatrixCSC{Tv,Int}.
-    Ti = on_gpu ? Int32 : Int
+    # Int32 halves the index traffic, which is what an unpreconditioned CG spends
+    # nearly all of its time on: 16 B per stored entry becomes 12 B. The device
+    # path has always used it. The host path takes it too, but only while the
+    # matrix is provably small enough — a column holds at most seven entries (its
+    # diagonal and six face neighbours), so `7 * nnodes` bounds `nnz` from above,
+    # and above that bound the host falls back to `Int`.
+    Ti = (on_gpu || 7 * nnodes + 1 <= typemax(Int32)) ? Int32 : Int
     Tv = isnothing(D) ? T : eltype(D)
     D0 = one(Tv)
 
