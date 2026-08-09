@@ -296,8 +296,15 @@ function build_transient_operator(
 
     conns = build_connectivity_list(img_dev)
 
-    gd = D
-    if !(D isa Number)
+    # The `-1/voxel_size^2` of the finite-difference stencil rides on the edge
+    # weights instead of being applied to the assembled operator afterwards —
+    # `laplacian` is linear in the weights, so `L(αA) = αL(A)`, and for scalar
+    # `D` the factor lands on one number rather than on 1.758 B nonzeros at
+    # 800³. Rounding the quotient, not the divisor, keeps every off-diagonal
+    # entry bit-identical to what scaling the assembled operator produced.
+    if D isa Number
+        gd = oftype(D, D / -voxel_size^2)
+    else
         D_local = atleast_3d(D)
         D_dev = gpu ? _gpu_adapt[](D_local) : D_local
         # `D_dev[img_dev]` is a full pore-length array — 1.0 GiB at 800³ — that
@@ -305,6 +312,7 @@ function build_transient_operator(
         # soon as the edge weights are read out of it.
         node_D = D_dev[img_dev]
         gd = interpolate_edge_values(node_D, conns)
+        gd ./= -voxel_size^2
         _free!(node_D)
         # Only the copy we made is ours to release; `_gpu_adapt` hands back a
         # device array of the right eltype unchanged.
@@ -318,11 +326,6 @@ function build_transient_operator(
 
     A = laplacian(am)
     _free!(am)
-
-    # Editing `nzval` in place is a mutation like any other, so the matrix's
-    # claims about its own contents go first.
-    _invalidate_cache!(A)
-    nonzeros(A) .= nonzeros(A) ./ (-voxel_size^2)
 
     # Zero rows so Dirichlet values remain constant during integration. The
     # structural zeros are left in place: `dc/dt = A c` only ever reads `A`
