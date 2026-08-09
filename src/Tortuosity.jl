@@ -7,7 +7,7 @@ using NaNStatistics
 using SparseArrays
 using OrdinaryDiffEqStabilizedRK
 using OrdinaryDiffEqStabilizedRK: ROCK4, ODEProblem
-using PrecompileTools: @compile_workload
+using PrecompileTools: PrecompileTools, @compile_workload
 
 # GPU backend registration (populated by package extensions)
 const _preferred_gpu_backend = Ref{Any}(nothing)
@@ -30,6 +30,30 @@ No-op for host arrays and for anything that is not an array (a scalar `D`, say);
 GPU backends override it in their extension.
 """
 _free!(x) = nothing
+
+"""
+    _workload_enabled() -> Bool
+
+Whether the precompile workloads in the package extensions should run, i.e. the
+value of Tortuosity's `precompile_workload` preference. Defaults to `true`, so a
+user who has set no preference always gets the workload.
+
+The extensions ask this instead of resolving the preference themselves.
+PrecompileTools resolves it against the module the workload macro expands in,
+which for an extension is the extension module; `set_preferences!` refuses an
+extension's UUID, so that preference is unreachable and the workload could never
+be switched off. Naming `Tortuosity` here is what makes
+`set_preferences!(Tortuosity, "precompile_workload" => false)` reach them.
+
+PrecompileTools exports only its macros — `workload_enabled` is internal, and
+Tortuosity's compat bound admits any 1.x — so a release that drops it must not
+take the extensions down with it. Without it the workloads stay on, which is the
+default anyway.
+"""
+function _workload_enabled()
+    isdefined(PrecompileTools, :workload_enabled) || return true
+    return PrecompileTools.workload_enabled(Tortuosity)
+end
 
 include("weakdeps.jl")
 include("utils.jl")

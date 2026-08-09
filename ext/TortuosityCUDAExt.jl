@@ -9,7 +9,7 @@ using Tortuosity: PortableSparseCSC
 using KernelAbstractions
 using LinearAlgebra
 using SparseArrays
-using PrecompileTools: @setup_workload, @compile_workload, workload_enabled
+using PrecompileTools: @setup_workload, @compile_workload
 
 function __init__()
     if CUDA.functional()
@@ -121,7 +121,7 @@ end
 # `set_preferences!(Tortuosity, "precompile_workload" => false)` switch this
 # workload off along with the CPU one. Enabled by default, as for users.
 @setup_workload begin
-    if workload_enabled(Tortuosity) && CUDA.functional()
+    if Tortuosity._workload_enabled() && CUDA.functional()
         img = ones(Bool, 12, 12, 12)
         @compile_workload begin
             Tortuosity._preferred_gpu_backend[] = CUDABackend()
