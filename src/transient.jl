@@ -304,20 +304,29 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, voxel_size,
 
     nonzeros(A) .= nonzeros(A) ./ (-voxel_size^2)
 
-    # Zero rows so Dirichlet values remain constant during integration
-    zero_rows!(A, bc_nodes)
+    # Zero rows so Dirichlet values remain constant during integration. The
+    # structural zeros are left in place: `dc/dt = A c` only ever reads `A`
+    # through SpMV, which cannot tell a stored zero from an absent one.
+    _zero_rows_only!(A, bc_nodes)
 
     return A
 end
 
-# Docstring lives on the stub in sparse_type.jl (shared with the PortableSparseCSC method).
-function zero_rows!(A::SparseMatrixCSC, rows)
+# See the PortableSparseCSC method in kernels/sparse.jl for why the compaction
+# is separable.
+function _zero_rows_only!(A::SparseMatrixCSC, rows)
     target = Set(rows)
     @inbounds for i in eachindex(A.rowval)
         if A.rowval[i] in target
             A.nzval[i] = 0
         end
     end
+    return true
+end
+
+# Docstring lives on the stub in sparse_type.jl (shared with the PortableSparseCSC method).
+function zero_rows!(A::SparseMatrixCSC, rows)
+    _zero_rows_only!(A, rows)
     dropzeros!(A)
     return nothing
 end
