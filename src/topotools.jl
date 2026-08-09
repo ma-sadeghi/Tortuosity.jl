@@ -100,15 +100,22 @@ function _build_connectivity_list_ka(img; inds=nothing)
 
     idx_gpu = nothing
     num_true = 0
+    # Only the index array we build ourselves is ours to release; one passed in
+    # through `inds` belongs to the caller.
+    owns_idx = isnothing(inds)
 
     if isnothing(inds)
-        linear_indices_gpu = findall(img)
-        num_true = length(linear_indices_gpu)
+        # An inclusive scan over the mask *is* the pore numbering: at a pore
+        # voxel the running count is that voxel's ordinal. `findall` would build
+        # a `CartesianIndex{3}` per pore voxel first — 24 B each, larger than
+        # anything else in the pipeline — only to hand out the same numbers.
+        # Solid voxels inherit the running count and are masked back to zero,
+        # which is the sentinel every kernel downstream tests for.
+        idx_gpu = similar(img, Int32)
+        cumsum!(vec(idx_gpu), vec(img))
+        num_true = Int(Array(@view vec(idx_gpu)[end:end])[1])
         num_true == 0 && return Matrix{Int}(undef, 0, 2)
-        idx_gpu = fill!(similar(img, Int32), Int32(0))
-        wg = min(num_true, 256)
-        fill_idx_kernel!(backend, wg)(idx_gpu, linear_indices_gpu, num_true; ndrange=num_true)
-        # No sync — next kernel on same stream waits automatically
+        idx_gpu .*= img
     else
         if size(inds) != size(img)
             error("Provided `inds` array must have the same dimensions as `img`")
@@ -137,6 +144,7 @@ function _build_connectivity_list_ka(img; inds=nothing)
     total_conns = Int(Array(@view d_bucket_write_counters[end:end])[1]) +
                   Int(Array(@view d_histogram[end:end])[1])
     total_conns == 0 && return Matrix{Int}(undef, 0, 2)
+    _free!(d_histogram)
 
     # Pass 2: write connections
     conns_gpu = similar(idx_gpu, Int32, total_conns, 2)
@@ -144,6 +152,8 @@ function _build_connectivity_list_ka(img; inds=nothing)
         conns_gpu, d_bucket_write_counters, img, idx_gpu, nx, ny, nz; ndrange=N,
     )
     KernelAbstractions.synchronize(backend)
+    _free!(d_bucket_write_counters)
+    owns_idx && _free!(idx_gpu)
 
     return conns_gpu
 end
@@ -199,8 +209,11 @@ function build_adjacency_matrix(
         weights
     end
 
-    I = conns[:, 1]  # row indices
-    J = conns[:, 2]  # column indices
+    # Views, not copies: `conns` is already device-resident and both columns are
+    # read-only from here on, so materialising them would double the peak — two
+    # full `nedges` index vectors alive while `rowval`/`nzval` are allocated.
+    I = @view conns[:, 1]  # row indices
+    J = @view conns[:, 2]  # column indices
 
     # Step 1: histogram of column indices
     col_counts = fill!(similar(conns, Ti, n), zero(Ti))
@@ -215,8 +228,10 @@ function build_adjacency_matrix(
 
     # Step 3: scatter COO entries into CSC position using atomic counters
     # Initialize write offsets from colptr[1:n]
+    # A view, not a slice: `colptr[1:n]` would materialise a second copy on the
+    # device only to copy it again.
     write_offsets = similar(conns, Ti, n)
-    copyto!(write_offsets, colptr[1:n])
+    copyto!(write_offsets, @view colptr[1:n])
 
     rowval = similar(conns, Ti, nedges)
     nzval = similar(conns, Tv, nedges)

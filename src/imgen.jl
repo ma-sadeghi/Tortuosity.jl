@@ -18,11 +18,17 @@ rescale to `[lb, ub]`. This is the standard PoreSpy normalization: standardize
 """
 function norm_to_uniform(img; scale=(minimum(img), maximum(img)))
     lb, ub = scale
-    img = (img .- mean(img)) / std(img)
-    img = 1 / 2 * erfc.(-img / sqrt(2))
+    mu, sd = mean(img), std(img)
+    # Two passes over one buffer. Only the reductions force a pass boundary: the
+    # CDF map needs `mean`/`std` of the input, and the rescale needs the extrema
+    # of the CDF output. Everything between them is elementwise, so writing it as
+    # a chain of separate expressions would materialise ten full-size temporaries
+    # — 41 GB at 800³ — for arithmetic that fits in a register.
+    out = @. 1 / 2 * erfc(-((img - mu) / sd) / sqrt(2))
     # Normalize to [0, 1] using actual post-erfc bounds, then rescale to [lb, ub]
-    img = (img .- minimum(img)) / (maximum(img) - minimum(img))
-    return img * (ub - lb) .+ lb
+    lo, hi = extrema(out)
+    @. out = (out - lo) / (hi - lo) * (ub - lb) + lb
+    return out
 end
 
 """
@@ -140,7 +146,13 @@ function trim_nonpercolating_paths(img; axis)
     labels = label_components(img)
     labels_percolating = intersect(labels[inlet], labels[outlet])
     setdiff!(labels_percolating, 0)  # Remove background label
-    img_percolating = in.(labels, Ref(Set(labels_percolating)))  # Ref to avoid broadcasting
+    # `label_components` numbers components densely from 1, with 0 for
+    # background, so a label is already an index: membership is a table lookup
+    # rather than a hash probe. The probe ran once per voxel — 512M times at
+    # 800³, single-threaded — which was the real cost of this function.
+    keep = zeros(Bool, maximum(labels) + 1)
+    keep[labels_percolating .+ 1] .= true
+    img_percolating = (label -> @inbounds keep[label + 1]).(labels)
     return img_percolating
 end
 

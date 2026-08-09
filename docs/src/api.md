@@ -26,6 +26,15 @@ diffusion Laplacians the Krylov conjugate-gradient method
 sol = solve(sim.prob, KrylovJL_CG(); reltol=1e-6)
 ```
 
+On large images the number of conjugate-gradient iterations grows with the edge
+length, and a preconditioner is what stops that growth. Build one with
+[`two_level_preconditioner`](@ref) and hand it to the solver as `Pl`.
+
+```@docs
+two_level_preconditioner
+Tortuosity.TwoLevelPreconditioner
+```
+
 Once a steady-state concentration field has been solved for, the following
 helpers derive the usual transport descriptors.
 

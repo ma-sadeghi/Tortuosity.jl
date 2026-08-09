@@ -55,10 +55,19 @@ Implements `mul!(y, A, x)` via a KA SpMV kernel, enabling use with
 Krylov.jl and LinearSolve.jl solvers.
 
 The `_cache` field is an opaque slot reserved for backend extensions to store
-reusable artifacts (e.g. `TortuosityCUDAExt` caches a `CuSparseMatrixCSC`
-wrapper there so each `mul!` call does not rebuild it). Extensions must
-validate the cache is fresh before using it — `A.colptr`, `A.rowval`, or
-`A.nzval` may be reassigned by in-place mutators like [`dropzeros!`](@ref).
+reusable artifacts (e.g. `TortuosityCUDAExt` caches a CUSPARSE wrapper there so
+each `mul!` call does not rebuild it). A cached artifact references `A.colptr`,
+`A.rowval`, and `A.nzval` directly.
+
+`symmetric` records that the *builder* knew `A == transpose(A)` exactly. It is
+not checked and never inferred: a matrix is symmetric only if it was
+constructed that way. Its one consumer is the CUSPARSE fast path, which reads a
+symmetric CSC as CSR — the same bytes, the same product, but a gather rather
+than an atomic scatter.
+
+Both are claims about the *current* contents, so any mutation invalidates them:
+call [`_invalidate_cache!`](@ref) before changing anything. Every mutator in
+`kernels/sparse.jl` does.
 """
 mutable struct PortableSparseCSC{
     T,Ti<:Integer,V<:AbstractVector{T},Vi<:AbstractVector{Ti}
@@ -68,19 +77,57 @@ mutable struct PortableSparseCSC{
     colptr::Vi
     rowval::Vi
     nzval::V
+    symmetric::Bool
     _cache::Base.RefValue{Any}
 
     function PortableSparseCSC{T,Ti,V,Vi}(
-        m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V
+        m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V, symmetric::Bool=false
     ) where {T,Ti<:Integer,V<:AbstractVector{T},Vi<:AbstractVector{Ti}}
-        return new{T,Ti,V,Vi}(Int(m), Int(n), colptr, rowval, nzval, Base.RefValue{Any}(nothing))
+        return new{T,Ti,V,Vi}(
+            Int(m), Int(n), colptr, rowval, nzval, symmetric, Base.RefValue{Any}(nothing),
+        )
     end
 end
 
 function PortableSparseCSC(
-    m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V
+    m::Integer, n::Integer, colptr::Vi, rowval::Vi, nzval::V; symmetric::Bool=false
 ) where {T,V<:AbstractVector{T},Ti<:Integer,Vi<:AbstractVector{Ti}}
-    return PortableSparseCSC{T,Ti,V,Vi}(m, n, colptr, rowval, nzval)
+    return PortableSparseCSC{T,Ti,V,Vi}(m, n, colptr, rowval, nzval, symmetric)
+end
+
+"""
+    _invalidate_cache!(A::PortableSparseCSC)
+
+Drop everything `A` remembers about its own contents: the artifact a backend
+extension left in `A._cache`, and the `symmetric` claim.
+
+Call it before any mutation, whether that mutation reassigns `A.colptr`,
+`A.rowval` and `A.nzval` or edits them in place. A reassignment leaves the
+cached artifact pinning storage the matrix no longer uses, and reading freed
+memory once that storage is released. An in-place edit leaves the artifact
+valid but can make the symmetry claim false, and the CUSPARSE fast path would
+then quietly compute `transpose(A) * x`.
+"""
+function _invalidate_cache!(A::PortableSparseCSC)
+    A._cache[] = nothing
+    A.symmetric = false
+    return nothing
+end
+
+# No-op for any other matrix: a `SparseMatrixCSC` remembers nothing about its
+# own contents, so there is nothing to drop. Having the fallback lets a mutator
+# that runs on either representation call it unconditionally, which is what
+# makes "any mutation invalidates" a rule rather than a convention.
+_invalidate_cache!(::Any) = nothing
+
+# Releasing a matrix means releasing its three arrays; the cached artifact has
+# to go first or it is left describing freed storage.
+function _free!(A::PortableSparseCSC)
+    _invalidate_cache!(A)
+    _free!(A.colptr)
+    _free!(A.rowval)
+    _free!(A.nzval)
+    return nothing
 end
 
 Base.size(A::PortableSparseCSC) = (A.m, A.n)
@@ -104,14 +151,56 @@ end
 # --- SpMV kernel ---
 
 @kernel function _spmv_kernel!(
-    y, @Const(colptr), @Const(rowval), @Const(nzval), @Const(x), n
+    y, @Const(colptr), @Const(rowval), @Const(nzval), @Const(x), alpha, n
+)
+    j = @index(Global)
+    if j <= n
+        @inbounds xj = alpha * x[j]
+        @inbounds for idx in colptr[j]:(colptr[j + 1] - 1)
+            r = rowval[idx]
+            v = nzval[idx] * xj
+            Atomix.@atomic y[r] += v
+        end
+    end
+end
+
+# A symmetric matrix is its own transpose, so column `j` of the CSC *is* row `j`
+# and thread `j` can reduce it straight into `y[j]`. That replaces one atomic
+# read-modify-write per nonzero, plus the `fill!` the scatter needs, with a
+# private accumulator and a single coalesced store. Each output's terms are
+# summed in ascending column order; the scatter reaches them in whatever order
+# its atomics land, which is ascending only while the launch fits in a single
+# workgroup. So `y = A*x` matches the scatter bit for bit on a one-workgroup
+# launch and to rounding otherwise. The 5-argument form matches only to rounding
+# either way, since `alpha` and `beta` are applied here in one expression rather
+# than in separate passes.
+#
+# Measured on the CPU backend at 200³ (26.6M nonzeros, Float64): 125.5 ms per
+# scatter against 35.5 ms per gather on one thread, 34.6 against 13.3 on four.
+@kernel function _spmv_symmetric_kernel!(
+    y, @Const(colptr), @Const(rowval), @Const(nzval), @Const(x), alpha, beta, n
+)
+    j = @index(Global)
+    if j <= n
+        acc = zero(eltype(y))
+        @inbounds for idx in colptr[j]:(colptr[j + 1] - 1)
+            acc += nzval[idx] * x[rowval[idx]]
+        end
+        @inbounds y[j] = iszero(beta) ? alpha * acc : alpha * acc + beta * y[j]
+    end
+end
+
+# `A * ones(n)` without the vector of ones: the same scatter as `_spmv_kernel!`
+# with `x` folded away. Row sums, not column sums — the two coincide for a
+# symmetric adjacency matrix but `laplacian` accepts any matrix, and `D` is
+# defined as the row sums.
+@kernel function _row_sums_kernel!(
+    sums, @Const(colptr), @Const(rowval), @Const(nzval), n
 )
     j = @index(Global)
     if j <= n
         @inbounds for idx in colptr[j]:(colptr[j + 1] - 1)
-            r = rowval[idx]
-            v = nzval[idx] * x[j]
-            Atomix.@atomic y[r] += v
+            Atomix.@atomic sums[rowval[idx]] += nzval[idx]
         end
     end
 end
@@ -119,11 +208,34 @@ end
 function LinearAlgebra.mul!(
     y::AbstractVector, A::PortableSparseCSC, x::AbstractVector
 )
-    fill!(y, zero(eltype(y)))
+    return mul!(y, A, x, one(eltype(A)), zero(eltype(A)))
+end
+
+# The 5-argument form some Krylov solvers reach for. Without it the fallback is
+# `generic_matvecmul!`, which reads `A` element by element and dies on the
+# scalar-indexing error above — latent on every backend but CUDA, which has its
+# own method in the extension.
+function LinearAlgebra.mul!(
+    y::AbstractVector, A::PortableSparseCSC, x::AbstractVector,
+    alpha::Number, beta::Number,
+)
     n = A.n
-    if n > 0 && nnz(A) > 0
-        backend = get_backend(A.nzval)
-        _spmv_kernel!(backend)(y, A.colptr, A.rowval, A.nzval, x, n; ndrange=n)
+    backend = get_backend(A.nzval)
+    if A.symmetric && n > 0
+        # Writes every entry of `y`, so no zeroing or scaling pass first.
+        _spmv_symmetric_kernel!(backend)(
+            y, A.colptr, A.rowval, A.nzval, x, alpha, beta, n; ndrange=n,
+        )
+        KernelAbstractions.synchronize(backend)
+        return y
+    end
+    if iszero(beta)
+        fill!(y, zero(eltype(y)))
+    elseif !isone(beta)
+        y .*= beta
+    end
+    if n > 0 && nnz(A) > 0 && !iszero(alpha)
+        _spmv_kernel!(backend)(y, A.colptr, A.rowval, A.nzval, x, alpha, n; ndrange=n)
         KernelAbstractions.synchronize(backend)
     end
     return y
@@ -133,6 +245,74 @@ function Base.:*(A::PortableSparseCSC, x::AbstractVector)
     T = promote_type(eltype(A), eltype(x))
     y = fill!(similar(A.nzval, T, A.m), zero(T))
     return mul!(y, A, x)
+end
+
+# --- LinearSolve integration ---
+#
+# `init_cacheval` is called twice per solve: `init` asks for a placeholder with
+# `zeroinit=true`, then `solve!` asks for the real workspace with
+# `zeroinit=false`. LinearSolve's generic path costs a full solution vector on
+# each call when the matrix is a `PortableSparseCSC`:
+#
+#  1. The placeholder is only built empty for `Matrix` and `SparseMatrixCSC`;
+#     anything else falls through to `KS(A, b)`, so the full workspace — four
+#     n-length vectors for CG — is allocated twice, both live at the moment the
+#     second one is built. Building it at zero length costs nothing, taking the
+#     storage type from `b` so it stays on the right device.
+#  2. The real workspace's own solution vector is dead on arrival: LinearSolve
+#     replaces it with `u` (`solver.x = u`) as soon as the constructor returns.
+#     Releasing it afterwards is not enough — it is allocated *before* the
+#     workspace's other vectors, so by then the device is already holding all
+#     four and the peak has been reached. On a pooled allocator a release only
+#     hands the block back to the pool, which the driver still counts as in use.
+#     It has to not be allocated at all: worth 0.95 GiB at 800³.
+#
+# Doing (2) means knowing which of a workspace's vectors the algorithm actually
+# uses, so it is done for CG — the algorithm this package ships — and every
+# other algorithm keeps LinearSolve's generic path and only gets (1).
+function LinearSolve.init_cacheval(
+    alg::LinearSolve.KrylovJL, A::PortableSparseCSC, b, u, Pl, Pr, maxiters::Int,
+    abstol, reltol, verbose::Union{LinearSolve.LinearVerbosity,Bool},
+    assumptions::LinearSolve.OperatorAssumptions; zeroinit=true,
+)
+    if zeroinit
+        KS = LinearSolve.get_KrylovJL_solver(alg.KrylovAlg)
+        workspace = KS(0, 0, LinearSolve.Krylov.ktypeof(b))
+        workspace.x = u
+        return workspace
+    end
+    alg.KrylovAlg === LinearSolve.Krylov.cg! && return _cg_workspace(A, b, u)
+    return @invoke LinearSolve.init_cacheval(
+        alg::LinearSolve.KrylovJL, A::Any, b::Any, u::Any, Pl::Any, Pr::Any,
+        maxiters::Int, abstol::Any, reltol::Any,
+        verbose::Union{LinearSolve.LinearVerbosity,Bool},
+        assumptions::LinearSolve.OperatorAssumptions; zeroinit=false,
+    )
+end
+
+"""
+    _cg_workspace(A, b, u)
+
+Build a `Krylov.CgWorkspace` for `A` whose solution vector *is* `u`.
+
+Identical to what `CgWorkspace(A, b)` produces except that `x` is aliased to `u`
+rather than freshly allocated — which is what LinearSolve does to it anyway, one
+line after the constructor returns. `Δx`, `z` and `npc_dir` are left empty
+exactly as the constructor leaves them; Krylov grows those lazily, and only when
+a preconditioner, a trust region or a line search is in play.
+
+Reaching into the workspace's fields means this has to keep step with Krylov's
+definition of `CgWorkspace`, which the test suite checks by comparing against a
+constructor-built workspace field by field.
+"""
+function _cg_workspace(A, b, u)
+    workspace = LinearSolve.Krylov.CgWorkspace(0, 0, LinearSolve.Krylov.ktypeof(b))
+    workspace.m, workspace.n = size(A)
+    workspace.x = u
+    workspace.r = similar(u)
+    workspace.p = similar(u)
+    workspace.Ap = similar(u)
+    return workspace
 end
 
 # --- Laplacian: L = D - A ---
@@ -182,15 +362,19 @@ end
 @kernel function _laplacian_entries_kernel!(
     L_rowval, L_nzval, @Const(L_colptr),
     @Const(A_rowval), @Const(A_nzval), @Const(A_colptr),
-    @Const(degrees), @Const(diag_missing), n,
+    @Const(degrees), n,
 )
     j = @index(Global)
     if j <= n
         @inbounds A_start = A_colptr[j]
         @inbounds A_end = A_colptr[j + 1] - 1
         @inbounds L_pos = L_colptr[j]
+        # Column j of L is column j of A plus a diagonal, except where A already
+        # carried one — so the gap between the two column lengths is the flag,
+        # and no separate `diag_missing` array has to stay live this long.
+        @inbounds diag_missing_j = (L_colptr[j + 1] - L_pos) != (A_end - A_start + 1)
 
-        if iszero(@inbounds diag_missing[j])
+        if !diag_missing_j
             # The column already carries A[j,j]. Rewrite it in place as
             # degree[j] - A[j,j] and negate everything else; the entry count is
             # unchanged, so no diagonal may be spliced in as well.
@@ -244,12 +428,14 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
 
     backend = get_backend(am.nzval)
 
-    # Row sums (degrees) via SpMV: degrees = A * ones(n)
-    ones_v = fill!(similar(am.nzval, n), one(T))
+    # Row sums (degrees) = A * ones(n), computed without the ones.
     degrees = fill!(similar(am.nzval, m), zero(T))
-    mul!(degrees, am, ones_v)
+    _row_sums_kernel!(backend)(degrees, am.colptr, am.rowval, am.nzval, n; ndrange=n)
+    KernelAbstractions.synchronize(backend)
 
     # Count the diagonals L will have to add, then size it from that count.
+    # Both of these are n-element scratch arrays, so they are released before
+    # L's entry arrays — which are `nnz` long — get allocated below.
     diag_missing = similar(am.colptr, n)
     _laplacian_diag_missing_kernel!(backend)(
         diag_missing, am.rowval, am.colptr, n; ndrange=n,
@@ -257,10 +443,12 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
     KernelAbstractions.synchronize(backend)
 
     extra_scan = accumulate(+, diag_missing)
+    _free!(diag_missing)
 
     L_colptr = similar(am.colptr, n + 1)
     _laplacian_colptr_kernel!(backend)(L_colptr, am.colptr, extra_scan, n; ndrange=n)
     KernelAbstractions.synchronize(backend)
+    _free!(extra_scan)
 
     # Size the entry arrays from the column pointers we just built, not from
     # `nnz(am) + total_extra`. Those agree only when the input's stored-value
@@ -276,9 +464,10 @@ function laplacian(am::PortableSparseCSC{T}) where {T}
     _laplacian_entries_kernel!(backend)(
         L_rowval, L_nzval, L_colptr,
         am.rowval, am.nzval, am.colptr,
-        degrees, diag_missing, n; ndrange=n,
+        degrees, n; ndrange=n,
     )
     KernelAbstractions.synchronize(backend)
+    _free!(degrees)
 
     return PortableSparseCSC(m, n, L_colptr, L_rowval, L_nzval)
 end

@@ -240,6 +240,33 @@ using Tortuosity: build_adjacency_matrix, build_connectivity_list, laplacian
         @test y ≈ expected
     end
 
+    @testset "the 5-argument form applies alpha and beta" begin
+        # Some Krylov solvers call `mul!(y, A, x, α, β)`. With no method for
+        # `PortableSparseCSC` that falls into `generic_matvecmul!`, which reads
+        # `A` element by element and dies on the scalar-indexing error — so this
+        # covers a path the 3-argument tests above cannot reach.
+        A = sprand(MersenneTwister(10), Float64, 18, 18, 0.2)
+        P = sparse_to_portable(A)
+        x = randn(MersenneTwister(11), 18)
+        Ax = Array(A) * x
+
+        y = fill(1e6, 18)                      # β = 0 must ignore a dirty buffer
+        mul!(y, P, x, 2.0, 0.0)
+        @test y ≈ 2 .* Ax
+
+        y = copy(Ax)                           # β = 1 accumulates
+        mul!(y, P, x, 1.0, 1.0)
+        @test y ≈ 2 .* Ax
+
+        y = copy(Ax)                           # general α, β
+        mul!(y, P, x, -1.0, 3.0)
+        @test y ≈ 2 .* Ax
+
+        y = copy(Ax)                           # α = 0 is a pure scaling of y
+        mul!(y, P, x, 0.0, 5.0)
+        @test y ≈ 5 .* Ax
+    end
+
     @testset "is linear in x" begin
         A = sprand(MersenneTwister(7), Float64, 24, 24, 0.2)
         P = sparse_to_portable(A)
@@ -479,4 +506,106 @@ end
     @test size(L) == (0, 0)
     @test nnz(L) == 0
     @test L.colptr == [1]
+end
+
+@testset "_cg_workspace mirrors Krylov's CgWorkspace" begin
+    # `_cg_workspace` fills a `CgWorkspace` field by field so that the solution
+    # vector can be `u` instead of a fresh allocation LinearSolve discards a
+    # line later. That stays correct only while `CgWorkspace` has the fields it
+    # has today: a new length-n vector would arrive empty and the solver would
+    # read off the end of it. Compare against a constructor-built workspace so
+    # a Krylov upgrade that adds one is caught here rather than at 800^3.
+    Krylov = Tortuosity.LinearSolve.Krylov
+    n = 6
+    A = sparse_to_portable(sparse(Matrix{Float64}(I, n, n)))
+    u = zeros(n)
+    ours = Tortuosity._cg_workspace(A, ones(n), u)
+    theirs = Krylov.CgWorkspace(n, n, Vector{Float64})
+
+    @test typeof(ours) === typeof(theirs)
+    @test ours.x === u
+    @test (ours.m, ours.n) == (theirs.m, theirs.n)
+    for f in fieldnames(typeof(theirs))
+        getfield(theirs, f) isa AbstractVector || continue
+        @test length(getfield(ours, f)) == length(getfield(theirs, f))
+    end
+end
+
+@testset "solving through LinearSolve leaves the solution in the cache's own u" begin
+    # The workspace's `x` is `u`, so `solve!` has nothing to copy back. If the
+    # aliasing were ever lost the answer would still be right but a second
+    # solution vector would be live for the whole solve.
+    n = 8
+    A = sparse_to_portable(sparse(Matrix{Float64}(2I, n, n)))
+    b = collect(1.0:n)
+    prob = Tortuosity.LinearProblem(A, b)
+    cache = Tortuosity.LinearSolve.init(prob, KrylovJL_CG(); reltol=1e-12)
+    sol = solve!(cache)
+    @test cache.cacheval.x === cache.u
+    @test sol.u ≈ b ./ 2
+end
+
+@testset "the symmetry claim survives only an untouched matrix" begin
+    # `symmetric` says the builder knew `A == transpose(A)`, and the CUSPARSE
+    # fast path turns that into reading the CSC arrays as CSR. A mutator that
+    # left the claim set after breaking symmetry would make every later SpMV
+    # return `transpose(A) * x` — a plausible wrong answer, with no error
+    # anywhere — so each mutator is checked on its own.
+    #
+    # Symmetric tridiagonal: [2 -1 0; -1 2 -1; 0 -1 2].
+    base(; nz=Float64[2, -1, -1, 2, -1, -1, 2]) = PortableSparseCSC(
+        3, 3, [1, 3, 6, 8], [1, 2, 1, 2, 3, 2, 3], nz; symmetric=true,
+    )
+    @test base().symmetric
+    @test !PortableSparseCSC(3, 3, [1, 3, 6, 8], [1, 2, 1, 2, 3, 2, 3],
+                             Float64[2, -1, -1, 2, -1, -1, 2]).symmetric
+
+    A = base(); set_diag!(A, [5.0, 5.0, 5.0]); @test !A.symmetric
+    A = base(); zero_rows_cols!(A, [2]); @test !A.symmetric
+    A = base(); Tortuosity._zero_rows_only!(A, [2]); @test !A.symmetric
+    A = base(); zero_rows!(A, [2]); @test !A.symmetric
+    A = base(; nz=Float64[2, 0, -1, 2, -1, -1, 2]); dropzeros!(A); @test !A.symmetric
+
+    # A `dropzeros!` with nothing to drop returns without touching the matrix,
+    # so the claim is still true and is deliberately left standing.
+    A = base(); dropzeros!(A); @test A.symmetric
+end
+
+@testset "the symmetric SpMV kernel agrees with the atomic scatter" begin
+    # A matrix declared symmetric takes a different kernel: one thread reduces
+    # a column into a single output entry instead of scattering it across `y`
+    # with atomics. It visits each output's terms in ascending column order,
+    # which is the order the scatter reaches them in while the whole launch fits
+    # one workgroup -- hence `n = 40` here, and hence `y = A*x` agreeing to the
+    # last bit. Past one workgroup the scatter's atomics land in an arbitrary
+    # order and only `≈` survives. The 5-argument form only agrees to rounding
+    # even at this size: the scatter scales `y` by `beta` in a pass of its own
+    # and folds `alpha` into `x[j]`, where the gather computes
+    # `alpha*acc + beta*y[j]` -- same value, different association.
+    for label in ("tridiagonal", "random")
+        S = label == "tridiagonal" ?
+            sparse(SymTridiagonal(fill(2.0, 40), fill(-1.0, 39))) :
+            (M = sprandn(40, 40, 0.15); sparse(Symmetric(M + M')))
+        @testset "$label" begin
+            scatter = sparse_to_portable(S)
+            gather = sparse_to_portable(S)
+            gather.symmetric = true
+            x = randn(40)
+
+            y1, y2 = zeros(40), zeros(40)
+            @test mul!(y1, scatter, x) == mul!(y2, gather, x)
+            @test y2 ≈ Array(S) * x
+
+            y1 .= 1:40
+            y2 .= 1:40
+            @test mul!(y1, scatter, x, 0.5, 2.0) ≈ mul!(y2, gather, x, 0.5, 2.0)
+            @test y2 ≈ 0.5 .* (Array(S) * x) .+ 2.0 .* collect(1.0:40)
+
+            # alpha = 0 must still apply beta, and beta = 0 must not read y.
+            y1 .= 3.0; y2 .= 3.0
+            @test mul!(y1, scatter, x, 0.0, 2.0) ≈ mul!(y2, gather, x, 0.0, 2.0)
+            fill!(y2, NaN)
+            @test !any(isnan, mul!(y2, gather, x, 1.0, 0.0))
+        end
+    end
 end

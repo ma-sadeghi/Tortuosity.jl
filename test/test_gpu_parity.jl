@@ -264,18 +264,25 @@ end
 # Row-index ordering
 # ---------------------------------------------------------------------------
 #
-# `build_adjacency_matrix` scatters COO entries into CSC slots with atomic
-# counters, so row indices within a column come out in whatever order the
-# threads won — measured at ~90% of columns unsorted on a 24³ open image. That
-# ordering survives `laplacian` and `dropzeros!` all the way to the matrix
-# `TortuosityCUDAExt` hands to CUSPARSE.
+# `build_steady_system` gives each column to a single thread, which writes the
+# column's whole slot range in ascending neighbour order — so the assembled
+# matrix comes out sorted, and stays sorted through to the matrix
+# `TortuosityCUDAExt` hands to CUSPARSE. Sortedness is asserted below because it
+# is free by construction: pore ordinals are monotone in linear grid index, so
+# emitting the six face neighbours in offset order needs no sort to achieve it.
 #
-# This is fine today: CUDA.jl runs CSC SpMV as a transposed CSR operation, which
-# scatters and is therefore order-independent. But "fine" here is a property of
-# the vendor library, not a guarantee we enforce, and enforcing it would mean a
-# segmented sort over every nonzero on the setup path. So the property is tested
-# instead: if a future CUDA.jl or CUSPARSE starts requiring sorted indices, this
-# fails loudly rather than quietly returning a wrong tortuosity.
+# CUSPARSE does not require it, though. CUDA.jl hands it a native descriptor for
+# whichever format the wrapper carries — a CSC one for a matrix of unknown
+# symmetry, a CSR one for a matrix its builder declared symmetric — and CUSPARSE
+# reads each column's (or row's) entries in whatever order they are stored.
+# Nothing in the package enforces the ordering on a matrix a caller assembles
+# some other way, so the tolerance is still tested, against a matrix whose
+# columns are shuffled here rather than one that happened to come out unsorted
+# from assembly: if a future CUDA.jl or CUSPARSE starts requiring sorted indices,
+# this fails loudly rather than quietly returning a wrong tortuosity.
+#
+# The assembled matrix below goes down the CSR path and the shuffled ones down
+# the CSC path, so both are covered.
 
 @testset "CUSPARSE SpMV tolerates unsorted row indices within a column" begin
     # CPU mask with gpu=true: the constructor moves it across itself, so this
@@ -286,9 +293,7 @@ end
     unsorted = count(1:A.n) do j
         !issorted(@view rowval[colptr[j]:(colptr[j + 1] - 1)])
     end
-    # Guard the premise: if assembly ever starts emitting sorted columns, the
-    # rest of this testset stops proving anything and should be revisited.
-    @test unsorted > 0
+    @test unsorted == 0
 
     # Sort the reference's columns before handing them to `SparseMatrixCSC`.
     # That type's invariant is sorted row indices and its constructor does not
@@ -318,6 +323,10 @@ end
             rv[slot] = rv[perm]
             nv[slot] = nv[perm]
         end
+        # The premise, asserted rather than assumed: assembly emits sorted
+        # columns, so this shuffle is the only thing making the input unsorted
+        # and the check below would be vacuous if it did not bite.
+        @test count(j -> !issorted(@view rv[colptr[j]:(colptr[j + 1] - 1)]), 1:A.n) > 0
         A_shuffled = PortableSparseCSC(A.m, A.n, CuArray(colptr), CuArray(rv), CuArray(nv))
         @test isapprox(Array(A_shuffled * CuArray(x)), y_ref; rtol=1e-4)
     end

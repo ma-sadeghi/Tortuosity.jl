@@ -19,44 +19,78 @@ function __init__()
 end
 
 Tortuosity._on_gpu(::CuArray) = true
-Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrixCSC) = true
+Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrix) = true
 
-# --- Fast path: wrap PortableSparseCSC as CuSparseMatrixCSC for CUSPARSE SpMV ---
+Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
+
+# --- Fast path: wrap PortableSparseCSC for CUSPARSE SpMV ---
 # CUSPARSE expects Int32 indices. Wrapping is cheap (just stores pointers), but
 # within a Krylov solve `mul!` is called hundreds of times so even cheap
-# allocations accumulate. We cache the wrapper in `A._cache` and invalidate via
-# a pointer check — if any of `A`'s underlying vectors has been reassigned
-# (e.g. by `dropzeros!`) the cached wrapper's fields point to stale buffers
-# and we rebuild.
+# allocations accumulate, so we cache the wrapper in `A._cache`.
+#
+# A matrix that its builder declared `symmetric` is wrapped as CSR rather than
+# CSC. The three arrays are the same bytes read the other way round, and CSC
+# read as CSR is `transpose(A)`, which for a symmetric matrix is `A` — so the
+# product is unchanged. What changes is the kernel cuSPARSE picks: CSR SpMV
+# gathers each output entry in one thread, while CSC SpMV has to scatter with
+# atomics. Measured on an RTX PRO 5000 at 800^3 (1.75e9 nonzeros, Float32):
+# 32.9 ms per CSC `mul!` against 28.0 ms per CSR one, and the CSR timings
+# repeat to within 2 % where the CSC ones spread over 15 %.
+#
+# Freshness is the mutators' responsibility: every routine that touches `A`
+# calls `_invalidate_cache!` first, so a wrapper found here always describes the
+# current buffers and the symmetry claim behind its format still holds.
+# Comparing pointers instead would be unsound — a buffer released back to the
+# CUDA pool can be handed straight back out at the same address, and the wrapper
+# would then pass the check while describing an array of a different length.
 
 @inline function _as_cusparse(
     A::PortableSparseCSC{Tv,Int32,V,Vi}
 ) where {Tv,V<:CuVector,Vi<:CuVector{Int32}}
     cached = A._cache[]
-    if cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} &&
-       pointer(cached.nzVal) == pointer(A.nzval) &&
-       pointer(cached.rowVal) == pointer(A.rowval) &&
-       pointer(cached.colPtr) == pointer(A.colptr)
-        return cached
+    if A.symmetric
+        cached isa CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Int32} && return cached
+        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Int32}(
+            A.colptr, A.rowval, A.nzval, (A.m, A.n)
+        )
+    else
+        cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} && return cached
+        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
+            A.colptr, A.rowval, A.nzval, (A.m, A.n)
+        )
     end
-    wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
-        A.colptr, A.rowval, A.nzval, (A.m, A.n)
-    )
     A._cache[] = wrapped
     return wrapped
 end
 
-# Fallback when index type is not Int32 — convert. This path allocates so should
-# be avoided in the hot loop by constructing PortableSparseCSC with Int32 indices.
-# Not cached: this path is only hit on misconfiguration.
+# Fallback when the index type is not Int32: CUSPARSE needs Int32, so `colptr`
+# and `rowval` are converted. Cached like the fast path — uncached this
+# reconverted both index arrays on *every* `mul!`, several GB per Krylov
+# iteration on a large matrix, which reads as an unexplained slowdown rather
+# than as an error. Construct with Int32 indices to skip the conversion.
+#
+# Unlike the fast path this caches copies of the index arrays, so it relies on
+# `rowval`/`colptr` never being edited in place. `_invalidate_cache!` covers it:
+# every mutator calls it, whether it reassigns the arrays or edits them.
 function _as_cusparse(
     A::PortableSparseCSC{Tv,Ti,V,Vi}
 ) where {Tv,Ti,V<:CuVector,Vi<:CuVector}
-    colptr32 = convert(CuVector{Int32}, A.colptr)
-    rowval32 = convert(CuVector{Int32}, A.rowval)
-    return CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
-        colptr32, rowval32, A.nzval, (A.m, A.n)
-    )
+    cached = A._cache[]
+    colptr32() = convert(CuVector{Int32}, A.colptr)
+    rowval32() = convert(CuVector{Int32}, A.rowval)
+    if A.symmetric
+        cached isa CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Int32} && return cached
+        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Int32}(
+            colptr32(), rowval32(), A.nzval, (A.m, A.n)
+        )
+    else
+        cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} && return cached
+        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
+            colptr32(), rowval32(), A.nzval, (A.m, A.n)
+        )
+    end
+    A._cache[] = wrapped
+    return wrapped
 end
 
 # CUSPARSE-accelerated mul! for PortableSparseCSC backed by CuVector storage

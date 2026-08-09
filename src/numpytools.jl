@@ -55,6 +55,9 @@ end
 Returns the indices of elements in `a` that are also in `b`, sorted
 in ascending order, not the order in which they appear in `a`.
 
+Reached only from [`apply_dirichlet_bc!`](@ref), which is parity material rather
+than production code — see the note at the top of `pdetools.jl`.
+
 # Arguments
 - `a::AbstractArray`: The array to search for overlapping elements.
 - `b::AbstractArray`: The array to search for in `a`.
@@ -90,6 +93,9 @@ end
     overlap_indices_fast(a::AbstractArray, b::Set)
 
 Parallelized version of `overlap_indices` using `Threads.@threads`.
+
+Reached only from [`apply_dirichlet_bc_fast!`](@ref), which is parity material
+rather than production code — see the note at the top of `pdetools.jl`.
 """
 function overlap_indices_fast(a::AbstractArray, b::Set)
     num_threads = Threads.nthreads()
@@ -145,10 +151,9 @@ julia> find_chunk_bounds(; nelems=10, ndivs=3)
 """
 function find_chunk_bounds(; nelems::Int, ndivs::Int)
     # An empty input gives `chunk_size == 0`, and `1:0:0` is not a valid range —
-    # it throws `ArgumentError: step cannot be zero`. Reachable through the
-    # public API: `apply_dirichlet_bc_fast!` calls `overlap_indices_fast` on the
-    # nonzero row indices of `A`, which is empty whenever the pore space has no
-    # face-connected pairs at all.
+    # it throws `ArgumentError: step cannot be zero`. Reachable whenever the
+    # pore space has no face-connected pairs at all: `apply_dirichlet_bc_fast!`
+    # then calls `overlap_indices_fast` on an empty vector of row indices.
     nelems == 0 && return Tuple{Int,Int}[]
     chunk_size = ceil(Int, nelems / ndivs)
     chunks = [(i, min(i + chunk_size - 1, nelems)) for i in 1:chunk_size:nelems]
@@ -168,6 +173,9 @@ is allocated on the same device (and with element type matching `vals`),
 so downstream GPU kernels can broadcast against it without an implicit
 host→device copy. When `template === nothing` the output is a plain
 `Vector{eltype(vals)}`.
+
+Reached only from the [`apply_dirichlet_bc!`](@ref) family, which is parity
+material rather than production code — see the note at the top of `pdetools.jl`.
 
 # Arguments
 - `indices::AbstractArray`: positions to set.

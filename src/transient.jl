@@ -139,7 +139,9 @@ function TransientDiffusionProblem(
     isnothing(voxel_size) && (voxel_size = 1 / (size(img, axis_dim(axis)) - 1))
 
     pidx = build_pore_index(img)
-    A = build_transient_operator(img, D, bc_inlet, bc_outlet; axis=axis, voxel_size=voxel_size, gpu=gpu)
+    A = build_transient_operator(
+        img, pidx, D, bc_inlet, bc_outlet; axis=axis, voxel_size=voxel_size, gpu=gpu,
+    )
 
     return TransientDiffusionProblem(voxel_size, D, img, pidx, axis, bc_inlet, bc_outlet, A)
 end
@@ -262,21 +264,28 @@ function _initial_state(prob::TransientDiffusionProblem, u0, ::Type{T}) where {T
 end
 
 """
-    build_transient_operator(img, D, bc_inlet, bc_outlet; axis, voxel_size, gpu)
+    build_transient_operator(img, pore_index, D, bc_inlet, bc_outlet; axis, voxel_size, gpu)
 
 Build the sparse finite-difference operator `A` such that `dc/dt = A * c` for
 the pore-voxel concentration vector. Dirichlet boundary rows are zeroed so
 that boundary values remain constant during integration.
+
+`pore_index` is the lookup table [`build_pore_index`](@ref) returns for `img`.
 """
-function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, voxel_size, gpu)
-    # Compute boundary nodes BEFORE GPU transfer (cheap CPU operation)
-    inlet_face, outlet_face = axis_faces(axis)
+function build_transient_operator(
+    img, pore_index, D, bc_inlet, bc_outlet; axis, voxel_size, gpu,
+)
+    # The Dirichlet faces are the first and last slices along `axis`, so their
+    # pore ordinals can be read straight out of the index the problem has
+    # already built — one pass over a face each. `find_boundary_nodes` walks the
+    # entire image once per face instead, ~2 s of serial host time at 800³ in
+    # the middle of the GPU pipeline. Both yield ascending ordinals.
     bc_nodes = Int[]
     if !isnothing(bc_inlet)
-        append!(bc_nodes, find_boundary_nodes(img, inlet_face))
+        append!(bc_nodes, slice_indices(pore_index, axis, 1))
     end
     if !isnothing(bc_outlet)
-        append!(bc_nodes, find_boundary_nodes(img, outlet_face))
+        append!(bc_nodes, slice_indices(pore_index, axis, size(img, axis_dim(axis))))
     end
 
     # Keep the CPU `img` available for any downstream CPU-only work. `img_dev`
@@ -287,34 +296,68 @@ function build_transient_operator(img, D, bc_inlet, bc_outlet; axis, voxel_size,
 
     conns = build_connectivity_list(img_dev)
 
-    D_dev = D
-    if !(D isa Number)
+    # The `-1/voxel_size^2` of the finite-difference stencil rides on the edge
+    # weights instead of being applied to the assembled operator afterwards —
+    # `laplacian` is linear in the weights, so `L(αA) = αL(A)`, and for scalar
+    # `D` the factor lands on one number rather than on 1.758 B nonzeros at
+    # 800³. Rounding the quotient, not the divisor, keeps every off-diagonal
+    # entry bit-identical to what scaling the assembled operator produced.
+    if D isa Number
+        gd = oftype(D, D / -voxel_size^2)
+    else
         D_local = atleast_3d(D)
         D_dev = gpu ? _gpu_adapt[](D_local) : D_local
+        # `D_dev[img_dev]` is a full pore-length array — 1.0 GiB at 800³ — that
+        # nothing holds a name for and nothing releases. Name it so it can go as
+        # soon as the edge weights are read out of it.
+        node_D = D_dev[img_dev]
+        gd = interpolate_edge_values(node_D, conns)
+        gd ./= -voxel_size^2
+        _free!(node_D)
+        # Only the copy we made is ours to release; `_gpu_adapt` hands back a
+        # device array of the right eltype unchanged.
+        D_dev === D_local || _free!(D_dev)
     end
 
-    gd = D isa Number ? D : interpolate_edge_values(D_dev[img_dev], conns)
-
     am = build_adjacency_matrix(conns; n=nnodes, weights=gd)
+    _free!(conns)
+    _free!(gd)
+    img_dev === img || _free!(img_dev)
 
     A = laplacian(am)
+    _free!(am)
 
-    nonzeros(A) .= nonzeros(A) ./ (-voxel_size^2)
-
-    # Zero rows so Dirichlet values remain constant during integration
-    zero_rows!(A, bc_nodes)
+    # Zero rows so Dirichlet values remain constant during integration. The
+    # structural zeros are left in place: `dc/dt = A c` only ever reads `A`
+    # through SpMV, which cannot tell a stored zero from an absent one.
+    _zero_rows_only!(A, bc_nodes)
 
     return A
 end
 
-# Docstring lives on the stub in sparse_type.jl (shared with the PortableSparseCSC method).
-function zero_rows!(A::SparseMatrixCSC, rows)
-    target = Set(rows)
+# See the PortableSparseCSC method in kernels/sparse.jl for why the compaction
+# is separable.
+#
+# The membership test runs once per nonzero — 1.76e9 times at 800³ — so it is a
+# lookup in a dense mask rather than a hash probe into a `Set`. Building the
+# mask costs one bit per row, against the several machine words per element a
+# `Set` needs, and every probe is then a single indexed load.
+function _zero_rows_only!(A::SparseMatrixCSC, rows)
+    is_bc = falses(size(A, 1))
+    @inbounds for r in rows
+        1 <= r <= length(is_bc) && (is_bc[r] = true)
+    end
     @inbounds for i in eachindex(A.rowval)
-        if A.rowval[i] in target
+        if is_bc[A.rowval[i]]
             A.nzval[i] = 0
         end
     end
+    return true
+end
+
+# Docstring lives on the stub in sparse_type.jl (shared with the PortableSparseCSC method).
+function zero_rows!(A::SparseMatrixCSC, rows)
+    _zero_rows_only!(A, rows)
     dropzeros!(A)
     return nothing
 end
@@ -437,19 +480,16 @@ used to derive effective diffusivity. The flux value this check uses is the
 same one the `flux` observable returns, so the threshold is directly in the
 units users care about.
 
-The callback materialises the integrator state to CPU on each fire via
-`Array(u)`. For a GPU solve that's a full D2H copy per ODE step — typically a
-small fraction of the per-step ODE work at realistic problem sizes, but
-worth knowing about if you're running `StopAtFluxBalance` on a large grid
-with a very cheap RHS. Benchmark your use case before assuming it's free.
+The callback reads only the four slices the two fluxes need, gathered on the
+device the state lives on, so a GPU solve moves a face rather than the whole
+field on each fire.
 """
 function StopAtFluxBalance(prob::TransientDiffusionProblem; abstol=1e-4, reltol=1e-3)
     D, voxel_size, img, axis, pidx = prob.D, prob.voxel_size, prob.img, prob.axis, prob.pore_index
 
     condition = function (c, t, integrator)
-        c_cpu = Array(c)
-        flux_in = flux(c_cpu, D, voxel_size, img, axis; ind=1, pore_index=pidx)
-        flux_out = flux(c_cpu, D, voxel_size, img, axis; ind=:end, pore_index=pidx)
+        flux_in = flux(c, D, voxel_size, img, axis; ind=1, pore_index=pidx)
+        flux_out = flux(c, D, voxel_size, img, axis; ind=:end, pore_index=pidx)
         tol = max(abstol, reltol * max(abs(flux_in), abs(flux_out)))
         return abs(flux_in - flux_out) <= tol
     end

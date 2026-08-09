@@ -5,6 +5,12 @@ using KernelAbstractions
 using Atomix
 
 # --- Diagonal operations ---
+#
+# `set_diag!`, `get_diag` and `zero_rows_cols!` below exist to serve
+# `apply_dirichlet_bc_fast!`, which is now parity material rather than
+# production code (see the note at the top of `pdetools.jl`). They are covered
+# directly by `test_sparse_ops.jl` and timed by `bench/`; keep them working, but
+# do not read a call site here as evidence that the solver path uses them.
 
 """
     set_diag_kernel!(nzval, rowval, colptr, vals, N_diag)
@@ -47,6 +53,7 @@ function set_diag!(A::PortableSparseCSC{Tv}, vals::AbstractVector) where {Tv}
 
     backend = get_backend(A.nzval)
     wg = min(N_diag, 256)
+    _invalidate_cache!(A)
     set_diag_kernel!(backend, wg)(A.nzval, A.rowval, A.colptr, cu_vals, N_diag; ndrange=N_diag)
     KernelAbstractions.synchronize(backend)
     return nothing
@@ -146,6 +153,7 @@ function zero_rows_cols!(A::PortableSparseCSC, idxs::AbstractVector{<:Integer})
     valid_cols = filter(i -> 1 <= i <= num_cols, idxs_Ti)
 
     backend = get_backend(A.nzval)
+    _invalidate_cache!(A)
 
     # Zero rows
     unique_rows = unique(valid_rows)
@@ -172,18 +180,30 @@ function zero_rows_cols!(A::PortableSparseCSC, idxs::AbstractVector{<:Integer})
     return nothing
 end
 
-# Docstring lives on the stub in sparse_type.jl (shared with the SparseMatrixCSC method).
-function zero_rows!(A::PortableSparseCSC, rows::AbstractVector{<:Integer})
+"""
+    _zero_rows_only!(A, rows) -> Bool
+
+Zero the entries of `A` whose row index is in `rows`, and stop there. Returns
+whether anything was zeroed.
+
+This is [`zero_rows!`](@ref) without the compaction that its contract promises.
+Callers that do not need a compacted matrix should prefer it: the structural
+zeros it leaves are invisible to SpMV, whereas dropping them rebuilds the whole
+CSC — several times the matrix in transient allocation — to reclaim well under
+one percent of the nonzeros.
+"""
+function _zero_rows_only!(A::PortableSparseCSC, rows::AbstractVector{<:Integer})
     num_rows, _ = size(A)
     nnz_val = nnz(A)
-    (nnz_val == 0 || isempty(rows)) && return nothing
+    (nnz_val == 0 || isempty(rows)) && return false
 
     Ti = eltype(A.rowval)
     rows_Ti = Ti.(rows)
     valid_rows = unique(filter(i -> 1 <= i <= num_rows, rows_Ti))
-    isempty(valid_rows) && return nothing
+    isempty(valid_rows) && return false
 
     backend = get_backend(A.nzval)
+    _invalidate_cache!(A)
     is_target_row = fill!(similar(A.nzval, Bool, num_rows), false)
     gpu_rows = similar(A.rowval, length(valid_rows))
     copyto!(gpu_rows, valid_rows)
@@ -191,8 +211,14 @@ function zero_rows!(A::PortableSparseCSC, rows::AbstractVector{<:Integer})
 
     zero_rows_kernel!(backend)(A.nzval, A.rowval, is_target_row, nnz_val; ndrange=nnz_val)
     KernelAbstractions.synchronize(backend)
+    _free!(is_target_row)
+    _free!(gpu_rows)
+    return true
+end
 
-    dropzeros!(A)
+# Docstring lives on the stub in sparse_type.jl (shared with the SparseMatrixCSC method).
+function zero_rows!(A::PortableSparseCSC, rows::AbstractVector{<:Integer})
+    _zero_rows_only!(A, rows) && dropzeros!(A)
     return nothing
 end
 
@@ -201,20 +227,24 @@ end
 """
     compact_and_count_kernel!(new_nzval, new_rowval, new_col_counts,
                               nzval_old, rowval_old, colptr_old,
-                              flags, scan_output, nnz_old)
+                              keep, keep_scan, nnz_old)
 
-KA kernel: compact nonzero values (flagged for retention) into new arrays
+KA kernel: compact nonzero values (those flagged in `keep`) into new arrays
 and atomically count entries per column for CSC `colptr` reconstruction.
+
+`keep_scan` is the *inclusive* prefix sum of `keep`. Where an entry is kept its
+own contribution is the last one counted, so `keep_scan[k]` is already that
+entry's 1-based destination — no shifted second copy of the scan is needed.
 """
 @kernel function compact_and_count_kernel!(
     new_nzval, new_rowval, new_col_counts,
     @Const(nzval_old), @Const(rowval_old), @Const(colptr_old),
-    @Const(flags), @Const(scan_output), nnz_old,
+    @Const(keep), @Const(keep_scan), nnz_old,
 )
     k = @index(Global)
     if k <= nnz_old && k > 0
-        @inbounds if flags[k]
-            @inbounds new_idx = scan_output[k] + 1
+        @inbounds if !iszero(keep[k])
+            @inbounds new_idx = keep_scan[k]
             @inbounds val = nzval_old[k]
             @inbounds row = rowval_old[k]
             if new_idx > 0 && new_idx <= length(new_nzval)
@@ -247,11 +277,11 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
     Ti = eltype(A.rowval)
     backend = get_backend(A.nzval)
 
-    # Phase 1: flag elements to keep
-    flags = abs.(A.nzval) .> tol
-    flags_Ti = similar(A.rowval, length(flags))
-    flags_Ti .= Ti.(flags)
-    scan_inclusive = accumulate(+, flags_Ti)
+    # Phase 1: flag elements to keep. Written straight into the index-typed
+    # array the scan needs, so the Bool mask is never materialised.
+    keep = similar(A.rowval, nnz_old)
+    keep .= abs.(A.nzval) .> tol
+    scan_inclusive = accumulate(+, keep)
 
     # Last element of an inclusive prefix sum equals the total count of kept
     # entries. Reading one slot is much cheaper than a GPU reduction via
@@ -265,17 +295,12 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
 
     # All zeros
     if nnz_new == 0
+        _invalidate_cache!(A)
         A.nzval = similar(A.nzval, Tv, 0)
         A.rowval = similar(A.rowval, Ti, 0)
         A.colptr = fill!(similar(A.colptr, num_cols + 1), one(Ti))
         return nothing
     end
-
-    # Exclusive scan for kernel indexing
-    scan_output = fill!(similar(A.rowval, nnz_old), zero(Ti))
-    scan_output_view = @view scan_output[2:end]
-    scan_inclusive_view = @view scan_inclusive[1:(end - 1)]
-    copyto!(scan_output_view, scan_inclusive_view)
 
     # Phase 2: allocate outputs
     new_nzval = similar(A.nzval, Tv, nnz_new)
@@ -286,9 +311,11 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
     compact_and_count_kernel!(backend)(
         new_nzval, new_rowval, new_col_counts,
         A.nzval, A.rowval, A.colptr,
-        flags, scan_output, nnz_old; ndrange=nnz_old,
+        keep, scan_inclusive, nnz_old; ndrange=nnz_old,
     )
     KernelAbstractions.synchronize(backend)
+    _free!(keep)
+    _free!(scan_inclusive)
 
     # Phase 4: build new colptr
     new_colptr = similar(A.colptr, num_cols + 1)
@@ -301,7 +328,10 @@ function dropzeros!(A::PortableSparseCSC{Tv}; tol=_drop_tol(Tv)) where {Tv}
         new_colptr_view2 .= inclusive_scan_counts .+ one(Ti)
     end
 
-    # Phase 5: update A in place
+    # Phase 5: update A in place. Dropping the backend cache first releases the
+    # wrapper still holding the pre-compaction `rowval` and `nzval` — 14.1 GiB at
+    # 800³, reachable until the matrix itself dies without this.
+    _invalidate_cache!(A)
     A.nzval = new_nzval
     A.rowval = new_rowval
     A.colptr = new_colptr

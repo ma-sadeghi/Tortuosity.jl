@@ -12,7 +12,7 @@
 using Test
 using Random
 using Tortuosity
-using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu
+using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruct_slice
 
 # ---------------------------------------------------------------------------
 # Steady-state
@@ -81,6 +81,28 @@ end
     @test tau_cpu ≈ tau_gpu rtol = 1e-3
 end
 
+# The two-level preconditioner has to give the same tortuosity on the device as
+# without it. It runs the coarse solve on the host in Float64 while the fine
+# problem is Float32, so this is also the only test that exercises that split.
+@testset "two-level preconditioner on GPU (seed=$(seed))" for seed in (1, 42)
+    img = Array{Bool}(
+        Imaginator.blobs(; shape=(48, 48, 48), porosity=0.55f0, blobiness=1, seed=seed)
+    )
+    (any(img[1, :, :]) && any(img[end, :, :])) || return
+
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=true)
+    Pl = Tortuosity.two_level_preconditioner(sim; block=8)
+    @test Pl isa Tortuosity.TwoLevelPreconditioner
+    @test _on_gpu(Pl.agg)
+
+    plain = solve(sim.prob, KrylovJL_CG(); reltol=1.0f-6)
+    prec = solve(sim.prob, KrylovJL_CG(); Pl=Pl, reltol=1.0f-6)
+    tau_plain = tortuosity(reconstruct_field(plain.u, sim.img), sim.img; axis=:x)
+    tau_prec = tortuosity(reconstruct_field(prec.u, sim.img), sim.img; axis=:x)
+    @test tau_prec ≈ tau_plain rtol = 1e-3
+    @test prec.iters < plain.iters
+end
+
 @testset "CPU/GPU parity with variable D (seed=$(seed))" for seed in (3, 17)
     img = Array{Bool}(
         Imaginator.blobs(; shape=(24, 24, 24), porosity=0.6f0, blobiness=1, seed=seed)
@@ -128,6 +150,19 @@ end
     @test all(u isa Vector{Float32} for u in sol.u)
     @test all(all(isfinite, u) for u in sol.u)
     @test all(length(u) == count(prob.img) for u in sol.u)
+
+    # `reconstruct_slice` gathers on whichever device `u` lives on, so that the
+    # stop conditions can read one face of a device solution without dragging the
+    # whole vector to the host. `sol.u` is always host-resident, so the device
+    # branch is only reached from inside the integrator — nothing else in the
+    # suite passes it a device vector.
+    u_dev = _gpu_adapt[](sol.u[end])
+    @test _on_gpu(u_dev)
+    for k in (1, 12, 24)
+        # isequal, not ==: solid voxels come back as NaN.
+        @test isequal(reconstruct_slice(u_dev, prob, k),
+                      reconstruct_slice(sol.u[end], prob, k))
+    end
 end
 
 @testset "TransientDiffusionProblem CPU/GPU parity (scalar snapshot)" begin

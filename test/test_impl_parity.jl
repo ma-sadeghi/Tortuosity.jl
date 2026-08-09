@@ -14,6 +14,9 @@
 # 3. _build_connectivity_list_cpu     vs  _build_connectivity_list_ka (CPU backend)
 # 4. laplacian(AbstractMatrix)         vs  laplacian(PortableSparseCSC)
 # 5. zero_rows!(SparseMatrixCSC)       vs  zero_rows!(PortableSparseCSC)
+# 6. build_adjacency_matrix(direct)    vs  build_adjacency_matrix(KA scatter)
+# 7. CPU reference chain               vs  backend-agnostic reference chain
+# 8. build_steady_system               vs  the reference chain, bit for bit
 
 using Test
 using Random
@@ -26,7 +29,10 @@ using Tortuosity: Imaginator,
     apply_dirichlet_bc_fast!,
     _build_connectivity_list_cpu,
     _build_connectivity_list_ka,
+    build_connectivity_list,
     build_adjacency_matrix,
+    build_steady_system,
+    interpolate_edge_values,
     laplacian,
     zero_rows!,
     find_boundary_nodes,
@@ -218,11 +224,16 @@ end
     end
 end
 
-# 7. Whole-pipeline parity: the CPU-assembled steady system versus one built
-#    entirely from the backend-agnostic path (KA connectivity → KA adjacency →
-#    KA laplacian → PortableSparseCSC Dirichlet elimination). This is the same
-#    chain the GPU takes, exercised on the CPU backend so it runs everywhere.
-@testset "steady-system assembly parity: CPU chain vs backend-agnostic chain" begin
+# 7. Reference-chain parity: the CPU-specialized connectivity → adjacency →
+#    laplacian → Dirichlet-elimination chain against the backend-agnostic one
+#    (KA connectivity → KA adjacency → KA laplacian → PortableSparseCSC
+#    elimination), run on the CPU backend so it works everywhere.
+#
+#    Neither chain is the production assembler any more — `SteadyDiffusionProblem`
+#    calls `build_steady_system`, which is covered by case 8 below. What this
+#    pins is that the two reference chains still agree with each other, so case 8
+#    is comparing against a reference that has not drifted.
+@testset "reference-chain parity: CPU chain vs backend-agnostic chain" begin
     for (label, img) in PARITY_IMAGES
         any(img[1, :, :]) && any(img[end, :, :]) || continue
         nnodes = count(img)
@@ -247,4 +258,104 @@ end
         @test to_dense(A_ka) ≈ Array(A_cpu)
         @test b_ka ≈ b_cpu
     end
+end
+
+# 8. The fused assembler against the reference chain, bit for bit.
+#
+# `build_steady_system` replaced `build_connectivity_list → interpolate_edge_values
+# → build_adjacency_matrix → laplacian → apply_dirichlet_bc_fast!` with two kernel
+# passes over the mask. What made that safe to do was not "close enough" but
+# *identical output*: same colptr, same rowval, same nzval, same b, to the last
+# bit. Every other assertion covering assembly is `≈` or an rtol, so nothing else
+# would catch a reordered summation or a weight that moved by an ulp — and the
+# golden τ values would absorb both silently. This is the guard for the single
+# largest change in the campaign, so it is written as `==`.
+#
+# Bit-identity is a real property here, not a coincidence: the reference chain
+# sums a node's degree over its neighbours in ascending pore ordinal, which is
+# the order the kernel walks its six face offsets in, and the harmonic mean
+# `2ab/(a+b)` is exactly symmetric in its two arguments, so it does not matter
+# which endpoint the chain calls `a`.
+
+# Six-face degree of every pore voxel, used to prove the fixtures actually
+# contain the zero-degree nodes the elimination convention is delicate about.
+function isolated_pore_voxels(img)
+    nx, ny, nz = size(img)
+    out = CartesianIndex{3}[]
+    for c in CartesianIndices(img)
+        img[c] || continue
+        i, j, k = c.I
+        deg = 0
+        for (di, dj, dk) in ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
+            ii, jj, kk = i + di, j + dj, k + dk
+            (1 <= ii <= nx && 1 <= jj <= ny && 1 <= kk <= nz) || continue
+            img[ii, jj, kk] && (deg += 1)
+        end
+        iszero(deg) && push!(out, c)
+    end
+    return out
+end
+
+# A duct that percolates, plus three deliberately isolated voxels: one in the
+# interior (its column is dropped entirely), one on the inlet face and one on the
+# outlet face (both pinned with a unit diagonal instead of their zero degree).
+function isolated_voxel_fixture()
+    img = zeros(Bool, 8, 6, 6)
+    img[:, 3:4, 3:4] .= true
+    img[4, 1, 1] = true
+    img[1, 6, 6] = true
+    img[8, 1, 6] = true
+    return img
+end
+
+# Smooth, strictly positive and different in every voxel, so no two harmonic
+# means coincide by accident.
+variable_diffusivity(img) =
+    [0.5 + 0.1i + 0.02j + 0.003k for i in 1:size(img, 1), j in 1:size(img, 2), k in 1:size(img, 3)]
+
+function reference_steady_system(img; axis, D=nothing)
+    nnodes = count(img)
+    conns = build_connectivity_list(img)
+    weights = isnothing(D) ? ones(Float64, size(conns, 1)) :
+              interpolate_edge_values(D[img], conns)
+    A = laplacian(build_adjacency_matrix(conns; n=nnodes, weights=weights))
+    b = zeros(Float64, nnodes)
+
+    inlet_face, outlet_face = axis_faces(axis)
+    inlet = find_boundary_nodes(img, inlet_face)
+    outlet = find_boundary_nodes(img, outlet_face)
+    nodes = vcat(inlet, outlet)
+    vals = vcat(ones(length(inlet)), zeros(length(outlet)))
+    apply_dirichlet_bc_fast!(A, b; nodes=nodes, vals=vals)
+    return A, b
+end
+
+@testset "build_steady_system == the reference chain" begin
+    fixtures = vcat(PARITY_IMAGES, [("isolated voxels 8x6x6", isolated_voxel_fixture())])
+
+    iso = isolated_pore_voxels(isolated_voxel_fixture())
+    @test any(c -> c[1] == 1, iso)                  # zero-degree inlet node
+    @test any(c -> c[1] == 8, iso)                  # zero-degree outlet node
+    @test any(c -> 1 < c[1] < 8, iso)               # zero-degree interior node
+    # The blob fixtures are untrimmed, which is the case a trimmed image would
+    # never reach. If that ever stops being true this testset quietly narrows.
+    @test any(!isempty(isolated_pore_voxels(img)) for (_, img) in PARITY_IMAGES)
+
+    checked = 0
+    for (label, img) in fixtures
+        nnodes = count(img)
+        nnodes >= 4 || continue
+        cases = (("uniform D", nothing), ("variable D", variable_diffusivity(img)))
+        @testset "$(label) — $(dlabel)" for (dlabel, D) in cases
+            A_ref, b_ref = reference_steady_system(img; axis=:x, D=D)
+            A_new, b_new = build_steady_system(img; nnodes=nnodes, axis=:x, D=D)
+
+            @test SparseArrays.getcolptr(A_new) == SparseArrays.getcolptr(A_ref)
+            @test rowvals(A_new) == rowvals(A_ref)
+            @test nonzeros(A_new) == nonzeros(A_ref)
+            @test b_new == b_ref
+        end
+        checked += 1
+    end
+    @test checked == length(fixtures)
 end

@@ -14,7 +14,6 @@ using Tortuosity:
     apply_dirichlet_bc_fast!,
     PortableSparseCSC,
     exclusive_scan!,
-    fill_idx_kernel!,
     histogram_connections_kernel!,
     write_connections_offset_kernel!,
     _spmv_kernel!,
