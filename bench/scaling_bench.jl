@@ -93,11 +93,7 @@ using Tortuosity: Imaginator
 
 const REPO_ROOT = normpath(joinpath(@__DIR__, ".."))
 const DEFAULT_SIZES = [200, 400, 600, 800]
-const DEFAULT_CACHE = joinpath(
-    homedir(), "AppData", "Local", "Temp", "claude",
-    "C--Users-sadegmo--julia-dev-Tortuosity",
-    "aff6f749-1df3-480a-a5b3-d1872b37d7f3", "scratchpad", "blobcache",
-)
+const DEFAULT_CACHE = joinpath(tempdir(), "tortuosity_bench_blobs")
 const WARMUP_SIZE = 64
 const RELTOL = 1e-6
 
