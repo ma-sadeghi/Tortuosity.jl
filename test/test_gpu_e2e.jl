@@ -12,7 +12,7 @@
 using Test
 using Random
 using Tortuosity
-using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu
+using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruct_slice
 
 # ---------------------------------------------------------------------------
 # Steady-state
@@ -150,6 +150,19 @@ end
     @test all(u isa Vector{Float32} for u in sol.u)
     @test all(all(isfinite, u) for u in sol.u)
     @test all(length(u) == count(prob.img) for u in sol.u)
+
+    # `reconstruct_slice` gathers on whichever device `u` lives on, so that the
+    # stop conditions can read one face of a device solution without dragging the
+    # whole vector to the host. `sol.u` is always host-resident, so the device
+    # branch is only reached from inside the integrator — nothing else in the
+    # suite passes it a device vector.
+    u_dev = _gpu_adapt[](sol.u[end])
+    @test _on_gpu(u_dev)
+    for k in (1, 12, 24)
+        # isequal, not ==: solid voxels come back as NaN.
+        @test isequal(reconstruct_slice(u_dev, prob, k),
+                      reconstruct_slice(sol.u[end], prob, k))
+    end
 end
 
 @testset "TransientDiffusionProblem CPU/GPU parity (scalar snapshot)" begin
