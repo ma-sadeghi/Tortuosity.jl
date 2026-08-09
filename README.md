@@ -21,6 +21,7 @@ Pkg.add("Tortuosity")
 ## Usage
 
 ```julia
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
 using Tortuosity: tortuosity, reconstruct_field
 

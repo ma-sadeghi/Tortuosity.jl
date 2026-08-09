@@ -18,6 +18,7 @@ Pkg.add("Tortuosity")
 ## Quick example
 
 ```@example
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
 
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)

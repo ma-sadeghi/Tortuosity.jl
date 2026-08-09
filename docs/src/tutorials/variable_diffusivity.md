@@ -11,6 +11,7 @@ Instead of a scalar `D`, you pass a 3D array matching the image shape. Each voxe
 We generate a binary pore image and assign a random diffusivity to each pore voxel:
 
 ```@example vardiff
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Plots
 using Tortuosity
 
@@ -43,6 +44,7 @@ The key difference from the uniform case: we pass `D=D` to both `SteadyDiffusion
 Consider a liquid with gas bubbles dispersed in it. Diffusion in the gas phase is slower than in the liquid, so the two phases have different diffusivities. We can model this by treating the entire image as the domain and assigning a lower diffusivity to the "bubble" voxels. (In reality, bubbles would be spherical — here we use blob shapes as a simple approximation.)
 
 ```@example vardiff2
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
 
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)

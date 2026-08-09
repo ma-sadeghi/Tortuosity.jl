@@ -95,13 +95,10 @@ export slab_cumulative_flux
 # and the porous-media observables. Paths that need an optional dependency are
 # precompiled by that dependency's extension instead, so nobody pays for a
 # package they did not load: the effective-diffusivity fit lives in
-# TortuosityLsqFitExt.
+# TortuosityLsqFitExt and blob generation in TortuosityImageFilteringExt.
 # Intentionally CPU-only and tiny (12³ image): the goal is type coverage, not
 # correctness — accuracy is verified in the test suite. See issue #30.
 @compile_workload begin
-    # Precompile the imgen path with the same kwargs users pass in tutorials.
-    Imaginator.blobs(shape=(12, 12, 12), porosity=0.65, blobiness=1.0, seed=1)
-
     # `ones(Bool, ...)` returns `Array{Bool,3}`, matching `Imaginator.blobs`'s
     # output type — `trues` would return a `BitArray{3}` and the steady-state
     # specializations would miss the user path entirely.

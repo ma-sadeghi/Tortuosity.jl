@@ -1,6 +1,7 @@
 # %% ------------------------------------------------------
 # Imports
 
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Plots
 using Printf
 using Statistics

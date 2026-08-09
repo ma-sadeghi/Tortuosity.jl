@@ -18,3 +18,8 @@ _h5open(args...; kwargs...) = _weakdep_error("HDF5", "export_to_hdf5")
 const _FITTERS = "fit_effective_diffusivity and fit_voxel_diffusivity"
 _curve_fit(args...; kwargs...) = _weakdep_error("LsqFit", _FITTERS)
 _stderror(args...; kwargs...) = _weakdep_error("LsqFit", _FITTERS)
+
+# ImageFiltering — see `Imaginator.apply_gaussian_blur` in imgen.jl
+_gaussian_blur(args...; kwargs...) = _weakdep_error(
+    "ImageFiltering", "Imaginator.blobs and Imaginator.apply_gaussian_blur"
+)

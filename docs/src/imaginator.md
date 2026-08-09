@@ -18,6 +18,7 @@ Generates a random binary image by thresholding Gaussian-blurred noise. Returns 
 - **`seed`** — random seed for reproducibility.
 
 ```@example imag
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Plots
 using Tortuosity
 
