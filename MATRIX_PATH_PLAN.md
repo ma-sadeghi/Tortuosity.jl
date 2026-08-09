@@ -863,6 +863,18 @@ Twenty items rejected. The ones that matter:
 3. **B23 — solver tolerance and iteration cap.** No mechanism exists today; same fix as (1). Note `maxiters` defaults to `length(b)` = **254.6 M** at 800³, and `abstol = reltol = sqrt(eps)` differs by 4½ orders of magnitude between CPU Float64 and GPU Float32.
 4. **A1 — superseded, no longer needs a decision.** It was blocked by `csc_equivalent`; A7 made it moot by deleting the `dropzeros!` call outright.
 
+## B18 — rejected for this campaign, folded into the A30 follow-up
+
+**Disposition reached by judgement, not by measurement — and the reason matters.** B18 (fold the `−1/voxel_size²` scaling into the edge weights, `src/transient.jl:322`) was triaged `LIVE` in audit round 1 and then never claimed by any write round. The master caught it during final verification rather than letting it pass as done. The agent dispatched to resolve it **died on a session API limit before doing any work**, so no implementation or measurement was attempted.
+
+Rejected here on the following reasoning:
+
+1. **It is transient-only, and `bench/scaling_bench.jl` measures only the steady path** — so B18 moves no number this campaign reports. That is the same ground on which A30 was rejected as a Phase 4 item.
+2. **A30 rewrites this exact code path wholesale.** Porting the transient path to the fused assembler means computing edge weights inline in the kernel — which is precisely what B18 asks for. Implementing B18 standalone now produces work that A30 discards.
+3. **It interacts with a change made hours earlier.** Commit `3fc55bc` (F11) added an `_invalidate_cache!` call at this exact site. If folding the factor upstream removes the in-place `nzval` mutation, that call's necessity changes — reasoning that must be done *with* A30's rewrite in view, not against code A30 will delete.
+
+**Handed to the A30 round as a sub-item.** The honest caveat: the inventory's "simplifying (−1 line)" cost estimate is unverified, and under the acceptance rule a genuinely simplifying sub-15 % change would qualify for acceptance. If A30 is never done, B18 should be re-examined on its own merits.
+
 ## Follow-up work that did not fit
 
 - **A30** — port the transient path to the fused assembler. Deliberately not attempted: transient-only, invisible to every metric this harness reports, and its structural contract differs between the CPU and GPU `laplacian` paths. **It would retire the old five-stage pipeline and let B4/B8/B10/B12/B13/B21/B22/A12/A27 all go terminal at once**, and remove a live CPU/GPU drift surface. Judge it on correctness and maintenance, not speed.
