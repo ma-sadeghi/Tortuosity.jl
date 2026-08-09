@@ -24,8 +24,8 @@
 #
 # Output format
 # -------------
-# Long format, one row per (size, device, pass, stage, repeat), so new stages
-# can be added without breaking a reader. Two passes are recorded:
+# Long format, one row per (size, device, threads, pass, stage, repeat), so new
+# stages can be added without breaking a reader. Two passes are recorded:
 #
 #   pass=api     the public API exactly as a user calls it. Stages: setup
 #                (SteadyDiffusionProblem), solve (KrylovJL_CG), post
@@ -102,9 +102,13 @@ const RELTOL = 1e-6
 # minutes each.
 REPEAT_PLAN(n) = n <= 200 ? 3 : (n <= 400 ? 2 : 1)
 
+# `threads` is per row rather than per run: CPU assembly is KernelAbstractions
+# -threaded and CPU SpMV is not, so a CPU wall time means nothing without it,
+# and a run-level record in scaling_env.csv is one join away from being read
+# wrong. Every row carries the thread count that produced it.
 const CSV_COLUMNS = [
-    "run_id", "timestamp", "git_sha", "n", "nvoxels", "device", "pass", "stage",
-    "rep", "status", "wall_s", "peak_dev_bytes", "base_dev_bytes",
+    "run_id", "timestamp", "git_sha", "n", "nvoxels", "device", "threads", "pass",
+    "stage", "rep", "status", "wall_s", "peak_dev_bytes", "base_dev_bytes",
     "retained_dev_bytes", "maxrss_bytes", "nnodes", "nedges", "nnz", "iters",
     "tau", "note",
 ]
@@ -169,11 +173,23 @@ function csvfield(x)
     return replace(string(x), ',' => ';', '"' => '\'', '\n' => ' ', '\r' => ' ')
 end
 
+"""
+Create the CSV if it is missing, and rotate it aside when its header is stale.
+
+Appending a row with more fields than the header on disk would leave a file no
+reader can parse, so a column added here retires the older results rather than
+corrupting them.
+"""
 function ensure_csv(path)
     mkpath(dirname(path))
-    isfile(path) && filesize(path) > 0 && return nothing
+    header = join(CSV_COLUMNS, ",")
+    if isfile(path) && filesize(path) > 0
+        readline(path) == header && return nothing
+        mv(path, "$(path).$(Dates.format(now(), "yyyymmdd-HHMMSS")).bak"; force=true)
+        @warn "column layout changed; previous results moved aside" path
+    end
     open(path, "w") do io
-        println(io, join(CSV_COLUMNS, ","))
+        println(io, header)
     end
     return nothing
 end
@@ -199,7 +215,7 @@ is that the process died or was killed part-way through, which is exactly the
 case that should be measured again rather than silently inherited.
 """
 function completed_cells(path)
-    done = Set{Tuple{Int,String,String,Int}}()
+    done = Set{Tuple{Int,String,Int,String,Int}}()
     isfile(path) || return done
     lines = readlines(path)
     length(lines) <= 1 && return done
@@ -212,7 +228,8 @@ function completed_cells(path)
         f[col["stage"]] == get(TERMINAL_STAGE, pass, "") || continue
         f[col["status"]] in ("ok", "oom", "oom_host", "skipped") || continue
         push!(done, (
-            parse(Int, f[col["n"]]), f[col["device"]], pass, parse(Int, f[col["rep"]]),
+            parse(Int, f[col["n"]]), f[col["device"]], parse(Int, f[col["threads"]]),
+            pass, parse(Int, f[col["rep"]]),
         ))
     end
     return done
@@ -496,20 +513,25 @@ function print_summary(path)
     rows = read_rows(path)
     api = filter(r -> r["pass"] == "api", rows)
     isempty(api) && return nothing
-    keys_ = unique([(parse(Int, r["n"]), r["device"]) for r in api])
-    sort!(keys_; by=k -> (k[2], k[1]))
+    # Threads are part of the key, not a footnote: a CPU row measured on one
+    # thread and one measured on four are different measurements.
+    keys_ = unique([(parse(Int, r["n"]), r["device"], r["threads"]) for r in api])
+    sort!(keys_; by=k -> (k[2], k[1], k[3]))
 
     println()
     println("=== bench/scaling_bench.jl — API pass (median over repeats) ===")
     println("peak = max device usage over the setup/solve/post stages; e2e = their sum")
     println("base = device usage before setup (CUDA context etc.); subtract it for problem-only memory")
     @printf(
-        "%5s %7s %9s %12s %14s %10s %10s %10s %10s %9s %8s %8s\n",
-        "N", "device", "status", "nnodes", "nnz", "setup_s", "solve_s", "e2e_s",
-        "peak_GiB", "base_GiB", "iters", "tau",
+        "%5s %7s %8s %9s %12s %14s %10s %10s %10s %10s %9s %8s %8s\n",
+        "N", "device", "threads", "status", "nnodes", "nnz", "setup_s", "solve_s",
+        "e2e_s", "peak_GiB", "base_GiB", "iters", "tau",
     )
-    for (n, dev) in keys_
-        cell = filter(r -> parse(Int, r["n"]) == n && r["device"] == dev, api)
+    for (n, dev, nthreads) in keys_
+        cell = filter(
+            r -> parse(Int, r["n"]) == n && r["device"] == dev && r["threads"] == nthreads,
+            api,
+        )
         stage_of(s) = filter(r -> r["stage"] == s, cell)
         med(rs, col) = (v = Float64[x for x in (_num(r[col]) for r in rs) if x !== nothing];
                         isempty(v) ? nothing : median(v))
@@ -523,8 +545,8 @@ function print_summary(path)
         f(x) = x === nothing ? "-" : @sprintf("%.3f", x)
         g(x) = x === nothing ? "-" : @sprintf("%.0f", x)
         @printf(
-            "%5d %7s %9s %12s %14s %10s %10s %10s %10s %9s %8s %8s\n",
-            n, dev, status,
+            "%5d %7s %8s %9s %12s %14s %10s %10s %10s %10s %9s %8s %8s\n",
+            n, dev, nthreads, status,
             g(med(setup, "nnodes")), g(med(setup, "nnz")),
             f(t_setup), f(t_solve), f(e2e), f(gib(peak)), f(gib(med(setup, "base_dev_bytes"))),
             g(med(solve_, "iters")), f(med(post, "tau")),
@@ -617,7 +639,8 @@ function main(args)
     run_id = Dates.format(now(), "yyyymmdd-HHMMSS")
     ensure_csv(csv)
     write_env_record(envcsv, run_id, opts)
-    done = force ? Set{Tuple{Int,String,String,Int}}() : completed_cells(csv)
+    done = force ? Set{Tuple{Int,String,Int,String,Int}}() : completed_cells(csv)
+    nthreads = Threads.nthreads()
     sha = git_sha()
 
     @info "scaling_bench run_id=$(run_id) sizes=$(sizes) devices=$(devices) cpu_max=$(cpu_max) csv=$(csv)"
@@ -630,7 +653,7 @@ function main(args)
         nreps = opts["repeats"] == "auto" ? REPEAT_PLAN(n) : parse(Int, opts["repeats"])
         wanted = [(d, "api", r) for d in active for r in 1:nreps]
         do_stages && append!(wanted, [(d, "stages", 1) for d in active])
-        if all(w -> (n, w[1], w[2], w[3]) in done, wanted)
+        if all(w -> (n, w[1], nthreads, w[2], w[3]) in done, wanted)
             @info "skip $(n)^3 — already in $(csv)"
             continue
         end
@@ -641,9 +664,10 @@ function main(args)
             base = Dict{String,Any}(
                 "run_id" => run_id, "timestamp" => string(now()), "git_sha" => sha,
                 "n" => n, "nvoxels" => n^3, "device" => dev,
+                "threads" => Threads.nthreads(),
             )
             for rep in 1:nreps
-                (n, dev, "api", rep) in done && continue
+                (n, dev, nthreads, "api", rep) in done && continue
                 @info "n=$(n) dev=$(dev) pass=api rep=$(rep)/$(nreps)"
                 st = run_api_pass!(csv, merge(base, Dict{String,Any}("rep" => rep)), img; gpu=gpu)
                 GC.gc(true)
@@ -653,7 +677,7 @@ function main(args)
                     break
                 end
             end
-            if do_stages && !((n, dev, "stages", 1) in done)
+            if do_stages && !((n, dev, nthreads, "stages", 1) in done)
                 @info "n=$(n) dev=$(dev) pass=stages"
                 run_stages_pass!(csv, merge(base, Dict{String,Any}("rep" => 1)), img; gpu=gpu)
                 GC.gc(true)
