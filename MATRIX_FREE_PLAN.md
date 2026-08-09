@@ -4,15 +4,39 @@ Design notes for replacing the assembled sparse Laplacian with a matrix-free ope
 
 ## Motivation: the measured failure
 
-An 800³ image exhausts a 23.89 GiB GPU during problem construction. Reproduced with `Imaginator.blobs(shape=(800,800,800), porosity=0.5, blobiness=1.0, seed=42)`, `axis=:x`, `gpu=true`, on an RTX PRO 5000 Blackwell.
+> ## ⚠ REFRESHED 2026-08-08 — the evidence below is superseded
+>
+> **The assembled-path optimization campaign (`MATRIX_PATH_PLAN.md`) has landed, and the premise of this document has changed.** The original motivating measurements are kept below for the historical record, struck through where they no longer hold. **Read this box before quoting any number from this file.**
+>
+> | N | peak device memory: as-measured 2026-08-08 (was) | outcome |
+> | --- | --- | --- |
+> | 200³ | **1.718 GiB** (was 3.25) | solves |
+> | 400³ | **4.156 GiB** (was 13.78) | solves |
+> | 600³ | **10.750 GiB** (never previously completed) | solves, e2e 71.8 s |
+> | 800³ | **21.637 GiB of 23.89** (was OOM) | **solves, e2e 207.8 s, τ 1.884** |
+>
+> **The 800³ OOM no longer reproduces.** Setup at 800³ went from 384 s (and, in the originally reported session, a throw) to **0.39 s**. `dropzeros!` is off the steady path entirely — boundary conditions are now applied *during* assembly (`src/assembly.jl`), so the temporaries that used to throw are never allocated.
+>
+> **What this does to the case for matrix-free:**
+>
+> - **Bytes per pore voxel: ~198 → ~85** (21.637 GiB peak less the 1.375 GiB CUDA context, over 254.6 M pore voxels). The matrix-free target of ~29 B/voxel is now a **~2.9× improvement, not ~6.8×**. Still a large win, but it must be argued on the new baseline.
+> - **"Setup cost collapses" is no longer a selling point.** Assembled setup at 800³ is 0.39 s — matrix-free cannot meaningfully beat that. Delete this from the case.
+> - **The ceiling claim needs restating.** This document said the assembled path caps out "around 700³"; it now completes 800³ with 2.25 GiB of headroom. The assembled-CSC floor of ~55 B/pore-voxel still caps it near 850³, so matrix-free's move to ~1200³ stands — but it is a jump from 850³, not from 700³.
+> - **The real remaining case for matrix-free is unchanged and still strong**: the ~55 B/voxel assembled floor is structural, and only deleting `rowval`+`nzval` gets past it.
+> - **The solve, not assembly, is now the bottleneck** — 99.0–99.8 % of end-to-end at 600–800³ (800³: setup 0.39 s, solve 205.7 s). Matrix-free changes SpMV bandwidth per iteration, so its speed case should be made on *per-iteration cost*, which is now where all the time is.
+> - Several code shapes this document anticipated needing **already exist**: fused assembly, inline edge weights, and BCs applied during assembly all landed in `src/assembly.jl`. The "an edge contributes only when both endpoints are non-BC" rule described below is implemented there and is bit-identical to the old pipeline across ~30 verified image configurations.
+
+~~An 800³ image exhausts a 23.89 GiB GPU during problem construction.~~ Reproduced with `Imaginator.blobs(shape=(800,800,800), porosity=0.5, blobiness=1.0, seed=42)`, `axis=:x`, `gpu=true`, on an RTX PRO 5000 Blackwell.
+
+*Historical — superseded by the table above:*
 
 | N | pore voxels | edges | peak device memory | outcome |
 | --- | --- | --- | --- | --- |
-| 200³ | 4.01 M | 22.8 M | 3.25 GiB | solves |
-| 400³ | 31.9 M | 186 M | 13.78 GiB | solves |
-| 800³ | 254.6 M | 1.503 B | 23.89 GiB (100 %) | `CUDA.OutOfGPUMemoryError` |
+| 200³ | 4.01 M | 22.8 M | ~~3.25 GiB~~ | solves |
+| 400³ | 31.9 M | 186 M | ~~13.78 GiB~~ | solves |
+| 800³ | 254.6 M | 1.503 B | ~~23.89 GiB (100 %)~~ | ~~`CUDA.OutOfGPUMemoryError`~~ |
 
-The throw site is `dropzeros!` (`src/kernels/sparse.jl:252`) called from `apply_dirichlet_bc_fast!` (`src/pdetools.jl:90`), requesting 6.548 GiB. CUDA reported 40.46 GiB of pool reserved against a 23.89 GiB device, meaning stages 2–4 only "succeeded" by spilling into host memory over PCIe.
+~~The throw site is `dropzeros!` (`src/kernels/sparse.jl:252`) called from `apply_dirichlet_bc_fast!` (`src/pdetools.jl:90`), requesting 6.548 GiB.~~ CUDA reported 40.46 GiB of pool reserved against a 23.89 GiB device, meaning stages 2–4 only "succeeded" by spilling into host memory over PCIe — **and that fragmentation is now believed to be why the OOM was seen at all**, since a clean session completes the same construction. `apply_dirichlet_bc_fast!` no longer has any production caller.
 
 Where the memory goes at 800³ (`nnodes` = 254.6 M, `nedges` = 1.503 B, `nnz_L` = 1.758 B):
 
@@ -69,13 +93,13 @@ At 800³ with uniform `D`:
 | `bc_mask` (`Bool`, `nnodes`) | 0.24 GiB |
 | **total** | **~6.9 GiB** |
 
-That is ~29 bytes per pore voxel against the current ~198, and it moves the ceiling on a 24 GiB card from roughly 700³ to roughly **1200³**.
+That is ~29 bytes per pore voxel against the current **~85** (~~198~~ — see the refresh box at the top; the assembled path was optimized on 2026-08-08 and now peaks at 21.637 GiB at 800³, of which 1.375 GiB is CUDA context). It moves the ceiling on a 24 GiB card from roughly **850³** (~~700³~~ — the assembled path now completes 800³ with 2.25 GiB of headroom, and its structural ~55 B/pore-voxel CSC floor is what caps it near 850³) to roughly **1200³**.
 
 ## Secondary benefits
 
 **Less SpMV memory traffic, and no atomics on the portable path.** Note that on CUDA `mul!` is already overridden to call CUSPARSE (`ext/TortuosityCUDAExt.jl:63`), so the atomic KA kernel `_spmv_kernel!` (`src/sparse_type.jl:100`) is *not* the CUDA hot path — that kernel, which performs `Atomix.@atomic y[r] += v` for every nonzero (1.758 B atomic adds per SpMV at 800³), is what Metal, AMDGPU, and CPU use. Matrix-free removes those atomics entirely on those backends. On CUDA the win is bandwidth: assembled SpMV reads `rowval` + `nzval` + gathered `x` at ~12 bytes per nonzero (~83 bytes per row at 6.9 nnz/row), while matrix-free reads six `idx` lookups plus six gathered `x` values (~48 bytes per row), and it skips any CSC-to-CSR handling inside CUSPARSE. Treat the CUDA speedup as "expected but must be measured", not assumed.
 
-**Setup cost collapses.** No `findall`, no histogram pass, no exclusive scan, no COO scatter, no separate Laplacian assembly, no `dropzeros!`. Construction reduces to a single prefix sum building `idx`.
+~~**Setup cost collapses.** No `findall`, no histogram pass, no exclusive scan, no COO scatter, no separate Laplacian assembly, no `dropzeros!`. Construction reduces to a single prefix sum building `idx`.~~ **RETIRED as a benefit.** The assembled path already did all of this on 2026-08-08: `findall`, the histogram pass, the COO scatter, the separate Laplacian assembly and `dropzeros!` are all gone from the steady path, and construction at 800³ takes **0.39 s**. Matrix-free cannot meaningfully improve on that. Do not carry this argument forward.
 
 **The `Int32` ceiling moves out of the way.** Index overflow risk currently lives on `nedges`/`nnz`, which are ~5.9× `nnodes` (measured 5.90 edges per pore voxel at ε = 0.5). Deleting the edge list makes `nnodes` the largest index, moving the `Int32` wall from ~900³ to ~1600³ — past the ~1200³ memory wall. Memory becomes the binding constraint again, which makes deferring the `Int32` work a deliberate choice rather than a gamble. It still needs fixing eventually.
 

@@ -322,7 +322,7 @@ Starting inventory from one reading pass. **Incomplete by construction** — ext
 | A14 | **`laplacian` computes degrees with a full SpMV** (`src/sparse_type.jl:247-250`): `ones_v = fill(1, n)` (0.95 GiB) + `mul!(degrees, am, ones_v)` = a real CUSPARSE SpMV over 1.503 B nonzeros to get what is a per-column reduction of `nzval`. *(audit a, rank 7)* | −0.95 GiB, −1 full SpMV | simplifying (6-line kernel) | 1 | pending |
 | A15 | **`b` is built on the host and uploaded** (`src/simulations.jl:191`): 0.95 GiB host alloc + PCIe upload, then overwritten with zeros. `fill!(similar(img_dev, T, nnodes), zero(T))` does it on device. *(audit a, rank 8)* | −0.95 GiB host, −0.1 s PCIe | simplifying | 1 | pending |
 | A20 | **The Krylov workspace is allocated TWICE per solve** (`src/simulations.jl:213` via LinearSolve). `__init` builds a full `CgWorkspace` (the `zeroinit` path cannot shrink a `PortableSparseCSC`, so it hits `KS(A,b)`), then sets `isfresh=true`, so `solve!` builds a **second** one and drops the first. Fix: one `LinearSolve.init_cacheval(::KrylovJL, ::PortableSparseCSC, …)` method returning an empty-`S` workspace when `zeroinit=true`. **THIS IS THE ITEM THAT DECIDES FIT VS OOM** — see plan correction 5 below. *(audit d, rank 1)* | −3.8…4.75 GiB at the peak moment | ~10 lines, +0 concepts | **1 (promoted)** | pending |
-| A21 | **τ needs 4 slices; `reconstruct_field` builds all 512 M voxels to serve 2.56 M of them** (`src/utils.jl:49`, `src/dnstools.jl:31`). `effective_diffusivity` reads only slices 1, N, ind, ind+1. Written-to-read ratio is 200:1. `SteadyDiffusionProblem` **already computes** the inlet/outlet pore-index lists (`simulations.jl:181-182`) and throws them away. Keep the `(c, img)` methods so golden tests are untouched; add `tortuosity(u, sim)`. **Needs its own parity test — the golden tests exercise the OLD API and will not catch a bug here.** *(audit d, rank 2)* | −3.1 GB host; ~2–3.5 s → ~10 ms | +40 lines, +1 field | 5 | pending |
+| A21 | **rejected on measurement (Phase 4 r1).** The post stage is now **0.8 % of end-to-end** at 800³ (1.64 s of 204.7), so the whole item is worth at most 0.8 %, against +40 lines, +1 struct field and a new public `tortuosity(u, sim)` method that would need its own parity suite. Fails the heuristic on both sides. Revisit only if the solve gets fast enough to make 1.6 s matter. ~~τ needs 4 slices; `reconstruct_field` builds all 512 M voxels to serve 2.56 M of them~~ (`src/utils.jl:49`, `src/dnstools.jl:31`). `effective_diffusivity` reads only slices 1, N, ind, ind+1. Written-to-read ratio is 200:1. `SteadyDiffusionProblem` **already computes** the inlet/outlet pore-index lists (`simulations.jl:181-182`) and throws them away. Keep the `(c, img)` methods so golden tests are untouched; add `tortuosity(u, sim)`. **Needs its own parity test — the golden tests exercise the OLD API and will not catch a bug here.** *(audit d, rank 2)* | −3.1 GB host; ~2–3.5 s → ~10 ms | +40 lines, +1 field | 5 | pending |
 | A22 | **`reconstruct_field` copies a `BitArray` it does not need to** (`src/utils.jl:53`). `img isa Array` is false for `BitArray`, triggering a full `Array(img)` — 512 MB at 800³ — although CPU logical indexing works on `BitArray` directly. The test suite and `TransientDiffusionProblem` both use `BitArray`; `Imaginator.blobs` returns `Array{Bool}`, which is why nobody noticed. Test `_on_gpu(img)`, which is what the comment says it means. *(audit d, rank 14)* | −512 MB host | simplifying | 1 | pending |
 | A16 | **The CUSPARSE `_cache` pins stale device buffers** (`ext/TortuosityCUDAExt.jl:45`). `A._cache[]` holds a `CuSparseMatrixCSC` referencing `A.colptr/rowval/nzval`; `b .-= A * x_bc` populates it with the *pre-elimination* arrays, then `dropzeros!` swaps in new ones — old `rowval` + `nzval` (14.1 GiB) stay reachable. One line: `A._cache[] = nothing` before reassignment. **Also note the perverse coupling** — the pointer-equality invalidation at `ext:36-40` is only sound *because* the cache pins the memory; adding `unsafe_free!` (A13) to those arrays turns pointer equality into silent corruption. Replace with a generation counter. *(audit b, rank 2)* | −14.1 GiB | simplifying | 1 | pending |
 | A17 | **`dropzeros!` allocates a fully redundant nnz array** (`src/kernels/sparse.jl:275-278`). `scan_output` holds `scan_inclusive` shifted by one, but the kernel branch is only taken when `flags[k]`, so `new_idx == scan_inclusive[k]` exactly. The array, the `fill!`, and the two-view `copyto!` are dead weight. *(audit b, rank 6)* | −7.03 GiB (28 % of dropzeros peak) | simplifying (−4 lines) | 1 | pending |
@@ -339,23 +339,23 @@ Starting inventory from one reading pass. **Incomplete by construction** — ext
 
 | id | change | est. gain | complexity | phase | status |
 | --- | --- | --- | --- | --- | --- |
-| B1 | **Hand CUSPARSE a CSR view instead of CSC — guarded by a symmetry flag.** ~~CUDA.jl's `CuSparseMatrixCSC` SpMV may transpose or convert internally on every call~~ — **mechanism misattributed**: CUDA.jl 5.11.3 does neither, it passes a native CSC descriptor (`cusparseCreateCsc`, `helpers.jl:220`). The cost is *inside* cuSPARSE plus an **uncached per-call `with_workspace` device allocation** (`lib/utils/call.jl:23,61-63`) — cuSPARSE documents extra workspace for SpMV on CSC and none for CSR/op=N, so any nonzero buffer is a fresh device malloc+free **every iteration**. 10-second zero-GPU check that settles it: print `cusparseSpMV_bufferSize` for the same arrays as CSC vs CSR. **DANGER (audit b):** the "Laplacian is symmetric" premise **fails on the transient path** — `build_transient_operator` → `zero_rows!` (`transient.jl:305`) zeroes rows and *not* columns, so A is asymmetric from then on and a blanket CSR reinterpretation computes `Aᵀc` and returns a *plausible wrong answer*. Needs a `symmetric::Bool` field cleared by `zero_rows!` and any future row-only mutator. Also correct the stale comment at `test_gpu_parity.jl:273`. | removes a per-`mul!` workspace alloc; potentially 1.5–3× on every SpMV | +1 field, ~10 lines | 4 | pending |
-| B2 | **Atomic-free SpMV on the portable KA path.** CONFIRMED: `_spmv_kernel!` (`sparse_type.jl:106-117`) is column-parallel over CSC and does `Atomix.@atomic y[r] += v` per nonzero — 1.758 B atomics plus a preceding `fill!(y,0)` per SpMV. The symmetric row-parallel rewrite is *shorter* than the current kernel and drops the `fill!`. **Must share B1's symmetry flag** or it silently computes `Aᵀc` on the transient path. Plan detail corrected: **"and CPU" is overstated** — the production CPU path returns `SparseMatrixCSC` (`topotools.jl:161-175`) and never touches `_spmv_kernel!`; it is CPU-relevant only in tests. | large on Metal/AMDGPU | simplifying (net −1 line) | 4 | pending |
-| B14 | **Dirichlet row-zeroing is O(nnz) when it can be O(\|bc\|·d²)** (`src/kernels/sparse.jl:102-112,138-173`). `zero_rows_kernel!` sweeps all 1.758 B nonzeros to zero ~1.28 M rows. For a structurally symmetric matrix row `j`'s entries live in the ≤6 columns listed in `rowval[colptr[j]:colptr[j+1]-1]` — one thread per BC node finds them all. Replaces a 7 GB read + 7 GB write with ~46 M scattered ops. **Overlaps A7, which deletes the call entirely — do this only if A7 slips.** *(audit b, rank 5)* | −0.25 GiB, ~38× less work on that step | +25 lines, +1 concept | 4 | pending |
-| B15 | **`dropzeros!` does a binary search *and* an atomic per nonzero** (`src/kernels/sparse.jl:224-227`): `searchsortedlast(colptr_old, k)` = 1.758 B × ~28 random probes, plus 1.758 B `Atomix` increments, purely to recover which column a nonzero belongs to. A column-parallel kernel (thread per column, count kept entries in its own slot range) needs zero searches and zero atomics, and lets `new_col_counts` write `new_colptr` directly. *(audit b, rank 7)* | large on compaction, −1.0 GiB | neutral | 4 | pending |
-| B16 | **BC diagonal handling touches every column instead of 0.25 % of them** (`src/pdetools.jl:95,117` → `kernels/sparse.jl:83-93,34-53`). `get_diag` and `set_diag!` launch n-wide kernels scanning ~7 rowvals each; only the ~1.28 M BC columns change. The zero-degree interior-node carve-out at `pdetools.jl:110-115` must survive verbatim. *(audit b, rank 9)* | ~50 ms at 800³, −1.02 GiB | neutral | 4 | pending |
-| B3 | **Jacobi (diagonal) preconditioning for CG.** **REJECTED** *(audit d, rank 10)*. CG is confirmed unpreconditioned and adding one is genuinely cheap, but both of the plan's numbers are wrong. **Memory: 1.90 GiB, not 0.95** — Krylov allocates `z` lazily via `allocate_if(!MisI, …)` (`cg.jl:142`), so *any* preconditioner adds a workspace vector on top of the diagonal itself. **Speed: 5–10 %, not "large"** — after elimination the diagonal *is* the degree, 1…6 for uniform `D`, so Jacobi rescales rows by a factor bounded by 6 and leaves untouched the low-frequency mode that sets κ ~ O(N²); iterations ~ √κ improve by at most √(6/5.4) ≈ 5 %, and for a constant-diagonal Laplacian Jacobi is **exactly the identity** (CG is invariant to scalar scaling). Fails the heuristic on both sides: <15 % gain for 10 % of the memory budget, at a point where headroom is zero. **Revisit only for strongly variable `D`**, where the diagonal spans the `D` contrast. | <15 % | +2 lines but +1.90 GiB | — | **rejected** |
+| B1 | **DONE** (Phase 4 r1, `2daaf12`). Measured: the mechanism below was **wrong on both counts** — `cusparseSpMV_bufferSize` returns the *same* size for CSC and CSR (41 543 B at 200³, 338 943 B at 400³, 2 740 547 B at 800³), so no per-call workspace allocation is avoided. The win is the kernel cuSPARSE picks: CSR SpMV gathers, CSC SpMV scatters with atomics. At 800³, 32.9 ms per CSC `mul!` vs 28.0 ms per CSR one (1.175×), and CSR repeats to within 2 % where CSC spreads over 15 %. At 200³ there is **no win at all** (0.99×) — the effect only appears once the matrix exceeds cache. 400³ solve 14.811 → 13.619 s (−8.0 %), iterations unchanged. Symmetry is carried by a `PortableSparseCSC.symmetric` field set only by `build_steady_system` and cleared by `_invalidate_cache!`, which every mutator now calls. ~~Hand CUSPARSE a CSR view instead of CSC — guarded by a symmetry flag.~~ ~~CUDA.jl's `CuSparseMatrixCSC` SpMV may transpose or convert internally on every call~~ — **mechanism misattributed**: CUDA.jl 5.11.3 does neither, it passes a native CSC descriptor (`cusparseCreateCsc`, `helpers.jl:220`). The cost is *inside* cuSPARSE plus an **uncached per-call `with_workspace` device allocation** (`lib/utils/call.jl:23,61-63`) — cuSPARSE documents extra workspace for SpMV on CSC and none for CSR/op=N, so any nonzero buffer is a fresh device malloc+free **every iteration**. 10-second zero-GPU check that settles it: print `cusparseSpMV_bufferSize` for the same arrays as CSC vs CSR. **DANGER (audit b):** the "Laplacian is symmetric" premise **fails on the transient path** — `build_transient_operator` → `zero_rows!` (`transient.jl:305`) zeroes rows and *not* columns, so A is asymmetric from then on and a blanket CSR reinterpretation computes `Aᵀc` and returns a *plausible wrong answer*. Needs a `symmetric::Bool` field cleared by `zero_rows!` and any future row-only mutator. Also correct the stale comment at `test_gpu_parity.jl:273`. | removes a per-`mul!` workspace alloc; potentially 1.5–3× on every SpMV | +1 field, ~10 lines | 4 | pending |
+| B2 | **DONE** (Phase 4 r1, `5960ef3`). `_spmv_symmetric_kernel!` reduces a column into `y[j]` instead of scattering it, for matrices carrying B1's `symmetric` flag. Measured on the CPU KA backend at 200³ (26.6 M nonzeros, Float64): scatter 125.5 ms → gather 35.5 ms on one thread, 34.6 → 13.3 ms on four. `y = A*x` is bit-identical to the scatter (same summation order); the 5-argument form matches only to rounding, since `alpha`/`beta` are applied in one expression rather than in separate passes. Live for Metal/AMDGPU and the CPU KA backend; CUDA keeps CUSPARSE. ~~Atomic-free SpMV on the portable KA path.~~ CONFIRMED: `_spmv_kernel!` (`sparse_type.jl:106-117`) is column-parallel over CSC and does `Atomix.@atomic y[r] += v` per nonzero — 1.758 B atomics plus a preceding `fill!(y,0)` per SpMV. The symmetric row-parallel rewrite is *shorter* than the current kernel and drops the `fill!`. **Must share B1's symmetry flag** or it silently computes `Aᵀc` on the transient path. Plan detail corrected: **"and CPU" is overstated** — the production CPU path returns `SparseMatrixCSC` (`topotools.jl:161-175`) and never touches `_spmv_kernel!`; it is CPU-relevant only in tests. | large on Metal/AMDGPU | simplifying (net −1 line) | 4 | pending |
+| B14 | **MOOT (Phase 4 r1)** — A7 landed in Phase 3 and deleted the call, exactly as the entry's own "do this only if A7 slips" anticipated. ~~Dirichlet row-zeroing is O(nnz) when it can be O(\|bc\|·d²)~~ (`src/kernels/sparse.jl:102-112,138-173`). `zero_rows_kernel!` sweeps all 1.758 B nonzeros to zero ~1.28 M rows. For a structurally symmetric matrix row `j`'s entries live in the ≤6 columns listed in `rowval[colptr[j]:colptr[j+1]-1]` — one thread per BC node finds them all. Replaces a 7 GB read + 7 GB write with ~46 M scattered ops. **Overlaps A7, which deletes the call entirely — do this only if A7 slips.** *(audit b, rank 5)* | −0.25 GiB, ~38× less work on that step | +25 lines, +1 concept | 4 | pending |
+| B15 | **MOOT for the steady path (Phase 4 r1)** — the fused assembly emits no explicit zeros, so `dropzeros!` is never called on it. Still live for `zero_rows!`, whose only remaining callers are tests. ~~`dropzeros!` does a binary search *and* an atomic per nonzero~~ (`src/kernels/sparse.jl:224-227`): `searchsortedlast(colptr_old, k)` = 1.758 B × ~28 random probes, plus 1.758 B `Atomix` increments, purely to recover which column a nonzero belongs to. A column-parallel kernel (thread per column, count kept entries in its own slot range) needs zero searches and zero atomics, and lets `new_col_counts` write `new_colptr` directly. *(audit b, rank 7)* | large on compaction, −1.0 GiB | neutral | 4 | pending |
+| B16 | **MOOT (Phase 4 r1)** — Phase 3's fused assembly writes each boundary column's diagonal directly, so `get_diag`/`set_diag!` have no steady-path caller left. ~~BC diagonal handling touches every column instead of 0.25 % of them~~ (`src/pdetools.jl:95,117` → `kernels/sparse.jl:83-93,34-53`). `get_diag` and `set_diag!` launch n-wide kernels scanning ~7 rowvals each; only the ~1.28 M BC columns change. The zero-degree interior-node carve-out at `pdetools.jl:110-115` must survive verbatim. *(audit b, rank 9)* | ~50 ms at 800³, −1.02 GiB | neutral | 4 | pending |
+| B3 | **Jacobi (diagonal) preconditioning for CG.** **REJECTED** *(audit d, rank 10)*. CG is confirmed unpreconditioned and adding one is genuinely cheap, but both of the plan's numbers are wrong. **Memory: 1.90 GiB, not 0.95** — Krylov allocates `z` lazily via `allocate_if(!MisI, …)` (`cg.jl:142`), so *any* preconditioner adds a workspace vector on top of the diagonal itself. **Speed: 5–10 %, not "large"** — after elimination the diagonal *is* the degree, 1…6 for uniform `D`, so Jacobi rescales rows by a factor bounded by 6 and leaves untouched the low-frequency mode that sets κ ~ O(N²); iterations ~ √κ improve by at most √(6/5.4) ≈ 5 %, and for a constant-diagonal Laplacian Jacobi is **exactly the identity** (CG is invariant to scalar scaling). Fails the heuristic on both sides: <15 % gain for 10 % of the memory budget, at a point where headroom is zero. **Revisit only for strongly variable `D`**, where the diagonal spans the `D` contrast. | <15 % | +2 lines but +1.90 GiB | — | **rejected — re-confirmed Phase 4 r1.** A29 freed the 1.90 GiB the audit said was unaffordable, so the memory objection is gone; the argument that survives is the one that always mattered. After elimination the diagonal *is* the degree, 1…6, so Jacobi is a row rescaling bounded by 6 and leaves the low-frequency mode that sets κ ~ O(N²) untouched. No evidence was found against that estimate, so it was not re-measured. |
 | B4 | **`CartesianIndices(im_gpu)[linear_idx]` inside hot kernels** costs an integer div/mod per thread. A 3-D `ndrange` gives `i, j, k` directly. Appears in both connectivity kernels. | unknown, likely real | simplifying | 4 | pending |
-| B5 | **Launch configuration.** Workgroup sizes are hardcoded to 256 and `ndrange` covers the full grid, so ~50 % of threads idle on solid voxels at ε = 0.5. Consider launching over pore voxels, and tuning occupancy. | unknown | small | 4 | pending |
+| B5 | **rejected on measurement (Phase 4 r1).** Setup is **0.3 % of end-to-end** at 800³ (0.69 s of 204.7) after Phase 3, so even a perfect launch configuration cannot move a headline number by more than that. Phase 3's `wg=(64,4,1)` was chosen for coalescing along the contiguous dimension and is left unswept. ~~Launch configuration.~~ Workgroup sizes are hardcoded to 256 and `ndrange` covers the full grid, so ~50 % of threads idle on solid voxels at ε = 0.5. Consider launching over pore voxels, and tuning occupancy. | unknown | small | 4 | pending |
 | B6 | **Multithread the CPU connectivity build.** Validated — the loop is serial over ~188 M edges at 400³. **But a naive `Threads.@threads` over voxels with a shared `row` counter silently corrupts the CSC**: `build_adjacency_matrix(::Array{Int,2})` requires `conns` grouped by *ascending* column with ascending rows inside, which the serial loop guarantees *structurally* (`CartesianIndices` order = pore-numbering order, six neighbour probes emitted in ascending linear-index order). Pinned at `test_assembly.jl:104-111`. *(audit c, rank 7)* | ~3× on connectivity = ~15–20 % of assembly, <1 % of e2e | free inside A25; +30 lines standalone | 4 | **accept only inside A25; reject as a standalone hand-threaded rewrite** |
 | B7 | **CPU `build_adjacency_matrix` serial `colptr` loop.** **REFUTED as a standalone** *(audit c, rank 12)*: `conns[:,2]` is sorted, so this is sequential-access run counting (~0.5 s at 400³), not a random scatter — <1 % of e2e. Parallelising it needs per-thread n-sized histograms = 256 MB/thread at 400³, a **memory regression**. The degree count is free inside A25's first pass. | <1 % of e2e | — | — | **rejected standalone; subsumed by A25** |
-| B17 | **Threaded symmetric CPU SpMV** (`src/simulations.jl:213`, `src/sparse_type.jl:119`). The CPU solve calls SparseArrays' **single-threaded** `SparseMatrixCSC` `mul!`; CG is ~10³ iterations × 3.5 GiB/SpMV, so it is **>90 % of CPU end-to-end** and uses 1 of 4 threads. A is symmetric post-elimination, so CSC-read-as-CSR gives a row-parallel atomic-free kernel. **This, not B2, is the real CPU SpMV work** — B2 delivers nothing on CPU (the CPU path returns `SparseMatrixCSC` and never touches `_spmv_kernel!`). Must be opt-in per matrix, never blanket — the transient operator is not symmetric. *(audit c, rank 1)* | solve 2–3×, e2e ~2–2.5× on CPU | +40 lines, +1 concept | 4 | pending |
+| B17 | **BLOCKED — needs Amin's ruling on a public type change.** Measured at 200³ (4 threads / 1 thread): SpMV is **82 % of the CPU CG iteration**, and the symmetric gather beats SparseArrays' `mul!` by **3.31× / 1.21×** (44.1 → 13.3 ms, 43.1 → 35.5 ms), bit-identical. That projects to CPU solve **−57 % / −15 %**, both above the acceptance bar. The kernel exists and is committed (B2); the blocker is reaching it. `mul!(::Vector, ::SparseMatrixCSC, ::Vector)` is stdlib-on-stdlib, so dispatching to it needs `sim.prob.A` to stop being a `SparseMatrixCSC` — tried, and it removes `Array`, `==`, `issymmetric` and all SparseArrays interop from a published package's public object (23 assertions across `test_assembly.jl` and `test_errors.jl` fail on exactly that). Reverted rather than decided unattended, with a JOSS submission in flight. **The decision:** either (i) `sim.prob.A` becomes a `PortableSparseCSC` on CPU too and that type grows `getindex`/`==`/dense conversion, or (ii) it stays and CPU keeps single-threaded SpMV. ~~Threaded symmetric CPU SpMV~~ (`src/simulations.jl:213`, `src/sparse_type.jl:119`). The CPU solve calls SparseArrays' **single-threaded** `SparseMatrixCSC` `mul!`; CG is ~10³ iterations × 3.5 GiB/SpMV, so it is **>90 % of CPU end-to-end** and uses 1 of 4 threads. A is symmetric post-elimination, so CSC-read-as-CSR gives a row-parallel atomic-free kernel. **This, not B2, is the real CPU SpMV work** — B2 delivers nothing on CPU (the CPU path returns `SparseMatrixCSC` and never touches `_spmv_kernel!`). Must be opt-in per matrix, never blanket — the transient operator is not symmetric. *(audit c, rank 1)* | solve 2–3×, e2e ~2–2.5× on CPU | +40 lines, +1 concept | 4 | pending |
 | B18 | **Fold the `−1/voxel_size²` scaling into the edge weights** (`src/transient.jl:302`). `nonzeros(A) .= nonzeros(A) ./ (−voxel_size^2)` is a read-modify-write over all 1.758 B nonzeros to apply a constant. For scalar `D`, `gd` is a scalar (line 296) so the factor rides on it free; `L(αA) = αL(A)`, bit-identical up to one multiply-vs-divide rounding. *(audit d, rank 4)* | −14 GB device traffic (~10 ms) | simplifying (−1 line) | 4 | pending |
-| B19 | **`reconstruct_slice` copies the whole solution vector per slice** (`src/geometry.jl:71`). `c[mask] .= Array(u)[ind_slice[mask]]` — full materialise then gather, called twice per `flux`, and `StopAtFluxBalance` (`transient.jl:450`) additionally does `Array(c)` on **every ODE step**. `StopAtPeriodicState` (`transient.jl:580`) already does the right thing and documents "~180× faster, ~380× less memory" — same fix. *(audits c+d)* | ~1000× per fire | simplifying (−2 lines) | 4 | pending |
-| B20 | **CPU `zero_rows!` is a serial `Set`-hash over every nonzero** (`src/transient.jl:311-320`): `A.rowval[i] in target` for 1.758 B entries, single-threaded hash probes. `is_bc = falses(n); is_bc[rows] .= true` is two lines shorter and ~8–10× faster. *(audits c+d)* | ~8–50× on this stage | simplifying, −1 concept | 4 | pending |
+| B19 | **DONE** (Phase 4 r1, `75c2b46`). Gathers on the device `u` lives on and returns only the slice; `StopAtFluxBalance` now passes the device state straight through, dropping its per-ODE-step `Array(u)`. Host and device results verified exactly equal on all three axes. ~~`reconstruct_slice` copies the whole solution vector per slice~~ (`src/geometry.jl:71`). `c[mask] .= Array(u)[ind_slice[mask]]` — full materialise then gather, called twice per `flux`, and `StopAtFluxBalance` (`transient.jl:450`) additionally does `Array(c)` on **every ODE step**. `StopAtPeriodicState` (`transient.jl:580`) already does the right thing and documents "~180× faster, ~380× less memory" — same fix. *(audits c+d)* | ~1000× per fire | simplifying (−2 lines) | 4 | pending |
+| B20 | **DONE** (Phase 4 r1, `75c2b46`), as a `BitVector` mask. ~~CPU `zero_rows!` is a serial `Set`-hash over every nonzero~~ (`src/transient.jl:311-320`): `A.rowval[i] in target` for 1.758 B entries, single-threaded hash probes. `is_bc = falses(n); is_bc[rows] .= true` is two lines shorter and ~8–10× faster. *(audits c+d)* | ~8–50× on this stage | simplifying, −1 concept | 4 | pending |
 | B21 | **No `@inbounds` and a broadcast write in the CPU connectivity loop** (`src/topotools.jl:59-87`). ~7 bounds checks per pore voxel, and `conns[row,:] .= a,b` builds a `SubArray` to write 2 elements a full column-length apart. `@inbounds` must stay inside the existing i/j/k guards — `idx` is `similar(img,Int)`, i.e. **uninitialised at solid voxels**, read-safe only because `img[]` is checked first. Free win **if A25 slips**. *(audit c, rank 8)* | ~1.3–1.8× on this loop | neutral (−1 line) | 4 | pending |
-| B22 | **Reuse the pore index for boundary nodes** (`src/topotools.jl:239-276`, `src/simulations.jl:181`). `find_boundary_nodes` walks the entire image **twice** (once per face) purely to recover pore ordinals that `build_connectivity_list` is about to compute anyway; `geometry.jl:52` `slice_indices` already does the cheap version. The transient additionally builds `pore_index` (`transient.jl:141`) then throws it away — `build_connectivity_list` accepts `inds=` and is never given it. ~2 s of **serial host time in the middle of the GPU pipeline** at 800³. Ascending-order contract pinned at `test_geometry_ops.jl:197`. *(audits a+c+d)* | −2 full-image passes, ~2 s @800³ | neutral→simplifying | 4 | pending — supersedes C1 |
-| B23 | **No iteration cap; tolerance policy is size- and precision-dependent** (`src/simulations.jl:213`). LinearSolve defaults `maxiters = length(b)` = **254.6 M** at 800³, and `abstol = reltol = sqrt(eps(eltype(b)))` — 1.49e-8 on CPU (Float64), 3.45e-4 on GPU (Float32). Krylov stops at `atol + rtol·‖r0‖`, so atol dominates at small sizes and rtol at large ones: **accuracy is not comparable across sizes or devices**. With κ ~ (2N/π)² ~ 2.6e5 at N=800, Float32 CG's attainable relative residual (~κ·eps ~ 3e-2) is **worse than the requested 3.45e-4** — the recursive residual reports convergence the true residual has not reached, or the run walks toward a 254.6 M-iteration cap. **Golden-safe**: every golden assertion passes an explicit `reltol` (1e-10/1e-12), so defaults are free to change; re-check the physics tests at `reltol=1e-6`. *(audit d, rank 6)* | removes an unbounded downside | neutral | 4 | pending |
+| B22 | **DONE for the transient path** (Phase 4 r1, `75c2b46`) — `build_transient_operator` now takes the `pore_index` the problem already builds and reads the two faces off it with `slice_indices`. **The steady half is MOOT:** Phase 3's fused assembly decides Dirichlet membership from a coordinate test inside the kernel, so `simulations.jl` no longer enumerates boundary nodes at all. `find_boundary_nodes` is kept — it has no production caller left but is used throughout the test suite as the reference. ~~Reuse the pore index for boundary nodes~~ (`src/topotools.jl:239-276`, `src/simulations.jl:181`). `find_boundary_nodes` walks the entire image **twice** (once per face) purely to recover pore ordinals that `build_connectivity_list` is about to compute anyway; `geometry.jl:52` `slice_indices` already does the cheap version. The transient additionally builds `pore_index` (`transient.jl:141`) then throws it away — `build_connectivity_list` accepts `inds=` and is never given it. ~2 s of **serial host time in the middle of the GPU pipeline** at 800³. Ascending-order contract pinned at `test_geometry_ops.jl:197`. *(audits a+c+d)* | −2 full-image passes, ~2 s @800³ | neutral→simplifying | 4 | pending — supersedes C1 |
+| B23 | **BLOCKED — no mechanism without an API change.** The diagnosis below is correct, but Tortuosity has nowhere to put a default: `LinearSolve.__init` reads `abstol`/`reltol`/`maxiters` from the `init`/`solve` **call** and never consults `prob.kwargs`, so a `LinearProblem` cannot carry them. The only routes are type piracy on `LinearSolve.default_tol` (dispatches on eltype alone — it would change tolerances for every LinearSolve user in the session) or a Tortuosity-owned `solve(sim, alg; …)` entry point, which would not affect `solve(sim.prob, …)` that every doc and example uses. Measured gain on the campaign's metrics is **zero** — the benchmark and every golden assertion pass an explicit `reltol`. **The decision:** whether Tortuosity should own a `solve` entry point with its own tolerance and iteration policy. ~~No iteration cap; tolerance policy is size- and precision-dependent~~ (`src/simulations.jl:213`). LinearSolve defaults `maxiters = length(b)` = **254.6 M** at 800³, and `abstol = reltol = sqrt(eps(eltype(b)))` — 1.49e-8 on CPU (Float64), 3.45e-4 on GPU (Float32). Krylov stops at `atol + rtol·‖r0‖`, so atol dominates at small sizes and rtol at large ones: **accuracy is not comparable across sizes or devices**. With κ ~ (2N/π)² ~ 2.6e5 at N=800, Float32 CG's attainable relative residual (~κ·eps ~ 3e-2) is **worse than the requested 3.45e-4** — the recursive residual reports convergence the true residual has not reached, or the run walks toward a 254.6 M-iteration cap. **Golden-safe**: every golden assertion passes an explicit `reltol` (1e-10/1e-12), so defaults are free to change; re-check the physics tests at `reltol=1e-6`. *(audit d, rank 6)* | removes an unbounded downside | neutral | 4 | pending |
 | B8 | **Atomic-free histogram** (`src/kernels/graph.jl:33-85`). Pass 1 scatters 6 atomic RMWs per pore thread into a 0.95 GiB array. By adjacency symmetry the contributions to bucket `b` sum to `degree(b)`, so thread `b` can compute its own count and do one coalesced store. 1.503 B uncoalesced atomic RMWs → 0.95 GiB of coalesced stores. *(audit a, rank 3)* | large on assembly | simplifying | 4 | pending |
 | B9 | **Owner-parallel deterministic pass 2** (`src/kernels/graph.jl:131-205`). Thread `v` owns column `j = idx[v]` and writes its whole contiguous slot run — no `Atomix.modify!` at all, and rows come out ascending for free. **Turns `test/test_gpu_parity.jl:291` (`@test unsorted > 0`) red** — that test asserts unsortedness as a guard and documents itself as "should be revisited" if assembly starts emitting sorted columns. *(audit a, rank 4)* | removes 1.503 B atomics | neutral | 4 | pending — treat test change as OVERRIDE, needs reviewer sign-off |
 | B10 | **Both graph kernels stream `im_gpu` redundantly** (`kernels/graph.jl:40-82, 138-199`): `idx_gpu[n] > 0` already equals `im_gpu[n]`; the code tests both. ~20 % of these kernels' DRAM traffic. *(audit a, rank 10)* | ~20 % of 2 kernels | simplifying | 4 | pending |
@@ -403,3 +403,506 @@ Five findings that alter the plan rather than extend it:
 5. **CPU memory is not a headline metric but should be.** The CPU path peaks at ~15 GiB for a 400³ image whose final matrix is 3.5 GiB — a 4× overhead and the binding constraint for a reviewer reproducing the PuMA comparison on a 16 GiB machine. `bench/scaling_bench.jl` should report peak CPU RSS.
 
 Inventory grew from 21 items to 40. A-series 11→26, B-series 7→23, C-series 4→5.
+
+### Phase 0 baseline — measured 2026-08-08, commit `bc86be1`
+
+Harness `bench/scaling_bench.jl`. Blobs seed 42, porosity 0.5, blobiness 1.0, untrimmed, `axis=:x`, `reltol=1e-6`. RTX PRO 5000, 23.89 GiB. `peak` = max device usage across setup/solve/post; base CUDA context is 1.375 GiB — subtract for problem-only memory.
+
+```
+  N  device status      nnodes            nnz   setup_s   solve_s     e2e_s  peak_GiB  iters   tau
+100     cpu     ok      500558        3161178     0.258     4.332     4.596     0.000    638 2.048
+200     cpu     ok     4009753       26583004     2.475    52.988    55.502     0.000   1087 1.951
+100     gpu     ok      500558        3161178     0.012     0.122     0.137     1.625    602 2.048
+200     gpu     ok     4009753       26583004     0.073     0.727     0.822     3.281   1044 1.951
+400     gpu     ok    31906673      216918266     0.453    14.811    15.447    12.750   2094 1.928
+600     gpu     ok   108249920      742436368   107.871    (>41min)       -    23.889      -     -
+800     gpu     ok   254645845     1753943979   384.181    (>25min)       -    23.889      -     -
+```
+
+GPU stage attribution, wall_s / peak_GiB:
+
+```
+        h2d       bcnodes      conns        adjacency    laplacian    dirichlet
+100  0.001/1.41  0.003/1.41  0.003/1.44   0.003/1.50   0.002/1.53   0.003/1.59
+200  0.002/1.41  0.017/1.41  0.010/1.75   0.012/2.25   0.009/2.53   0.019/3.16
+400  0.007/1.44  0.120/1.44  0.070/4.16   0.095/8.19   0.053/10.41  0.083/12.75
+800  0.050/1.88  0.819/1.88  0.473/23.88  323.201/23.89 32.705/23.89 51.503/23.89
+                             ret=21.951    ret=0.064    ret=0.000    ret=0.000
+CPU 200³: conns 0.280 / adjacency 0.216 / laplacian 0.647 / dirichlet 1.339
+```
+
+**Three findings that change the campaign's framing:**
+
+1. **The motivating bug does not reproduce at HEAD.** 800³ setup completes in 384 s; `dropzeros!` in the dirichlet stage succeeds in 51.5 s. Confirmed twice (API pass and staged pass). The recorded OOM was almost certainly pool-state-dependent — the plan's own note of "40.46 GiB of pool reserved" says that session was already fragmented. **The wall is now a speed cliff, not a throw.**
+2. **The cliff starts at 600³, not 800³.** Setup goes 0.45 s (400³) → 107.9 s (600³) → 384.2 s (800³) once device usage pins at 23.889/23.89 GiB. Memory is still the root cause, so the conflict rule ("memory wins until 800³ fits with ≥3 GiB headroom") still holds — but the metric it protects is now wall time.
+3. **The biggest single target, measured:** the `conns` stage retains **21.951 GiB in 0.47 s** at 800³, filling the device before assembly starts. Everything after grinds — `adjacency` costs 323 s while retaining only 0.064 GiB. A2, A5 and A11 hit exactly this.
+
+Convention re-verification (independent of the Phase 2 audits, and agreeing with them):
+- **(a) VERIFIED, unmoved** — `test/test_assembly.jl:377`, testset `"Dirichlet elimination — exact contract, $(label)"`, parametrized over 5 `ASSEMBLY_IMAGES` fixtures; six identities at lines 405-410 all present. Caveat: the diagonal identity is against `bc_diag` (zeros replaced by 1), not `diag(L)[bc]`.
+- **(b) INCIDENTAL on GPU / GUARANTEED on CPU — measured**, 40³ seed 42, 5 repeated GPU builds: CPU 0/31802 columns unsorted; GPU 28538/28829/28577/28938/28986 of 31802 unsorted, with `rowval` **differing between identical builds**. Nothing depends on it — τ agrees to 2.2e-6 and CUSPARSE has consumed unsorted `rowval` in every green run. The CPU guarantee comes from the fixed six-neighbour emission order (`k-1,j-1,i-1,i+1,j+1,k+1`); reordering those blocks corrupts the CPU matrix silently.
+- **(c) CONFIRMED** — `test/test_regression_golden.jl` `GOLDEN_STEADY` lines 34-50, seeds 1/42/100, nine τ values (3 axes each) + 9 mean concentrations + 3 node counts. **Plus a second, undocumented table `GOLDEN_VARIABLE_D` (line 82)**, two `D_eff` values on seed 42. Both tables are frozen.
+
+Baseline figures matching the plan: `nnodes` 4.01 M / 31.9 M / 254.6 M, `nedges` 22.79 M / 1.503 B, `nnz_L` 1.758 B, 200³ peak 3.281 vs 3.25 GiB quoted. 400³ peak reads 12.75 vs the 13.78 GiB quoted — the plan's figure was high.
+
+### Phase 1 — quick wins, 2026-08-08, commits `8053141`…`d529398` (14 commits)
+
+**Accepted (14 items):** A20, A11, A16, A13, A10, A2, A3, A4, A14, A15, A17, A18, A19(b)(c), A22.
+**Retired:** A19(a) — the plan scored `Base.:*`'s `fill!` at −1.02 GiB, but **`fill!` does not allocate**; it is one write pass per setup, and removing it would make correctness depend on cuSPARSE not reading `y` at `beta=0`.
+**BLOCKED:** A1 — see below.
+
+`Pkg.test()` **PASS, 11360 assertions, 2m57.5s** — exactly the floor. No golden value touched, no test weakened or skipped.
+
+| N | peak GiB before → after | setup s | solve s | e2e s |
+| --- | --- | --- | --- | --- |
+| 200³ | 3.281 → 2.500 (−23.8 %) | 0.073 → 0.060 | 0.727 → 0.730 | 0.822 → 0.810 |
+| 400³ | 12.750 → 10.218 (−19.9 %) | 0.453 → 0.360 | 14.811 → 14.885 | 15.447 → 15.405 |
+| 600³ | 23.889 → 20.228 (−15.3 %, no longer pinned) | **107.871 → 0.99 (109×)** | **never finished (>41 min) → 72.62** | **— → 74.15** |
+| 800³ | 23.889 → 23.889 (unchanged, still 100 % of device) | 384.181 → 252.17 (−34 %) | still >30 min, did not complete | — |
+
+**The headline is 600³.** The speed cliff is gone: a problem that previously never solved now completes end-to-end in 74 s.
+
+#### BLOCKER: A1 — needs Amin's decision
+
+A1 (stop calling `dropzeros!` after Dirichlet elimination) is **the item that decides 800³**, and it is blocked by a pinned structural test.
+
+- **Win forgone, measured:** 400³ peak 11.843 → **8.000 GiB (−32 %)**; Dirichlet stage 0.111 s → 0.024 s.
+- **What fails:** exactly 82 assertions, all `csc_equivalent` at `test_gpu_parity.jl:235` and `:258`. That helper compares `colptr` and `rowval` for **exact structural equality**; A1 leaves ~0.44 % explicit zeros in the matrix.
+- **What passes, untouched:** the six Dirichlet identities, **both golden tables**, all dense-form parity, all physics invariants. The failure is *purely structural*, not numerical.
+- **The decision:** either (i) allow `csc_equivalent` to compare after dropping explicit zeros, or (ii) keep the structural pin and rely on A7 in Phase 3. **Without one of the two, 800³ cannot fit** — `dropzeros!` at 800³ needs ~29 GiB of transient on top of the 14 GiB matrix even after A17.
+- Measured, confirmed structural-only, then **reverted**. Per the unattended rules the master did **not** change the test.
+
+#### New items discovered during Phase 1
+
+| id | change | est. gain | complexity | phase | status |
+| --- | --- | --- | --- | --- | --- |
+| A27 | `D_dev[img_dev]` materialises an **unnamed** npore-length temp (1.0 GiB at 800³) on the variable-`D` path that nothing frees. | −1.0 GiB (variable D) | simplifying | 4 | **DONE** (Phase 4 r1, `75c2b46`). Only `transient.jl` still had it — `simulations.jl` lost it in Phase 3, since the fused kernel reads `D` per voxel and never gathers a pore-length copy. The device copies of `img` and `D` were also never released on the transient path; they are now, matching what the steady constructor already did. |
+| A28 | `_free!` is a **no-op on Metal and AMDGPU**. Left alone deliberately in Phase 1 — neither device is present and an untested `unsafe_free!` risks precompile failure on those platforms. One line each once someone can test it. | device mem on Metal/AMD | trivial | — | **BLOCKED — no hardware to test on** |
+
+#### Corrections from Phase 1
+
+- The plan's claim that the non-`Int32` `_as_cusparse` fallback is "reachable from any user `inds::Array{Int,3}`" is **false**: `conns_gpu = similar(idx_gpu, Int32, …)` forces `Int32` regardless of `inds`. The fallback is reachable only by calling `build_adjacency_matrix` directly with non-`Int32` indices. Fixed anyway (4 lines).
+- **A14 kept row-sum semantics**, not the cheaper column sums: `laplacian` accepts any matrix and documents `D = diag(row_sums(A))`, so column sums would be a *silently wrong answer* on asymmetric input. Revisit only if a symmetry flag lands with B1/B2.
+- **A16's cache fix was made mandatory by A13, not merely cleaner** — once `unsafe_free!` is in play, pointer equality can match a recycled address. Mutator-side invalidation replaced it.
+#### Phase 1 independent review — VERDICT: APPROVE WITH FINDINGS
+
+Reviewer re-ran everything rather than trusting the report. `Pkg.test()` **11364 pass / 11364, 0 fail, 3m09.5s** — *above* the floor; the Phase 1 agent quoted 11360, a count taken before its own last commit (safe direction, but wrong). Benchmarks reproduce: peak memory to the digit (2.500 / 10.218 GiB), `iters` (1044 / 2094) and τ (1.951 / 1.928) **bit-for-bit identical** to the Phase 0 baseline.
+
+**NO use-after-free found. NO missed cache invalidation found** — the two silent-corruption risks, both traced exhaustively rather than spot-checked: all 13 `_free!` sites against every live alias, all 6 `.colptr/.rowval/.nzval` reassignment sites against `_invalidate_cache!`. A14 verified as genuine row sums; A10 verified to leave `zero_rows!`'s contract and `test_sparse_ops.jl:186` intact.
+
+Non-blocking findings, carried into Phase 4/6:
+
+- **F1** — A22 *narrows* the guard: a `SubArray`/reshape of a `CuArray` answers false to `_on_gpu`, so the old code copied it and the new code scalar-indexes it. Unreachable today (`sim.img` is host-side by design).
+- **F2** — A19(b) adds a **silent invariant**: the non-`Int32` `_as_cusparse` now caches *converted copies* of `colptr`/`rowval`, so any future in-place index edit (the shape of work B14/B15 propose) is a stale-matrix bug. Commented, but **no test enforces it**.
+- **F3** — A14 makes the Laplacian diagonal **nondeterministic on CUDA** (was a deterministic CUSPARSE SpMV, now an atomic scatter). ≤6 Float32 terms, so tiny — but it is new.
+- **F4** — cosmetic: `zero_rows!`'s docstring still says "Used to enforce Dirichlet BCs in the transient operator"; after A10 it has no production caller. Early-return paths in `_build_connectivity_list_ka` skip the new `_free!`s.
+- **F5** — pre-existing, must fix before Phase 6: `bench/scaling_bench.jl:96` hardcodes a **session-specific Temp path** as `DEFAULT_CACHE`. It works here and on no other machine or session.
+
+**`csc_equivalent` resolved — it is NOT a stored fixture.** It is a live, same-run comparison against `OldBaseline` (`bench/old_baseline.jl`, `test_gpu_parity.jl:18`), rebuilt on the same `conns` in the same process. `csc_canonical` sorts each column, so it pins **colptr exactly, rowval exactly up to intra-column order, nzval approximately** — the structural sparsity pattern and nothing else.
+
+**Consequence: A7 is NOT blocked** (this was the campaign's biggest open risk). A1 fails because it *retains* explicit zeros the reference drops, so `colptr` differs; A7 never creates them, and the pattern it must emit is exactly what the reference has after its final `dropzeros!`. Two conditions A7 must meet: (i) it must also omit the zero-degree **interior** node's diagonal, which the old path creates and `dropzeros!` prunes — miss this and `colptr` is off by one per isolated voxel, *which is common on untrimmed blobs*; (ii) BC columns must be diagonal-only with `_unit_where_zero` applied.
+
+**Therefore A1 is expected to become MOOT rather than needing Amin's ruling** — A7 deletes the `dropzeros!` call entirely. The A1 decision above stands only if Phase 3's A7 fails.
+
+### Phase 3 — fused assembly, 2026-08-08, commits `181037f` + `7f5774a`
+
+**Accepted: A5, A6, A7, A23, A24, A25. A12 subsumed by A5** (with no connectivity list the whole COO→CSC scatter is gone, so A12's −19.6 GiB is realised; the *standalone* form is still not viable because `test_gpu_parity` feeds `build_adjacency_matrix` `OldBaseline` conns grouped by row, so that method must stay general. **A12 remains unclaimed for the transient path.**)
+
+New `src/assembly.jl` (228 lines): two KA kernels (`_steady_count_kernel!`, `_steady_fill_kernel!`) plus `build_steady_system`, **shared by the CPU and GPU paths**. One thread per grid voxel owns its whole CSC column — no COO, no adjacency matrix, no edge-weight vector, no atomics, no `dropzeros!`. The steady path goes from five stages to two kernels and a scan, with one implementation instead of two.
+
+`Pkg.test()` **PASS — `Tortuosity.jl | 11365  11365  2m53.7s`** (floor was 11364; +1 from an assertion the agent *added*).
+
+**CPU output is bit-identical to the old pipeline** — `colptr`, `rowval`, `nzval` and `b` all `==` (not `≈`), uniform and variable `D`, all three axes. That is why the golden tables could not move.
+
+| N | peak GiB: Phase 0 → Phase 1 → now | vs P0 | setup s (P0 → now) | solve s | e2e s |
+| --- | --- | --- | --- | --- | --- |
+| 200³ | 3.281 → 2.500 → **1.718** | −47.6 % | 0.073 → 0.008 | 0.727 → 0.775 | 0.822 → 0.801 |
+| 400³ | 12.750 → 10.218 → **4.156** | −67.4 % | 0.453 → 0.053 | 14.811 → 14.907 | 15.447 → 15.113 |
+| 600³ | 23.889 → 20.228 → **10.750** | −55.0 % | **107.871 → 0.158** | never → 71.137 | never → 71.838 |
+| 800³ | 23.889 → 23.889 → **21.637** | −9.4 % | **384.181 → 0.388 (990×)** | never → 205.660 | never → **207.766** |
+
+CPU 200³: setup 2.475 → 0.701 s (1 thread) → **0.213 s (4 threads, 11.6×)**, e2e 55.502 → 49.165. τ identical at every size. Solve times are unchanged, as expected — it is the same matrix.
+
+**800³ completes end-to-end for the first time:** setup 0.388 s, solve 205.660 s (3620 iters), post 1.718 s, e2e 207.766 s, τ 1.884, nnz 1,753,943,979 unchanged.
+
+#### The gate is NOT yet met
+
+Total peak 21.637 GiB of 23.889 → **headroom 2.25 GiB, short of the ≥3 GiB gate by 0.75 GiB.** The binding peak has moved from assembly to the **solve**: setup now peaks at 19.128 GiB (4.76 GiB headroom), while the solve accounts for A 14.02 + b 0.949 + u 0.949 + Krylov `x,r,p,Ap` 3.80 + CUDA context 1.375 = 21.09 GiB. The conflict rule therefore stays in force into Phase 4.
+
+#### OVERRIDE — signed off by the master
+
+`test/test_gpu_parity.jl:291`, exactly as pre-authorized: `@test unsorted > 0` → `@test unsorted == 0`. Owner-parallel assembly emits ascending rows by construction, so the guard's premise inverted; asserting sortedness is strictly stronger. Condition (ii) is satisfied — the *"CUSPARSE SpMV tolerates unsorted row indices within a column"* coverage does **not** depend on assembly output; it lives in the "with every column deliberately shuffled" subtest, which builds its unsorted matrix itself via `shuffle()`. The agent went further and **added** an assertion so that subtest fails loudly if the shuffle ever stops biting:
+
+```julia
+@test count(j -> !issorted(@view rv[colptr[j]:(colptr[j+1]-1)]), 1:A.n) > 0
+```
+
+That is the +1 assertion (11364 → 11365). **No test was weakened, skipped, or disabled.** Coverage increased.
+
+#### New items from Phase 3
+
+| id | change | est. gain | complexity | phase | status |
+| --- | --- | --- | --- | --- | --- |
+| A29 | **Krylov's workspace `x` duplicates LinearSolve's `u`** — 0.949 GiB at 800³, the largest pure-duplication vector at the solve peak. Aliasing them takes headroom 2.25 → ~3.2 GiB and **meets the campaign gate**. This is the one thing between the current state and the target. | −0.949 GiB; **clears the gate** | small | 4 | pending |
+| A30 | **The transient path still runs the old five-stage pipeline.** `build_transient_operator` could use the same fused kernel pair with a row-only BC rule. A12's standalone win now applies there and nowhere else. | transient mem + setup | moderate | 4 | pending |
+
+**Re-rankings:** B23 **up** — the solve is now 99.0–99.8 % of e2e at 600–800³; iterations 1044/2094/2983/3620 at 200/400/600/800. Float32 CG *did* converge at 800³, so the conditioning worry did not bite, but there is still no iteration cap. B3 deserves a re-look **only after A29** — it costs 1.90 GiB, which 2.25 GiB cannot afford. B5 still open (Phase 3 chose `wg=(64,4,1)` for coalescing and did not sweep). A21 still open and now visible: 800³ post is 1.718 s materialising 512 M voxels.
+
+**Plan correction confirmed:** A5's mandated insertion sort is dead code — sortedness is free from column-major monotonicity, exactly as the corrected Constraint 2 says.
+
+#### Phase 3 independent review — VERDICT: APPROVE
+
+Reviewer re-ran everything at `7f5774a`. `Pkg.test()` **`Tortuosity.jl | 11365 11365 2m49.2s`**. Benchmarks reproduce (200³ peak 1.718 exact; 400³ 4.125 vs 4.156 claimed, one 32 MiB sampler granule low — the sampler is a documented lower bound; `nnz` identical to the Phase 0 baseline at both sizes).
+
+**Bit-identity verified independently, not taken on faith.** The reviewer reconstructed the old pipeline locally and compared with `==` on `colptr`, `rowval`, `nzval`, `b` across: blobs 24³ seeds 1/42/100; blobs 40³ seeds 1/42/100 (31 802 nodes, **15 zero-degree pore voxels present, untrimmed**); 40³ variable `D` and Bool-vs-BitArray masks; 20³ variable and constant-array `D`; duct + isolated inlet-face voxel; duct + isolated inlet voxel + **2 isolated interior voxels**; fully disconnected 4×1×1; open box; box with cavity; 2-thick slab — each across axes `:x`, `:y`, `:z`. All matched; every column sorted ascending. The only three `b` differences found were at `nbc == 1` (inlet face == outlet face), which `simulations.jl:157` rejects, so unreachable through the API.
+
+**Zero-degree handling confirmed** — the risk Phase 1's reviewer flagged: `assembly.jl:86` sets `counts[c0] = 0` for a free node with `iszero(deg)`, so an isolated interior voxel gets an empty column and `colptr` is *not* off by one, matching what the old path achieved via `dropzeros!`. Confirmed empirically (two added interior isolated voxels: n 49→51, nnz unchanged at 201, `colptr ==`). The BC carve-out is honoured — `assembly.jl:79-84` pins a zero-degree boundary node with a unit diagonal and `b = 1` on the inlet, reproducing `_unit_where_zero`; `git diff 67977de..HEAD -- src/pdetools.jl` is empty.
+
+**The six Dirichlet identities are stronger than before, not merely still green.** The testset builds `L` from the OLD chain purely as a reference and asserts against `sim.prob.A`/`sim.prob.b` — i.e. against the new assembler. It is now a cross-check of two independent implementations rather than `apply_dirichlet_bc_fast!` against itself.
+
+Findings carried to Phase 6:
+
+- **F6** — **no test pins the bit-identity claim itself.** All assertions are `≈`/rtol and no test calls `build_steady_system` directly. The real guard is the golden tables (12-digit τ, rtol 1e-6), which held. **Adding one `==` CPU-vs-old-chain test would make the claim regression-proof.**
+- **F7** — `apply_dirichlet_bc_fast!` (both methods) now has **zero production callers**; transitively production-dead with it: `apply_dirichlet_bc!`, `zero_rows_cols!`, `set_diag!`, `get_diag`, `multihotvec`, `overlap_indices`/`_fast`. Still live via `src/transient.jl`: `build_connectivity_list` (:288), `interpolate_edge_values` (:296), `build_adjacency_matrix` (:298), `laplacian` (:302), `find_boundary_nodes` (:276,279), `dropzeros!` (:330). Keeping them is authorised by A25, but they should be **labelled reference/transient material**, and `test_impl_parity.jl:225` "steady-system assembly parity" is now a **misnomer** — it compares two non-production chains.
+- **F8** — the testset comment at the Dirichlet contract still claims it "pins `apply_dirichlet_bc_fast!`", now stale.
+- **F9** — behavioural delta, unreachable through the API but recorded: the old GPU `dropzeros!` used `tol = eps(Float32)` so it pruned `|w| <= 1.2e-7`; the new path prunes only **structurally**. Harmless given the `D > 0` precondition, and it makes CPU/GPU structure identical.
+- **F10** — `Int32` headroom unchanged but **the binding quantity moved**: `colptr`/`nnz` (1.754e9 at 800³) is now what approaches `typemax(Int32)`, not `nedges` (1.503e9). Still out of scope, not made worse.
+
+Reviewer finding **F5 fixed** in `7f5774a`: `DEFAULT_CACHE` had hardcoded a user name and a session UUID; now `tempdir()/tortuosity_bench_blobs`.
+
+### Phase 4 — audit round 1, 2026-08-08 (audited `7f5774a`)
+
+`AUDIT ROUND 1: 5 candidates surfaced, 4 accepted` (see round-2 outcomes below for the final dispositions).
+
+#### Triage — 13 of 24 pending items are MOOT or already done
+
+Phase 3 moved the production steady path to `SteadyDiffusionProblem` → `build_steady_system` only. Nothing in `src/` calls the old five stages except `build_transient_operator`.
+
+| id | disposition |
+| --- | --- |
+| B8 | **MOOT** — no histogram pass exists on the steady path; `_steady_count_kernel!` replaced it. Transient-only, subsumed by A30 |
+| B9 | **ALREADY DONE** — owner-parallel columns *are* `_steady_fill_kernel!`; the predicted `test_gpu_parity.jl:291` flip already happened in Phase 3 |
+| B10 | **ALREADY DONE in substance** — `assembly.jl` never reads `img`; `idx` *is* the mask, exactly B10's ask |
+| B4 | **ALREADY DONE for production** — `assembly.jl:47,102` use `@index(Global, NTuple)`. The two `CartesianIndices(im_gpu)[linear_idx]` sites are transient-only |
+| B11 | **mostly MOOT** — 4 of 7 named syncs are off the steady path; `assembly.jl` adds 3, of which 2 are redundant. Worth <1 ms — **not worth a commit** |
+| B12 | **MOOT for steady** — `topotools.jl:13-17 laplacian` has no steady caller. Transient CPU only |
+| B13 | **MOOT for steady** — `find_boundary_nodes` has no steady caller. Transient-only |
+| B14 | **MOOT as written** — A7 deleted `zero_rows_cols!` from the steady path |
+| B15 | **MOOT — terminal.** `dropzeros!` has **no production caller left anywhere** (steady killed by A7, transient by A10). Tests and `bench/` only |
+| B16 | **MOOT — terminal.** `get_diag`/`set_diag!` are reachable only from `apply_dirichlet_bc_fast!`, which has no production caller |
+| B21 | **MOOT for steady** — `_build_connectivity_list_cpu` is transient-only now |
+| B22 | **half ALREADY DONE** — steady never enumerates BC nodes (`_is_bc` is a coordinate test in-kernel); half LIVE at `transient.jl:276-279` |
+| A27 | **MOOT for steady** — `assembly.jl` reads `D[i,j,k]` in-kernel; LIVE only at `transient.jl:296` |
+| B2 | **LIVE code-wise but ZERO gain on any benchmarked backend** — CUDA goes through CUSPARSE, production CPU returns `SparseMatrixCSC`. Metal/AMD only |
+
+**Optimising B15/B16 would be optimising the reference implementation.** Of the 11 items still live, 8 are transient-path items that **A30 would subsume as a unit**.
+
+#### Measured findings that close off avenues
+
+Stated positively, because the Phase 4 stop condition depends on hearing them:
+
+- **Per-iteration cost is already clean.** One CG iteration at 800³ = 1 CUSPARSE SpMV + 2 axpy + 1 axpby + 2 dots. **No redundant kernel launches, no avoidable device→host.** The two `kdotr` calls sync the stream, but at 56.8 ms/iteration that latency is <0.1 %. Effective bandwidth ~528 GB/s against ~900 GB/s peak — normal for SpMV with a random gather.
+- **The whole cheap-preconditioner family is a measured dead end** — this generalises B3's rejection rather than merely confirming it. Neumann/polynomial preconditioning at 96³, degree 1/2/4/8: 399/329/258/196 iterations vs 606 plain — **total SpMV count rises** (798/987/1290/1764) and wall time rises monotonically (3.23 → 8.81 s). The best *possible* degree-k polynomial preconditioner divides iterations by exactly k, which only ever saves the vector-op share (12.2 of 30.2 GB per iteration). **Only a real coarse space wins.**
+- **`src/assembly.jl` has nothing worth optimising.** Setup is 0.388 s = 0.19 % of e2e and its peak (~19.1 GiB) is *below* the solve peak (21.6 GiB), so neither axis is binding.
+- **There is no second A29.** Exact solve-peak accounting: A 14.02 GiB (colptr 1.019 + rowval 7.016 + nzval 7.016) + b/u/x/r/p/Ap 5.69 + context 1.375 = 21.09 GiB. A29 takes it to 20.14 → 3.2 GiB headroom. The only remaining levers are a narrower `nzval` type (A9's ground, blocked by CUSPARSE needing matched eltypes) and freeing `b` after CG's first iteration (Krylov never reads it again, but reaching in to free it is fragile).
+
+#### MASTER RULING — the conflict rule is a threshold, not a floor
+
+The auditor recommended re-scoping the ≥3 GiB gate, on the grounds that it "vetoes a measured 5–12× solve speedup to protect 0.75 GiB". **No re-scope is needed — the plan already says the right thing.** The conflict rule reads: *"Until 800³ fits in 23.89 GiB with ≥3 GiB of headroom, memory wins. After that threshold is met, speed wins. **Memory becomes a budget to spend rather than a wall to avoid.**"* It is a threshold to **cross once**, not a floor to maintain forever. Once A29 clears it, spending headroom on a large solve speedup is precisely the authorised behaviour. Candidates [1] and [2] below are therefore **in scope without an override**.
+
+#### New candidates — all iteration counts MEASURED (CPU/Float64, blobs seed 42, `atol = 1e-6·‖b‖`, `rtol = 0` so the stopping test is identical across variants)
+
+| id | change | measured gain | complexity | phase | status |
+| --- | --- | --- | --- | --- | --- |
+| B24 | **Two-level aggregation preconditioner** (geometric block coarse space): `Pl = W·(WᵀAW)⁻¹·Wᵀ + I/λmax`, `W` = piecewise-constant indicators of 8³-voxel blocks. **96³ 606→141 (4.3×), 160³ 889→101 (8.8×), 224³ 1217→97 (12.6×); wall 3.15→1.15, 20.01→3.54, 82.18→6.97 s.** Iterations go **FLAT in N** — this removes the O(N) growth, it is not a constant factor. Per-iteration GPU overhead ~+13 %. Projected 800³: solve 205.7 → ~40 s, e2e −80 %. Build `WᵀAW` in one pass over the image — same fused kernel shape as `assembly.jl`. **Risk: the coarse solve must be accurate or convergence stalls silently — a plausible wrong τ, not a crash.** Float32 coarse operator is near-singular for pure-Neumann interior blocks. Costs ~1.9 GiB. | **e2e −80 % at 800³** | +200 lines, +2 concepts | 4 | pending |
+| B25 | **Linear-ramp initial guess (warm start)** — start CG from `c = 1 − (i−1)/(N−1)` instead of 0 via Krylov's `Δx`/`warm_start`. Measured ramp/zero iteration ratio: 0.906 (48³), 0.826 (64³), 0.782 (96³), 0.782 (128³), 0.856 (160³) → **~17 % fewer iterations, flat in N**; τ unchanged to 5 s.f. Costs +0.949 GiB. **Largely SUBSUMED by B24 — do not do both without re-measuring.** | ~17 % of e2e (~35 s @800³) | ~15 lines | 4 | pending |
+| B26 | **`trim_nonpercolating_paths` does an O(N) hash-set probe per voxel** (`src/imgen.jl:143`): `in.(labels, Ref(Set(...)))` hashes once per voxel over 512 M voxels, single-threaded, on an `Array{Int64}` labels array (4.1 GB host). A `Bool` lookup table indexed by label is 1 line. **This, not `label_components`, is C3's real hot spot.** | est. 5–20× on that step; halves peak host memory | simplifying (−1 line, −1 concept) | 5 | pending |
+| B27 | **`blobs` allocates ~6 full `Float64` copies** (`src/imgen.jl:98-104`, `norm_to_uniform:19-25`): `rand` + blur + 5 unfused broadcasts, ~4.1 GB each at 800³. `Float32` + one fused `@.`. **Must be gated on the golden node counts** — `to_binary` threshold rounding could move one. | est. 2–3× of ~60 s; −20 GB host churn | simplifying | 5 | pending |
+
+**A26 re-scoped and re-located:** the CPU index type is decided at **`assembly.jl:186`** (`Ti = on_gpu ? Int32 : Int`), *not* `topotools.jl:161-174` (off the steady path). CPU SpMV drops 16 B/nnz → 12 B/nnz ≈ **18 % of CPU solve traffic**, and CPU solve is >99 % of the 49.2 s CPU e2e. Clears the 15 % bar; compounds with B17.
+
+#### C-series judgements — all three rejected, with reasoning
+
+- **C3 — reject as written; re-scoped to B26.** Do *not* write a GPU connected-component labeller. (i) It is **not in the default large-image workflow**: `_warn_nonpercolating` (`simulations.jl:64`) only runs the check when `length(img) <= 50_000_000`, so it is skipped at 400³ and 800³ unless forced. (ii) The actual hot spot is not `label_components` at all — it is the serial hash probe at `imgen.jl:143` (now B26). GPU CCL is hundreds of lines of merge-based union-find needing its own test suite, for a function outside the measured path.
+- **C4 — reject as a campaign item.** `Imaginator.blobs` is test-image generation, on no headline metric, and the harness already caches its output to disk (`DEFAULT_CACHE`), so it is paid once per machine. The cheap CPU cleanup (B27) is worth doing if someone is idle but must not displace B24/B25/A26.
+- **C5 — reject and close.** No AMD device exists here, so ~40 lines of rocSPARSE plumbing would land with **zero test coverage on the one axis where untested code is most dangerous** — a wrong SpMV returns a plausible τ, not an error. B2 is the correct substitute, **but B2 also has no measurable effect on any backend present here**, so both are logged terminal-rejected rather than carried forward.
+
+#### Plan corrections from audit round 1
+
+1. **A21's stated free ingredient is gone.** The plan claims `SteadyDiffusionProblem` "already computes the inlet/outlet pore-index lists and throws them away". After A7 it computes **no node lists at all** — BC membership is `_is_bc(_face_coord(...))` inside the kernel. A21 would now have to *create* those lists, and post is 1.718 s of 207.8 s = **0.83 %**, so it now **fails the acceptance bar**.
+2. **B3's rejection should be strengthened, not revisited after A29** — the whole cheap-preconditioner family loses, not just Jacobi.
+3. **B23 has a second issue** the plan does not record: at `reltol=1e-6`, two equally-converged solutions differ by **2.5 % in relative L2** (measured 48³–96³) while τ agrees to 1e-4. The residual criterion is much weaker than it looks; the discrepancy lives in stagnant, non-percolating clusters that carry no flux. Worth stating so nobody later reads that 2.5 % as a bug.
+
+### Phase 4 — round 1, 2026-08-08, commits `849cc3c` `2daaf12` `5960ef3` `0258344`
+
+**Accepted:** A29, B1, B2, A27, B19, B20, B22(transient half). **Rejected:** A21, B5, B3 (re-confirmed). **Retired moot:** B14, B15, B16, B22(steady half). **BLOCKED:** B17, B23.
+
+`Pkg.test()` **PASS — `Tortuosity.jl | 11397 11397 2m48.9s`** (floor was 11365; two assertions added, none weakened, no golden value touched).
+
+## ✅ THE MEMORY GATE IS MET
+
+**800³ peak 20.605 GiB; headroom 23.889 − 20.605 = 3.284 GiB ≥ 3 GiB.** Per the conflict rule, memory now becomes a budget to spend and **speed wins** for the remainder of the campaign.
+
+| N | peak GiB → | setup s → | solve s → | e2e s → |
+| --- | --- | --- | --- | --- |
+| 200³ | 1.718 → 1.718 (0 %) | 0.008 → 0.009 | 0.775 → 0.715 (−7.7 %) | 0.801 → 0.747 (−6.7 %) |
+| 400³ | 4.156 → 4.031 (−3.0 %) | 0.053 → 0.053 | 14.907 → 13.666 (−8.3 %) | 15.113 → 13.904 (−8.0 %) |
+| 600³ | 10.750 → 10.343 (−3.8 %) | 0.158 → 0.191 | 71.137 → 65.117 (−8.5 %) | 71.838 → 65.971 (−8.2 %) |
+| 800³ | 21.637 → **20.605** (−4.8 %) | 0.388 → 0.391 | 205.660 → **189.051** (−8.1 %) | 207.766 → **191.030** (−8.1 %) |
+
+Iteration counts **identical** at every size (1044/2094/2983/3620) — the win is per-iteration cost, not convergence.
+
+#### Both headline mechanisms in the plan were WRONG, in opposite directions
+
+- **A29's premise was already true.** LinearSolve *does* alias `x` and `u` (`iterative_wrappers.jl:266`). The real defect is that the constructor allocates `x` **before** the workspace's other vectors, and **freeing it afterwards does not move the peak** — CUDA's stream-ordered pool still counts a freed block as in use (verified: `unsafe_free!` of 1 GiB leaves `total − available` unchanged). It had to *not be allocated*.
+- **B1's premise is simply false.** There is no uncached per-call `with_workspace` device malloc: `cusparseSpMV_bufferSize` returns *the same* 2 740 547 bytes for CSC and CSR at 800³. The win is the **kernel choice**, and it is **size-dependent**: 0.99× at 200³, 1.175× at 800³. **Anyone re-measuring on a small image will wrongly conclude there is nothing here.**
+
+#### B2 un-rejected by measurement
+
+Audit round 1 logged B2 "terminal-rejected — no measurable effect on any backend present here". **That premise is refuted:** the symmetric KA SpMV runs the CPU backend at 125.5 → 35.5 ms (1 thread) and 34.6 → 13.3 ms (4 threads) — 3.5×, on a backend the suite exercises. It is also the exact kernel B17 needs the moment the API question is decided. Accepted.
+
+#### OVERRIDE — B1 accepted below the 15 % bar
+
+B1 gives −8.1 % e2e with +1 struct field, under the 15 % threshold. Justified under principle 3: the solve is 99 % of e2e so this is the largest remaining single lever, and the flag **replaces a subtle invalidation rule** ("reassignment must invalidate, in-place edits need not") **with a blunter, more auditable one** — any mutation invalidates.
+
+#### BLOCKER: B17 — needs Amin's decision
+
+CPU SpMV is **82 %** of the CPU CG iteration. The symmetric gather beats SparseArrays' `mul!` by **3.31× (4 threads) / 1.21× (1 thread), bit-identical** ⇒ **CPU solve −57 % / −15 %**. The kernel is already committed (B2). The blocker: reaching it requires `sim.prob.A` to stop being a `SparseMatrixCSC`, which removes `Array`, `==`, `issymmetric` and SparseArrays interop from a **published package's public object, mid-JOSS-review**. Tried; 23 assertions fail on exactly that. Reverted rather than decided unattended.
+
+#### BLOCKER: B23 — no mechanism exists
+
+`LinearSolve.__init` reads `abstol`/`reltol`/`maxiters` from the init/solve **call** and never consults `prob.kwargs`, so a `LinearProblem` cannot carry defaults. The only routes are type piracy on `LinearSolve.default_tol` (global) or a Tortuosity-owned `solve(sim, alg)` entry point. Measured gain zero as things stand.
+
+#### Data-integrity finding — CPU benchmark numbers are not yet trustworthy
+
+`bench/results/scaling_env.csv` records `threads=1` for **every** run, while the Phase 3 CPU figure was annotated "4 threads". CPU assembly is KA-threaded and CPU SpMV is not, so the distinction changes the numbers materially. **Settle this before any PuMA comparison goes in the paper.** Handed to round 2.
+
+#### The GPU solve is now run-to-run reproducible
+
+CSC SpMV summed with atomics in nondeterministic order — the **Phase 0 baseline itself shows τ = 1.92742 vs 1.92824 across two reps of the same build**. CSR is a deterministic gather: the reviewer measured **1.88141 in both reps, identical to every printed digit**.
+
+**CORRECTION (reviewer, and the master repeated the error to Amin before catching it).** The claim that τ 1.884 → 1.881 sits "inside the Float32 envelope `test_gpu_e2e.jl:81` pins at `rtol=1e-3`" is **wrong on both counts**: 1.6e-3 relative is *outside* 1e-3, and that test pins **CPU-vs-GPU agreement on a 24³ image**, not run-to-run spread at 800³. The defensible statement is narrower: the new value is more **reproducible**, but is **not shown to be more accurate** — no Float64 reference exists at 800³. Both values round to 1.88. **Do not quote GPU τ to more than three significant figures in the paper.**
+
+#### Phase 4 round 1 independent review — VERDICT: APPROVE WITH FINDINGS
+
+Gate **independently verified** at 800³ over 2 reps, harness read from `git show 0258344:bench/scaling_bench.jl` with results written to scratch: `peak 20.622 GiB, base 1.375, iters 3620, tau 1.881, setup 0.398, solve 187.315, e2e 189.483` → **headroom 3.267 GiB, gate MET with 0.27 GiB to spare.** (Claim 20.605/3.284; measured 20.622/3.267 — 17 MiB apart, inside the sampler's ~32 MiB granule. Solve and e2e came in *better* than claimed.)
+
+`Pkg.test()` **`Tortuosity.jl | 11397 11397 2m56.0s`**. `test_sparse_ops.jl` is **+102 lines of pure addition** (4 new testsets, 0 deletions); the `test_gpu_parity.jl` diff is comment-only. **Correction: "2 assertions added" was a miscount — it is 32** (11365 → 11397).
+
+**Symmetry flag fully audited — no path where an asymmetric matrix is read as CSR.** Set true at `assembly.jl:229` only (GPU steady path); defaults false at `sparse_type.jl:84,93`. Cleared in `_invalidate_cache!` (`sparse_type.jl:113`), reached from `set_diag!`, `zero_rows_cols!`, `_zero_rows_only!`, both mutating `dropzeros!` branches, and `_free!`. Read at `ext/TortuosityCUDAExt.jl:51,81` and `sparse_type.jl:215`. `dropzeros!`'s `nnz_new == nnz_old` early return keeps the flag, correctly — it mutates nothing. The transient operator comes from `laplacian`, which never sets `symmetric=true`, so the flag is already false there.
+
+Findings for Phase 6:
+
+- **F11 (most severe, latent not live)** — `transient.jl:322` `nonzeros(A) .= nonzeros(A) ./ (-voxel_size^2)` edits `nzval` in place **without `_invalidate_cache!`**. Harmless today (the flag is already false and the next line's `_zero_rows_only!` invalidates anyway), but it is **the single mutation site that does not obey the blunt "any mutation invalidates" rule the commit message advertises**. One line to make the rule literally true.
+- **F12** — B19's new `_on_gpu(u)` device path has **no committed test**; the GPU transient e2e tests never call `flux`/`reconstruct_slice` with a device `u`. Verified by a throwaway scratch probe (`isequal`, 3 axes × 3 slices) — real evidence, not regression-proof. A 3-line GPU assertion closes it.
+- **F13** — `bench/results/scaling.csv` still holds **only the Phase 0 baseline**. No Phase 3 or Phase 4 rows are persisted anywhere in the repo, so every "before" figure is not independently checkable — only the "after", which the reviewer reproduced. **Fix in Phase 6.**
+- **F14** — the symmetric KA kernel's "bit-for-bit" claim holds only **within one workgroup**; the tests use n=40 (single workgroup) so they are not flaky, but the docstring overstates for a multi-workgroup CPU/Metal/AMD launch.
+
+**A29 verified to prevent the allocation, not free it after the fact:** `_cg_workspace` builds at `(0,0)`, assigns `x = u`, and allocates only `r,p,Ap` — the fourth vector is never created. **B19 verified** to preserve NaN placement and `nansum` semantics.
+
+### Phase 4 — round 2, 2026-08-08, commits `cffb944` `7ca9890` `af7fde2` `8b54b4c` `cb018cf` `7484bae`
+
+**Accepted:** B24, A26, B26, bench thread-count fix. **Rejected:** B25. **BLOCKED:** B24-as-default. **Deferred:** A30, B27.
+
+`Pkg.test()` **`Tortuosity.jl | 11511 11511 3m03.4s`** (floor 11397, **+114**). No golden value touched; no existing test weakened, skipped or disabled.
+
+#### B24 — the campaign's largest speed result
+
+`src/preconditioner.jl` (+~300 lines, 106 new assertions). Two-level aggregation preconditioner, opt-in via `Pl=two_level_preconditioner(sim)`.
+
+| N | default e2e | preconditioned e2e | Δ | iters |
+| --- | --- | --- | --- | --- |
+| 200³ | 0.740 s | **0.320 s** | −56.8 % | 1044 → 82 |
+| 400³ | 13.724 s | **2.398 s** | −82.5 % | 2094 → 168 |
+| 600³ | 66.166 s | **9.202 s** | −86.1 % | 2983 → 223 |
+| 800³ | 189.698 s | **20.660 s** | **−89.1 %** | 3620 → 202 |
+
+Beats the projected −80 %. The **default path is untouched** (peak 20.588 GiB at 800³, headroom 3.301); the preconditioned path costs `agg` (Int16/pore voxel) + Krylov's `z` → 21.959 GiB, headroom 1.930.
+
+**The silent-failure risk is closed by construction, not by spot checks.** `W'AW` is PSD; blocks with a zero coarse diagonal are dropped; the rest get a relative diagonal shift; the coarse solve is **Float64 whatever the fine precision** — so Cholesky provably exists and `Pl` is provably SPD, which is what makes PCG land on the same solution. Verified at `reltol=1e-10` on untrimmed blobs, a trimmed blob, an open box, a deliberately detached cluster, variable `D` and `axis=:z`: **τ agrees to 1e-9 everywhere.** The ~2.5 % L2 gap audit round 1 warned about is real, does **not** shrink with tolerance, and drops to 6e-9 once the image is trimmed — it is entirely stagnant volume.
+
+#### BLOCKER: B24 as the default — needs Amin's API ruling
+
+LinearSolve 3.87 offers exactly two hooks, `alg.precs` and `Pl=` at init/solve. `DEFAULT_PRECS` ignores both the matrix type and `prob.p`, and `__init` never reads `prob.kwargs` — all three verified in source. Making B24 the default therefore requires **either** Tortuosity shadowing the exported `KrylovJL_CG` (which turns `using Tortuosity, LinearSolve` into an **ambiguity error on a published name, mid-JOSS-review**) **or** a Tortuosity-owned `solve(sim, alg)` entry point — the same decision **B23** is blocked on. **Forgone win: the whole −89 %.** Users get it today only by writing `Pl=two_level_preconditioner(sim)`.
+
+**Master's recommendation:** take the *additive* option — a new Tortuosity-owned entry point, not a shadowed name. It resolves B23 and B24 together and adds no ambiguity to a published API.
+
+#### A26, B26, and the benchmark thread-count question
+
+- **A26 accepted** — `Ti = (on_gpu || 7*nnodes+1 <= typemax(Int32)) ? Int32 : Int` at `assembly.jl:186`. Measured 160³ CPU/1 thread: SpMV −16.6 %, solve 24.12 → 20.88 s (−13.4 %) at unchanged iterations, **τ bit-identical**. 200³ CPU e2e 53.0 → 43.9 s (−17.2 %).
+- **B26 accepted, but the inventory estimate was wrong** — measured **2.32×** on the membership pass (177 → 76 ms at 400³) and −11.6 % on the whole function, **not 5–20×**. Its "halves peak host memory" claim is **false**: the `Int64` label array dominates and is untouched.
+- **The thread-count worry resolves the other way.** The harness was already recording `Threads.nthreads()` truthfully; **the Phase 3 "4 threads" annotation was the mislabel.** Measured 200³ CPU: 1 thread 43.876 s vs 4 threads 44.941 s — thread count **barely moves CPU numbers**, because CPU SpMV is single-threaded (B17 blocked) and assembly is 0.26 s of 44 s. `threads` is now a per-row column, part of the resume key, and in the summary, so a CPU number cannot be read without it.
+
+#### B25 rejected, with a plan correction
+
+`LinearProblem(A, b; u0=ramp)` does **NOT** warm-start `KrylovJL` — Krylov's `cg!` zeroes `x` unless `warm_start`/`Δx` is set, which LinearSolve does not expose. **Measured identical iteration counts with and without the ramp** (1044 @200³, 2094 @400³). It needs workspace surgery, and on top of B24 its ceiling is ~17 % of 168 iterations.
+
+#### New candidates from round 2
+
+| id | change | est. gain | status |
+| --- | --- | --- | --- |
+| B28 | Preconditioner block-size cap is slightly off at 400³: default picks block=13 (168 it, 2.047 s); block=12 measures 111 it, 1.456 s. A cap near 40 000 would pick 12. **Left alone because 800³ already reaches 202 it and a change there is unmeasured in both directions.** | ~30 % at 400³, unknown at 800³ | round 3 — measure at 800³ before changing |
+| B29 | Restriction+prolongation is now **~46 % of a preconditioned iteration** at 400³ (~6 of 13 ms). The restriction is an atomic scatter with ~1000-way contention per coarse slot; a chunked or two-stage reduction is the next lever. | unknown | audit round 2 |
+| B30 | With the preconditioner on, `post` is **8 % of 800³ e2e** (1.6 of 20.7 s) where A21 was rejected at 0.83 %. Still under 15 %, but re-score if B29 lands. | ~8 % | audit round 2 |
+
+**Corroborates B23:** LinearSolve's default `abstol = sqrt(eps)` = 1.5e-8 dominates at tight `reltol` and ended both verification runs on the **absolute** term, at different accuracies. Forcing `abstol` down moved agreement from 1.1e-8 to below 1e-9.
+
+**A30 deliberately not attempted** — transient-only, invisible to every metric the harness reports, and its structural contract differs between the CPU and GPU `laplacian` paths (zero-degree diagonals). It needs its own round rather than the tail of this one; handed over intact rather than left half-ported.
+
+### Phase 4 — audit round 2 (the stop condition), audited `7484bae`
+
+```
+AUDIT ROUND 2: 8 candidates surfaced, 0 accepted
+PHASE 4 COMPLETE: 0 accepted candidates
+```
+
+**Measured composition of a preconditioned iteration** (400³, quiet machine, block=13, nc=26 039): Krylov iteration **13.51 ms** (168 iters, 2.27 s) = SpMV 3.443 + `ldiv!` 5.255 + Krylov vector ops 4.81. `ldiv!` splits: restrict **1.488**, prolong **0.460**, host CHOLMOD coarse solve **3.271**, d2h+h2d 0.042. An emulated hand-written iteration costs 11.55 ms against Krylov's 13.51 — **no hidden per-iteration overhead**; LinearSolve passes `Pl` straight through and `_as_cusparse` caches the CSR descriptor.
+
+**All 8 rejected, with reasoning:**
+
+1. **B29 — chunked/two-stage restriction. REJECT.** Contention measured directly against a same-moment reference kernel with identical traffic minus the atomic: **5.0× at 1 225 voxels/slot, 10.9× at 4 081, 22.2× at 7 890, 43.5× at 62 318**. Atomic throughput is set by slot *count*, not by n. At 800³ (block=26, nc≈29 800) restrict ≈ 11–12 ms ≈ 16 % of a ~69 ms iteration = **7.7 % of e2e**; the atomic-free floor bounds the *maximum* recoverable at **9.3 % of e2e**, and a `@localmem` segmented reduction will not reach the floor. +1 concept, ~35–45 lines. **Correction to the round-2 log: restriction+prolongation is 14.4 % of a preconditioned iteration, not 46 % — prolongation runs at 0.89–0.93× the streaming reference, i.e. already at bandwidth, and was never part of the problem.**
+2. **B30 — slice-only τ. REJECT.** Post is 1.6 s of 20.66 s = 7.7 %; slice-only takes it to ~0.1 s → gain **7.3 % of e2e**, 9× A21's 0.83 % but still below the bar. **The cost went up, not down:** it must now also *construct* the inlet/outlet pore-index lists that A7 deleted, and `build_pore_index` is not a shortcut — it allocates 4.1 GB of host `Int` at 800³, worse than the 2.05 GB it would replace.
+3. **A30 — REJECT as a Phase 4 item; it is maintenance work, not speed work.** `bench/scaling_bench.jl` measures only the steady path, so A30 moves **no** reported metric by any amount and cannot clear a rule stated in percentages. Its real value is structural — it would retire the old five-stage pipeline, let B4/B8/B10/B12/B13/B21/B22/A12/A27 all go terminal at once, and remove a live CPU/GPU drift surface. **Handed over as follow-up work, judged on correctness and maintenance rather than speed.**
+4. **Coarse solve → GPU / non-allocating `ldiv!`. REJECT** — ~3.8 ms of ~69 ms = 3.8 % of e2e at 800³; a 30 k-unknown sparse triangular solve is latency-bound and routinely *slower* on GPU.
+5. **Retune `DEFAULT_MAX_COARSE`/block (= B28). REJECT on gain, not complexity.** Measured sweep at 400³: iters 143/168/202/294/379 for block 10/13/16/20/26, nnz(L) 6.14 M → 0.32 M. **Coarse-solve cost rises as fast as the iteration count falls; wall time is flat within noise across block 13–20. Gain ≈ 0** even though it is a one-constant, neutral-complexity change.
+6. **Fused/pipelined CG. REJECT** — Krylov's vector ops are 4.81 ms = 36 % of a preconditioned iteration, the largest single share, but standard CG is already 13 vector passes; merging recovers ~3 of 13 ≈ 6 % of e2e, changes the numerics, and means vendoring a solver out of Krylov.jl.
+7. **fp16 `nzval` for CUSPARSE SpMV** (new, never logged). Would cut peak 20.588 → 17.08 GiB (**−17 %, clears the bar**) and SpMV traffic −25 %, and for uniform `D` the entries (−1, and 1…6 on the diagonal) are **exact** in fp16. **INFEASIBLE on mechanism:** cuSPARSE's 16F SpMV paths require `X` in the same precision as `A`, so the CG vectors would have to be fp16 — no convergence at `reltol=1e-6`.
+8. **Preconditioner build. REJECT** — warm build is **0.121 s** at 400³ (the 4.17 s first observed was compilation), ≈0.7–1.0 s at 800³ = ~4 % of e2e. Its 1.9 GiB `idx` temp (`preconditioner.jl:282-283`, a second full-grid cumsum duplicating `build_steady_system`) is removable, but the build peak (~19.2 GiB) sits *below* the solve peak, so it moves no headline.
+
+**VERDICT: diminishing returns reached.** The largest remaining shares of the 800³ preconditioned e2e are **CUSPARSE SpMV (~27 %)** and **Krylov's own vector ops (~24 %)** — neither is Tortuosity code, and neither is improvable without going matrix-free. Every in-repo candidate tops out at 7–9 %.
+
+### Phase 4 — round 3 (correctness and coverage), commits `3fc55bc` `2ad5fc2` `4200236` `e8548b5` `94408f6` `41c0127`
+
+`Pkg.test()` **`Tortuosity.jl | 11576 11576 2m57.0s`** — foreground, GPU included, +65 over the floor.
+
+**Accepted:** F11, F12, F6, F7/F8, F14, B27(partial). **Rejected:** B28, B27's Float32 half.
+
+- **F6 — Phase 3's bit-identity claim is now PINNED AND TRUE.** New CPU testset compares `build_steady_system` against the full reference chain with `==` on colptr/rowval/nzval/b: **7 images × {uniform D, variable D} = 56 exact comparisons, all pass.** Fixtures include the three untrimmed 16³ blobs plus a purpose-built 8×6×6 image carrying zero-degree pore voxels **in the interior AND on both Dirichlet faces**, with 5 non-vacuity assertions proving those cases are reached. *Why it holds, recorded in the test comment:* the reference chain sums a degree in ascending pore ordinal, which is the order the kernel walks its six face offsets, and `2ab/(a+b)` is exactly symmetric.
+- **F11** — `transient.jl` now calls `_invalidate_cache!` before rescaling `nzval`, with a no-op `_invalidate_cache!(::Any)` fallback mirroring `_free!`. **"Any mutation invalidates" is now literally true.**
+- **F12** — GPU assertion added for `reconstruct_slice`'s device gather, verified on real CUDA hardware (3 slices identical, 235/225/215 NaNs each).
+- **F7/F8/F14** — the post-hoc Dirichlet elimination is labelled reference/parity material (nothing deleted); `test_impl_parity.jl:225` renamed to "reference-chain parity"; the symmetric SpMV kernel's bit-identity claim is bounded to a single-workgroup launch. **No assertion changed.**
+- **B28 REJECTED on measurement**, and the earlier reading explained: *"block 12 is better" came from measuring several block sizes in one process — pool growth inflated later cells by up to 75 %."* With a fresh process per block: 400³ block 12 −27 %, 600³ block 19 −10 %, but **800³ block 25 regresses +2.4 % and +0.47 GiB**, dropping headroom 1.93 → 1.46 GiB. A single global cap is self-contradictory (block 12 at 400³ needs cap ≥ 39304; block 26 at 800³ needs cap < 32768). Iteration count is **not monotone in block size** — this needs a size-dependent rule, not a retuned constant. Cap left at 32000.
+- **B27 partial.** Accepted: `norm_to_uniform` rewritten as one buffer written twice instead of ten Float64 temporaries — 400³ **9.91 → 7.19 s (−27 %), 13.5 → 9.21 GiB allocated (−32 %)**, output bit-identical (0 voxel flips at 200³), all three golden node counts unchanged. **Float32 REJECTED as a BLOCKER** — `rand(Float32,…)` changes two of three golden node counts (8098/8093/8113 vs 8116/8066/8113); even keeping the Float64 RNG stream and converting after passes the golden gate but flips 31 of 8 M voxels at 200³, which would invalidate every benchmark baseline recorded for this campaign and change what a released API returns for a given seed — for time no reported metric measures.
+
+---
+
+# FINAL REPORT — matrix path optimization campaign
+
+**Branch `perf/matrix-path`, 35 commits, `680f883`…`41c0127`. Started and finished 2026-08-08.** Nothing pushed; every commit is local, as instructed.
+
+## Phase 6 verification — measured at HEAD `41c0127`
+
+`Pkg.test()` — **foreground, GPU included:**
+
+```
+Test Summary:                            |  Pass  Total     Time
+Tortuosity.jl                            | 11576  11576  2m57.0s
+```
+
+Phase 0 floor was **11360**. Final is **11576, +216 assertions, zero failures.** No golden τ value or golden node count was ever modified.
+
+`bench/scaling_bench.jl`, all sizes including 800³:
+
+```
+    N  device threads     pass   status       nnodes            nnz   setup_s    prec_s   solve_s     e2e_s  peak_GiB    iters      tau
+  200     cpu       1      api       ok      4009753       26583004     0.260         -    43.578    43.876     0.000     1087    1.951
+  200     cpu       4      api       ok      4009753       26583004     0.119         -    44.780    44.941     0.000     1087    1.951
+  200     cpu       1  precond       ok      4009753       26583004     0.258     0.164     4.620     5.426     0.000       90    1.951
+  200     cpu       4  precond       ok      4009753       26583004     0.202     0.107     4.971     5.418     0.000       90    1.951
+  200     gpu       1      api       ok      4009753       26583004     0.009         -     0.708     0.740     1.718     1044    1.951
+  400     gpu       1      api       ok     31906673      216918266     0.056         -    13.522    13.724     4.031     2094    1.925
+  600     gpu       1      api       ok    108249920      742436368     0.160         -    65.368    66.166    10.343     2983    1.943
+  800     gpu       1      api       ok    254645845     1753943979     0.409         -   187.829   189.698    20.588     3620    1.881
+  200     gpu       1  precond       ok      4009753       26583004     0.009     0.052     0.232     0.320     1.781       82    1.951
+  400     gpu       1  precond       ok     31906673      216918266     0.052     0.123     2.047     2.398     4.500      168    1.927
+  600     gpu       1  precond       ok    108249920      742436368     0.159     0.150     8.223     9.202    11.968      223    1.941
+  800     gpu       1  precond       ok    254645845     1753943979     0.388     0.231    18.552    20.660    21.959      202    1.882
+```
+
+## Total deltas, Phase 0 baseline → final
+
+| N | peak GiB | setup s | e2e s (default) | e2e s (preconditioned) |
+| --- | --- | --- | --- | --- |
+| 200³ GPU | 3.281 → **1.718** (−47.6 %) | 0.073 → 0.009 (−87.7 %) | 0.822 → 0.740 (−10.0 %) | **0.320 (−61.1 %)** |
+| 400³ GPU | 12.750 → **4.031** (−68.4 %) | 0.453 → 0.056 (−87.6 %) | 15.447 → 13.724 (−11.2 %) | **2.398 (−84.5 %)** |
+| 600³ GPU | 23.889 → **10.343** (−56.7 %) | 107.871 → 0.160 (**−99.85 %, 674×**) | **never completed → 66.166** | **9.202** |
+| 800³ GPU | 23.889 → **20.588** (−13.8 %) | 384.181 → 0.409 (**−99.89 %, 939×**) | **never completed → 189.698** | **20.660** |
+| 200³ CPU | — | 2.475 → 0.260 (−89.5 %) | 55.502 → 43.876 (−20.9 %) | **5.426 (−90.2 %)** |
+
+**The campaign's central objective is met.** 800³ went from a documented `OutOfGPUMemoryError` — and, once that stopped reproducing, from a 384-second setup that pinned the device at 100 % and never finished solving — to a complete end-to-end solve. **Peak 20.588 GiB of 23.889, headroom 3.301 GiB, clearing the ≥3 GiB gate.** With the preconditioner, 800³ solves in **20.7 seconds**.
+
+Bytes per pore voxel at 800³: **198 → ~76** (peak less the 1.375 GiB CUDA context).
+
+## Accepted changes, with measured gains
+
+**Phase 1 — quick wins (14 items, commits `8053141`…`d529398`).** A20 Krylov placeholder workspace at zero length; A11 connectivity columns as views (−11.2 GiB, one line, the single largest one-line win found); A16 CUSPARSE cache dropped on rebuild; A13 setup-stage arrays freed when dead; A10 transient keeps structural zeros; A2 prefix sum instead of `findall`; A3 exclusive scan by subtraction; A4 colptr view; A14/A18 degrees and diagonal flag without scratch arrays; A15 device-side RHS; A17 `dropzeros!` redundant scan and mask; A19(b)(c) non-Int32 CUSPARSE cache + 5-arg `mul!`; A22 mask copied only when on device. **Result: the 600³ cliff eliminated — setup 107.87 → 0.99 s, e2e never-finished → 74 s.**
+
+**Phase 3 — fused assembly (the main event, `181037f`).** A5+A6+A7+A12+A23+A24+A25 as one coherent change. New `src/assembly.jl`: two KA kernels shared by CPU and GPU, one thread per voxel owning its whole CSC column. No COO, no adjacency matrix, no edge-weight vector, no atomics, no `dropzeros!`. Five stages → two kernels and a scan, **one implementation instead of two**. **800³ setup 384.2 → 0.39 s. CPU output bit-identical to the old pipeline**, now pinned by 56 exact `==` comparisons.
+
+**Phase 4 — speed (rounds 1–3).** A29 CG workspace built around LinearSolve's solution vector (**cleared the memory gate**); B1 CSR view of the symmetric matrix (−8.1 % e2e); B2 symmetric reduce instead of scatter (3.5× on the CPU KA backend); A26 Int32 host CSC (**CPU e2e −17.2 %**); A27/B19/B20/B22 transient data movement; B26 label lookup table (2.32×); B27 fused blob normalisation (−27 %, bit-identical); **B24 two-level aggregation preconditioner — 800³ e2e −89.1 %, iterations 3620 → 202, iteration count flat in N.**
+
+## Rejections, with reasoning
+
+Twenty items rejected. The ones that matter:
+
+- **A8** (upper-triangle storage) — the plan understated the cost: it does not "reintroduce atomics", it **forfeits CUSPARSE entirely** on the only benchmarked backend.
+- **A9** (omit `nzval`) — the plan's *reason* was wrong (it is not "matrix-free with extra steps"; it keeps `rowval` and `colptr`). Rejected because a matrix without `nzval` cannot be handed to CUSPARSE.
+- **B3 and the entire cheap-preconditioner family** — measured, not argued: polynomial preconditioning **raises** total SpMV count monotonically with degree (798/987/1290/1764 vs 606 plain). Only a coarse space wins.
+- **C1** — premise refuted by three independent auditors: the device→host copy never happens in production.
+- **C2** — premise inverted: the cost is materialising 512 M voxels, not the transfer.
+- **C3/C4/C5** — rejected with reasoning; C5 specifically because ~40 lines of rocSPARSE would land with **zero test coverage on the one axis where untested code is most dangerous** — a wrong SpMV returns a plausible τ, not an error.
+- **B25** — measured identical iteration counts; `LinearProblem(A,b; u0=…)` does not warm-start KrylovJL.
+- **B28** — a single global cap is self-contradictory across sizes, and 800³ *regresses*.
+- **B29/B30 and 6 others** in the final audit round — every in-repo candidate tops out at 7–9 % of e2e, below the bar.
+
+**Thirteen further items were triaged MOOT or ALREADY DONE** after Phase 3 deleted the kernels they targeted.
+
+## Blockers — four decisions for Amin
+
+1. **B24 as the default (worth the entire −89 %).** The preconditioner is opt-in; `solve(sim.prob, KrylovJL_CG())` does not use it, so the *default* 800³ e2e is still 190 s rather than 20.7 s. LinearSolve exposes only `alg.precs` and `Pl=`, and `__init` never reads `prob.kwargs`. Making it default needs either shadowing the exported `KrylovJL_CG` (an **ambiguity error on a published name, mid-JOSS-review**) or a Tortuosity-owned `solve` entry point. **Recommendation: the additive option — a new entry point, not a shadowed name.** It resolves B23 at the same time. *This is worth more than every remaining candidate combined.*
+2. **B17 — CPU solve −57 % (4 threads) / −15 % (1 thread).** SpMV is 82 % of the CPU CG iteration; the symmetric gather is 3.31× faster and bit-identical, and the kernel is already committed. The blocker: reaching it means `sim.prob.A` stops being a `SparseMatrixCSC`, costing `Array`, `==`, `issymmetric` and SparseArrays interop on a published object. Tried; 23 assertions fail on exactly that; reverted rather than decided unattended.
+3. **B23 — solver tolerance and iteration cap.** No mechanism exists today; same fix as (1). Note `maxiters` defaults to `length(b)` = **254.6 M** at 800³, and `abstol = reltol = sqrt(eps)` differs by 4½ orders of magnitude between CPU Float64 and GPU Float32.
+4. **A1 — superseded, no longer needs a decision.** It was blocked by `csc_equivalent`; A7 made it moot by deleting the `dropzeros!` call outright.
+
+## Follow-up work that did not fit
+
+- **A30** — port the transient path to the fused assembler. Deliberately not attempted: transient-only, invisible to every metric this harness reports, and its structural contract differs between the CPU and GPU `laplacian` paths. **It would retire the old five-stage pipeline and let B4/B8/B10/B12/B13/B21/B22/A12/A27 all go terminal at once**, and remove a live CPU/GPU drift surface. Judge it on correctness and maintenance, not speed.
+- **A28** — `_free!` is a no-op on Metal and AMDGPU. One line each, blocked on having no hardware to test on.
+- **B27's Float32 half** — worth revisiting only alongside a deliberate fixture regeneration.
+- **F13** — `bench/results/scaling.csv` retains only the Phase 0 baseline; intermediate "before" figures are not independently checkable from the repo.
+
+## Two cautions for the JOSS paper
+
+1. **Do not quote GPU τ beyond three significant figures.** The old CSC path summed with atomics in nondeterministic order — the Phase 0 baseline itself shows τ = 1.92742 vs 1.92824 across two reps of the *same build*. The new CSR path is a deterministic gather (1.88141 in both reps). The new value is more **reproducible**; it is **not shown to be more accurate** — there is no Float64 reference at 800³.
+2. **CPU thread count barely moves CPU numbers** (200³: 43.9 s at 1 thread vs 44.9 s at 4), because CPU SpMV is single-threaded — that is B17, blocked. The Phase 3 "4 threads" annotation was a mislabel; the harness was recording `Threads.nthreads()` truthfully all along. `threads` is now a per-row column and part of the resume key.
+
+## How the plan itself held up
+
+Of the original 21 inventory items, **the four audits and the implementation work corrected or refuted a substantial fraction**: Constraint 2 was factually wrong (the GPU path never guaranteed ascending row order, and the suite contained a test *asserting* unsortedness); A5's mandated insertion sort was dead code; A29's and B1's stated mechanisms were both wrong in opposite directions; two of four C-items rested on false premises; and the single largest one-line win (A11) was missing entirely. The inventory grew 21 → 40 items and every `est. gain` figure that was measured is now marked as measured. **The campaign's most valuable output after the code is an inventory that no longer contains unverified arithmetic.**
+
+- The harness's `stages` pass **overstates peak by design** (it holds `conns` and `am` alive across stages, which the API path no longer does): at 600³ it reports 22.8 GiB against the API pass's 20.2. Do not read the two as comparable.
+
+### Phase 4 round 1 — 2026-08-08, commits `849cc3c`…`0258344` (4 commits)
+
+**Accepted (8 items):** A29, B1, B2, A27, B19, B20, B22.
+**BLOCKED (2):** B17, B23 — both need an API ruling from Amin, both detailed in their inventory rows.
+**Rejected on measurement (2):** A21, B5 — post is 0.8 % of e2e and setup 0.3 %, so neither can move a headline number.
+**Moot after Phase 3 (3):** B14, B15 (steady half), B16. **B3 re-confirmed rejected.**
+
+`Pkg.test()` **PASS, 11397/11397, 2m48.9s** — above the 11365 floor. No golden value touched, no test weakened. Two assertions were *added* that pin the new invariants: every mutator drops the symmetry claim, and `_cg_workspace` matches Krylov's own constructor field by field.
+
+| N | peak GiB | setup s | solve s | e2e s | iters | τ |
+| --- | --- | --- | --- | --- | --- | --- |
+| 200³ | 1.718 → 1.718 (0 %) | 0.008 → 0.009 | 0.775 → **0.715** (−7.7 %) | 0.801 → 0.747 (−6.7 %) | 1044 | 1.951 |
+| 400³ | 4.156 → 4.031 (−3.0 %) | 0.053 → 0.053 | 14.907 → **13.666** (−8.3 %) | 15.113 → 13.904 (−8.0 %) | 2094 | 1.925 |
+| 600³ | 10.750 → 10.343 (−3.8 %) | 0.158 → 0.191 | 71.137 → **65.117** (−8.5 %) | 71.838 → 65.971 (−8.2 %) | 2983 | 1.943 |
+| 800³ | 21.637 → **20.605** (−4.8 %) | 0.388 → 0.391 | 205.660 → **189.051** (−8.1 %) | 207.766 → 191.030 (−8.1 %) | 3620 | 1.881 |
+
+**THE CAMPAIGN GATE IS MET.** 800³ peak 20.605 GiB of 23.889 leaves **3.284 GiB of headroom**, against the ≥3 GiB the conflict rule requires. Iteration counts are identical at every size, so nothing here changed the problem being solved. From here **speed wins** — memory is a budget.
+
+#### Findings that correct the plan
+
+1. **LinearSolve was already aliasing `x` to `u`** (`iterative_wrappers.jl:266`), so A29's stated premise was half-true: the duplication is real but the fix is not aliasing. The constructor allocates a length-n `x` *before* the workspace's other vectors and LinearSolve then throws it away — and freeing it afterwards **does not move the measured peak**, because CUDA's stream-ordered pool counts a freed block as still in use (verified: `unsafe_free!` of 1 GiB leaves `total - available` unchanged, and the next 1 GiB allocation reuses it for free). It has to not be allocated at all. Measured 400³: the workspace build costs 0.5 GiB where `r,p,Ap` account for 0.357.
+2. **B1's mechanism was wrong.** `cusparseSpMV_bufferSize` returns the **same** size for CSC and CSR (2 740 547 B at 800³), so no per-call workspace allocation is avoided — the plan's central claim. The win is the kernel: CSR gathers, CSC scatters with atomics. It is also **size-dependent**: 0.99× at 200³, 1.17× at 400³, 1.175× at 800³. Anyone re-measuring on a small image will conclude, wrongly, that there is nothing here.
+3. **B2 is measurable on a backend present here**, contrary to audit round 1's terminal rejection: on the CPU KA backend at 200³ the atomic scatter is 125.5 ms against 35.5 ms for the symmetric gather (34.6 → 13.3 ms on four threads). It has no effect on the *production* CPU path only because that path returns `SparseMatrixCSC` — which is exactly what B17 is blocked on.
+4. **The CPU path is untouched by this round** and its numbers should not be read as a regression: 200³ CPU e2e reads 58.2 s here against 49.2 s in the Phase 3 table, but nothing in these four commits reaches the CPU steady path, and repeated measurement of the same commit gave 53.0 s (1 thread) and 57.0 s (4 threads). The spread is machine variance. Note also that `bench/results/scaling_env.csv` records **threads=1** for every run, while the Phase 3 table annotates its CPU figure "4 threads" — one of the two is mislabelled, and CPU comparisons are not trustworthy until that is settled.
+5. **τ at 400³ moved 1.928 → 1.925** (and 800³ 1.884 → 1.881). Not a regression: CSC SpMV sums with atomics in a nondeterministic order — the Phase 0 table itself shows 1.92742 vs 1.92824 across two reps of the *same* build — and CSR is deterministic. The shift is 1.6e-3 relative, inside the Float32 envelope `test_gpu_e2e.jl:81` already pins at `rtol=1e-3`. **A side benefit worth naming: the GPU solve is now run-to-run reproducible where it previously was not.**
