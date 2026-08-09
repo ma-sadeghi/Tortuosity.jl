@@ -240,6 +240,33 @@ using Tortuosity: build_adjacency_matrix, build_connectivity_list, laplacian
         @test y ≈ expected
     end
 
+    @testset "the 5-argument form applies alpha and beta" begin
+        # Some Krylov solvers call `mul!(y, A, x, α, β)`. With no method for
+        # `PortableSparseCSC` that falls into `generic_matvecmul!`, which reads
+        # `A` element by element and dies on the scalar-indexing error — so this
+        # covers a path the 3-argument tests above cannot reach.
+        A = sprand(MersenneTwister(10), Float64, 18, 18, 0.2)
+        P = sparse_to_portable(A)
+        x = randn(MersenneTwister(11), 18)
+        Ax = Array(A) * x
+
+        y = fill(1e6, 18)                      # β = 0 must ignore a dirty buffer
+        mul!(y, P, x, 2.0, 0.0)
+        @test y ≈ 2 .* Ax
+
+        y = copy(Ax)                           # β = 1 accumulates
+        mul!(y, P, x, 1.0, 1.0)
+        @test y ≈ 2 .* Ax
+
+        y = copy(Ax)                           # general α, β
+        mul!(y, P, x, -1.0, 3.0)
+        @test y ≈ 2 .* Ax
+
+        y = copy(Ax)                           # α = 0 is a pure scaling of y
+        mul!(y, P, x, 0.0, 5.0)
+        @test y ≈ 5 .* Ax
+    end
+
     @testset "is linear in x" begin
         A = sprand(MersenneTwister(7), Float64, 24, 24, 0.2)
         P = sparse_to_portable(A)
