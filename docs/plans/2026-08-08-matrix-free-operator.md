@@ -1,3 +1,16 @@
+---
+title: Matrix-free operator
+created: 2026-08-08
+updated: 2026-08-09
+status: draft
+branch: "-"
+supersedes: "-"
+superseded-by: "-"
+related: 2026-08-08-matrix-path-optimization.md
+---
+
+> **Status: draft.** Design spec for replacing the assembled sparse Laplacian with a matrix-free operator, so images beyond ~850³ fit in GPU memory. Not started. **Its motivating evidence was superseded on 2026-08-08** by the matrix-path optimization campaign — the 800³ OOM no longer reproduces, bytes-per-pore-voxel fell 198 → ~76, and "setup cost collapses" is retired as a benefit because assembled setup is now 0.409 s. Read the refresh box below before quoting any number from this file. The remaining case is still strong but rests on one argument: the assembled-CSC floor of ~55 B/pore-voxel is structural, and only deleting `rowval`+`nzval` gets past it.
+
 # Matrix-free operator plan
 
 Design notes for replacing the assembled sparse Laplacian with a matrix-free operator, so large images (≥800³) fit in GPU memory. This document is the handoff spec — it records the measured evidence, the proposed design, and the open decisions.
@@ -6,7 +19,7 @@ Design notes for replacing the assembled sparse Laplacian with a matrix-free ope
 
 > ## ⚠ REFRESHED 2026-08-08 — the evidence below is superseded
 >
-> **The assembled-path optimization campaign (`MATRIX_PATH_PLAN.md`) has landed, and the premise of this document has changed.** The original motivating measurements are kept below for the historical record, struck through where they no longer hold. **Read this box before quoting any number from this file.**
+> **The assembled-path optimization campaign (`2026-08-08-matrix-path-optimization.md`) has landed, and the premise of this document has changed.** The original motivating measurements are kept below for the historical record, struck through where they no longer hold. **Read this box before quoting any number from this file.**
 >
 > | N | peak device memory: as-measured 2026-08-08 (was) | outcome |
 > | --- | --- | --- |
@@ -117,7 +130,7 @@ Files affected: `src/simulations.jl` (construction site), a new operator source 
 
 ## Status of this document
 
-This is a design sketch produced from reading, not from measuring. Whoever implements it has full authority to depart from it: pursue approaches it does not mention, rewrite parts that turn out to be wrong, add code and abstractions where they genuinely serve the goal, and contradict any analysis here that measurement disproves. The same decision heuristic and staff-engineer agency described in `MATRIX_PATH_PLAN.md` apply. The design below is a starting point and a record of what was already investigated — not a boundary.
+This is a design sketch produced from reading, not from measuring. Whoever implements it has full authority to depart from it: pursue approaches it does not mention, rewrite parts that turn out to be wrong, add code and abstractions where they genuinely serve the goal, and contradict any analysis here that measurement disproves. The same decision heuristic and staff-engineer agency described in `2026-08-08-matrix-path-optimization.md` apply. The design below is a starting point and a record of what was already investigated — not a boundary.
 
 ## Open decisions
 

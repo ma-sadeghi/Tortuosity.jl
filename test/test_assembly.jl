@@ -379,7 +379,8 @@ end
     # the pre-elimination Laplacian `L`, and they are checked against what
     # `SteadyDiffusionProblem` actually builds — `build_steady_system`, which
     # never forms `L` at all. They are written as a specification
-    # rather than a spot check because MATRIX_FREE_PLAN.md replaces the
+    # rather than a spot check because the matrix-free plan
+    # (docs/plans/2026-08-08-matrix-free-operator.md) replaces the
     # assembled matrix with a stencil operator that has to reproduce exactly this
     # convention: an edge survives only when both endpoints are free, a boundary
     # row keeps its *original* diagonal, and the eliminated coupling is folded
