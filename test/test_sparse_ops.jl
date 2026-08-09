@@ -574,9 +574,12 @@ end
 @testset "the symmetric SpMV kernel agrees with the atomic scatter" begin
     # A matrix declared symmetric takes a different kernel: one thread reduces
     # a column into a single output entry instead of scattering it across `y`
-    # with atomics. It visits each output's terms in the order the scatter
-    # would, so `y = A*x` agrees to the last bit. The 5-argument form only
-    # agrees to rounding: the scatter scales `y` by `beta` in a pass of its own
+    # with atomics. It visits each output's terms in ascending column order,
+    # which is the order the scatter reaches them in while the whole launch fits
+    # one workgroup -- hence `n = 40` here, and hence `y = A*x` agreeing to the
+    # last bit. Past one workgroup the scatter's atomics land in an arbitrary
+    # order and only `≈` survives. The 5-argument form only agrees to rounding
+    # even at this size: the scatter scales `y` by `beta` in a pass of its own
     # and folds `alpha` into `x[j]`, where the gather computes
     # `alpha*acc + beta*y[j]` -- same value, different association.
     for label in ("tridiagonal", "random")

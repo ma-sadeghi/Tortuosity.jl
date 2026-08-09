@@ -168,9 +168,12 @@ end
 # and thread `j` can reduce it straight into `y[j]`. That replaces one atomic
 # read-modify-write per nonzero, plus the `fill!` the scatter needs, with a
 # private accumulator and a single coalesced store. Each output's terms are
-# summed in the order the scatter would reach them, so `y = A*x` comes out bit
-# for bit the same; the 5-argument form matches only to rounding, since `alpha`
-# and `beta` are applied here in one expression rather than in separate passes.
+# summed in ascending column order; the scatter reaches them in whatever order
+# its atomics land, which is ascending only while the launch fits in a single
+# workgroup. So `y = A*x` matches the scatter bit for bit on a one-workgroup
+# launch and to rounding otherwise. The 5-argument form matches only to rounding
+# either way, since `alpha` and `beta` are applied here in one expression rather
+# than in separate passes.
 #
 # Measured on the CPU backend at 200³ (26.6M nonzeros, Float64): 125.5 ms per
 # scatter against 35.5 ms per gather on one thread, 34.6 against 13.3 on four.
