@@ -2,8 +2,8 @@
 title: Development loop latency
 created: 2026-08-09
 updated: 2026-08-09
-status: draft
-branch: "-"
+status: complete
+branch: perf/dev-loop
 supersedes: "-"
 superseded-by: "-"
 related: 2026-08-08-matrix-path-optimization.md
@@ -287,6 +287,8 @@ in expression starting at src\Tortuosity.jl:1
 
 **Consequence: the plan's headline S1 figure of 212 → 134 packages / 6.1 s → 4.1 s is not reachable** without changing when that warning fires. The achieved figure is 213 → 152 stanzas and 4.6 s → 3.5 s. Anyone quoting the original number should stop.
 
+- 2026-08-09 — **Phase 3** — done — independent review returned **DO NOT SHIP** on four findings; all four fixed — `883a41e`, `1a3b04a`, `fc19b60` — orchestrator then re-ran the full suite in the foreground: `EXIT=0`, **11576 / 11576, 222.93 s** (Phase 0: 11576 / 265.41 s). The reviewer was given the diff and forbidden from running Julia, so its findings are independent of the writer's own test claims; the green run is the orchestrator's, not an agent's report.
+
 **The L1 measurement, in full.** Warm session on `env_path = …/Tortuosity/test/` (which makes julia-mcp run `using TestEnv; TestEnv.activate()` and take the parent as project root — this is how the `[extras]`/`[targets]` layout is handled). Session warm-up 44.0 s, paid once. Then three consecutive edit → reload → test cycles on `test/test_transient.jl`:
 
 | cycle | edit→green | assertions | probe verified |
@@ -299,7 +301,7 @@ Cycle 1 is slower because the reloaded methods are re-JITted once. **Steady stat
 
 ## Final report
 
-**Status: Phase 1 complete and verified. Phase 2 complete except ImageMorphology, which is blocked on evidence. Phase 3 incomplete — an independent review returned DO NOT SHIP and its fixes were still in flight when the run's turn budget ended.** The branch `perf/dev-loop` is green but must not be merged until the review findings below are closed.
+**Status: complete.** Phase 1 delivered and verified against the live machine. Phase 2 delivered except ImageMorphology, which is blocked on evidence recorded above. Phase 3 done: an independent adversarial review returned DO NOT SHIP, its four blocking findings were fixed, and the full suite was then re-run in the foreground by the orchestrator — `EXIT=0`, **11576 / 11576 pass, 222.93 s wall** against the Phase 0 baseline of 11576 / 265.41 s. Branch `perf/dev-loop` is green and ready to merge; nothing was pushed.
 
 **What was achieved.**
 
@@ -318,7 +320,14 @@ The inner loop — the one that actually hurt — is the whole story, and it cam
 2. **S1 is only 3/4 achievable.** ImageMorphology is load-bearing at precompile time; the 212 → 134 target was never reachable.
 3. **The real baseline was 173.9 s, not ~106 s.** The plan's figure came from a CPU-only path on an isolated copy; the environment an agent actually runs in resolves CUDA, so an edit also rebuilds the 92 s extension.
 
-**Open, and blocking a merge.** The independent reviewer's findings, in its priority order: the docs claim weak dependencies are installed with the package (they are not — `Pkg.add` resolves `[deps]` only, so the README and `docs/src/index.md` quick-start both fail on their first line); no test can reach any of the new stub error paths, because the suite loads all three optional packages up front and Julia cannot unload an extension, leaving the only user-visible behaviour change unverified; five extensions now import `PrecompileTools.workload_enabled`, which is **not exported** and is pinned loosely at `1.2`, so a 1.x release dropping it would break extension *loading* and silently drop the GPU backends to CPU; `docs/src/index.md` advertises `export_to_hdf5`, which is not exported; the stubs' `kwargs...` catch-all will eventually tell a user to load a package they already have; the scratch-env dev-loop recipe in `2026-08-08-matrix-path-optimization.md:134` no longer installs enough packages to run `test/runtests.jl`; and the version is not bumped and has no release note, though `CHANGELOG.md` now carries an `## Unreleased` section with the `breaking` keyword AutoMerge requires.
+**Review findings, fixed** — `883a41e`, `1a3b04a`, `fc19b60`, suite re-verified green after all three:
+
+1. **The docs claimed weak dependencies install with the package.** They do not — `Pkg.add` resolves `[deps]` only, so both the README and `docs/src/index.md` quick-starts died on their first line. Fixed, along with the same sentence in `CHANGELOG.md`, the GPU-backend snippets, and four docstrings, all now matching the stub error's wording.
+2. **Five extensions imported `PrecompileTools.workload_enabled`**, which is *not exported* and pinned loosely at `1.2`. A 1.x release dropping it would be a **load-time** failure in all five — and for the GPU extensions that means the backend registration never runs and `using Tortuosity; using CUDA` silently falls back to CPU. Replaced with `Tortuosity._workload_enabled()`, which guards on `isdefined` and returns `true` when absent; default-ON confirmed.
+3. **`docs/src/index.md` advertised `export_to_hdf5`, which is not exported.** Qualified as `Tortuosity.export_to_hdf5`, consistent with how `api.md` presents every other unexported name, rather than widening the public API on an already-breaking branch.
+4. **The stubs' `kwargs...` catch-all would eventually tell a user to load a package they already have.** Removed; that case is now an honest `MethodError`.
+
+**Still open, deliberately.** No test reaches the new stub error paths — the suite loads all three optional packages up front and Julia cannot unload an extension, so the only user-visible behaviour change is unverified. Fixing it properly needs a subprocess-based test; it is worth doing and was not done here. The scratch-env recipe at `2026-08-08-matrix-path-optimization.md:134` no longer installs enough packages to run `test/runtests.jl`. The version is not bumped and has no release note — a release decision, not an engineering one; `CHANGELOG.md` carries an `## Unreleased` section already containing the literal `breaking` keyword AutoMerge requires. The AMDGPU and Metal extension edits were parse-checked only, since neither package nor device exists on this machine; the edit is character-identical to the CUDA one, which precompiles and passes its GPU testsets.
 
 **Also found, out of scope, not fixed:** `test_transient.jl:462`'s bitwise float comparison is latent fragility independent of this plan — it survives only because `-O2` codegen happens to match on both paths. And `src/utils.jl:125` `get_taufactor_conc` references `pyconvert`, `Py` and `pad`, none of which are defined anywhere in the package; that function cannot run today and did not before this work.
 
