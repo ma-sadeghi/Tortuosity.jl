@@ -1,6 +1,5 @@
 module Tortuosity
 
-using HDF5
 using KernelAbstractions
 using LinearAlgebra
 using LinearSolve
@@ -33,6 +32,7 @@ GPU backends override it in their extension.
 """
 _free!(x) = nothing
 
+include("weakdeps.jl")
 include("utils.jl")
 include("geometry.jl")
 include("imgen.jl")
