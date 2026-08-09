@@ -56,10 +56,10 @@ Statuses: `pending`, `done`, `rejected`, `blocked`, `reverted`, `deferred`.
 
 | id | item | kind | status | measured effect |
 | --- | --- | --- | --- | --- |
-| L1 | Adopt an MCP server giving agents a persistent Julia session | dev-only | pending | edit→green **106 s → ~2 s** |
-| L2 | Pass `-O1` on all test runs | dev-only | pending | cold suite **90.7 s → 67.2 s** (−26 %) |
-| L3 | Deliver the MCP server config from `~/.agents/` via a chezmoi sync script, to Claude / Codex / Copilot | dev-only | pending | enables L1 on every agent, not just one |
-| L4 | Global `julia-workflow` skill in `~/.agents/skills/` carrying the guardrails | dev-only | pending | prevents the silent-stale failure mode |
+| L1 | Adopt an MCP server giving agents a persistent Julia session | dev-only | **done** | edit→green **173.9 s → 1.13 s** (measured, ~154×) |
+| L2 | Pass `-O1` on all test runs | dev-only | **rejected** | breaks a test — see below and Rejected |
+| L3 | Deliver the MCP server config from `~/.agents/` via a chezmoi sync script, to Claude / Codex / Copilot | dev-only | **done** | one canonical file syncs Claude + Codex + Copilot |
+| L4 | Global `julia-workflow` skill in `~/.agents/skills/` carrying the guardrails | dev-only | **done** | prevents the silent-stale failure mode |
 
 **L1–L4 are one change delivered in four parts.** L1 picks the server, L3 installs it everywhere, L4 makes agents actually use it correctly. Shipping L1 without L4 is the dangerous combination: a persistent session that agents use naively returns stale results silently (see below).
 
@@ -82,7 +82,22 @@ Recommendation: **start with julia-mcp**, primarily for its TestEnv integration 
 
 **The one hazard, and it is a real one.** A missed `revise()` returns **stale results silently**. This was hit during the investigation: a measurement that looked like a fast edit cycle was a no-op reload, and an agent would have read it as a passing test on code it never compiled. **Acceptance criterion for L1: the workflow must verify that the revision applied rather than assume it** — e.g. a probe value bumped by the edit and asserted after reload. AgentREPL's reload hook is the mitigation if julia-mcp proves lossy in practice.
 
-**L2 — `-O1` for test runs.** Cold suite 90.7 s → 67.2 s. Better than expected: pkgimages are **not** keyed by the process's `-O` level, so there is no rebuild cost and precompile time is unaffected (85.4 s at `-O2` vs 85.7 s at `-O1`). **Must not be used for `bench/`**, where runtime speed is the quantity being measured.
+**L2 — `-O1` for test runs. REJECTED on execution; the design-phase measurement was correct but incomplete.** The speed claim holds (cold suite 90.7 s → 67.2 s; pkgimages are not keyed by the process's `-O` level, so there is no rebuild cost). What the design phase never checked is whether the suite still *passes* at `-O1`. It does not.
+
+`-O1` was shipped as the trailing argument of the MCP server, and the very first warm run came back **174 passed, 1 failed** on a file that passes 175/175 in a fresh `-O2` process. Attribution, four fresh runs differing only in flags:
+
+| flags | result |
+| --- | --- |
+| `-O2 --threads=1` | 175 / 175 pass |
+| `-O2 --threads=auto` (20 threads) | 175 / 175 pass |
+| `-O1 --threads=1` | 174 pass, **1 fail** |
+| `-O1 --threads=auto` | 174 pass, **1 fail** |
+
+Thread count is irrelevant; `-O1` is the whole effect. The failure is `test/test_transient.jl:462`, `@test m_override == m_prob` — an **exact bitwise float equality** between two mathematically equivalent computations. At `-O2` both paths happen to generate identical code; at `-O1` they diverge in the last 1–2 ULP (`0.12524001601324483` vs `0.12524001601324478`) and the assertion fails. Making the suite green at `-O1` would mean loosening that assertion to `≈`, i.e. weakening a test to accommodate a dev-time speed lever. That trade is not available.
+
+`-O1` was therefore removed from the server configuration. The session runs at the default `-O2`, and the `julia-workflow` skill carries the durable form of the lesson: lowering Julia's optimisation level changes floating-point codegen, so it is never a free speed lever — re-run the full suite at that level before adopting it.
+
+**Separately worth Amin's attention, and deliberately not fixed here:** `test_transient.jl:462` asserting bitwise float equality across two code paths is latent fragility independent of this plan. It survives today only because `-O2` codegen happens to match. Any change to Julia's optimiser, a dependency's inlining, or the surrounding code can break it with no bug in the package. Loosening it to a tolerance-based comparison is a reasonable separate change, but it is out of scope for a latency campaign and was not made.
 
 **L3 — deliver it through the existing chezmoi fan-out.** This work is not Tortuosity-specific and must not live in this repo. Amin's machine already has the right mechanism, and this follows it exactly rather than inventing a parallel one.
 
@@ -116,8 +131,8 @@ This skill is the guardrail layer, and it is what makes the persistent session s
 
 | id | item | kind | status | measured effect |
 | --- | --- | --- | --- | --- |
-| S1 | Move HDF5, LsqFit, ImageFiltering, ImageMorphology behind `[weakdeps]`/`[extensions]` | shipped | pending | **212 → 134 packages**, load **6.1 s → 4.1 s** |
-| S2 | Make the CUDA extension's `@compile_workload` honour the parent package's preference | shipped | pending | unblocks a dev-time toggle worth **−75 s/edit**; no user-visible change |
+| S1 | Move HDF5, LsqFit, ImageFiltering, ImageMorphology behind `[weakdeps]`/`[extensions]` | shipped | **done (3 of 4)** — ImageMorphology **BLOCKED** | **213 → 152 manifest stanzas**, load **4.6 s → 3.5 s** |
+| S2 | Make the CUDA extension's `@compile_workload` honour the parent package's preference | shipped | **done** | extension precompile **55.0 s → 8.3 s** when the parent preference is off; default unchanged |
 
 **S1 — dependency reduction.** Measured against a matched control with workloads disabled on both sides. Attribution of the closure:
 
@@ -172,6 +187,7 @@ Each of these was measured, not reasoned about. They are recorded so they are no
 | **Split the package into sub-packages so edits invalidate less** | **rejected — premise false** | Only ~16 s of the ~92 s precompile is our code; ~59.5 s is dependency loading. This is the intuitive move and the attribution kills it. |
 | **Keep CUDA out of the iteration environment** | **rejected — no effect** | A CUDA-free env costs 91.6/100.4 s per edit, statistically identical to the CUDA-containing env's CPU-only path (81–97 s). The extension is built only when CUDA is actually *loaded*, not merely installed. An earlier claim that this saved ~60 s/edit was inferred from precompile-cache file counts and was **wrong**; direct measurement retracted it. |
 | **`-O0` instead of `-O1`** | **rejected — not worth it** | 65.8 s vs 67.2 s cold suite, for a materially larger runtime penalty. |
+| **`-O1` for test runs (L2)** | **rejected on execution — turns the suite red** | Saves 23 s of cold suite but fails `test/test_transient.jl:462`, which asserts exact bitwise float equality; `-O1` codegen diverges by 1–2 ULP. Confirmed by a 2×2 flag matrix: both `-O2` arms 175/175, both `-O1` arms 174/175, independent of thread count. Full detail in the L2 section. |
 
 ## Execution
 
@@ -252,3 +268,60 @@ This is the number Phase 1 is judged against. It is **higher than the ~106 s in 
 Confirmed en route: the CUDA 13.3.0 / CUDA.jl-precompiled-for-13.2.0 mismatch flagged as unchecked in the Measurement appendix **is** present in the real test environment — it warns on every extension precompile.
 
 ### Item log
+
+- 2026-08-09 — **Phase 0** — done — baseline above (11576 assertions / 265.41 s; edit→green 173.9 s) — `569c0e7` (Tortuosity) — branch `perf/dev-loop` cut from `main`.
+- 2026-08-09 — **L1, L3, L4** — done — **edit→green 173.9 s → 1.13 s (~154×)** — `e36e53c` (chezmoi dotfiles) — verified by the master against the live machine, not by agent report: `claude mcp list` shows `julia … ✔ Connected`, `~/.codex/config.toml` carries `[mcp_servers.julia]`, `~/.claude/skills/julia-workflow` is a Junction to `~/.agents/skills/julia-workflow`. Server is [julia-mcp](https://github.com/aplavin/julia-mcp) pinned at `0000000045a2d345`, launched via `uvx --from git+…` (no clone, no system Python needed), delivered from the canonical `~/.agents/mcp/servers.json` by `run_onchange_sync-agent-mcp.{ps1,sh}.tmpl`. Pruning was proven by removing the server, applying, confirming it vanished from all three agents while the four claude.ai connectors and the chrome-devtools plugin survived, then restoring it.
+- 2026-08-09 — **L2** — **rejected** — would save ~23 s of cold suite but fails `test_transient.jl:462` — `019041a` (chezmoi dotfiles) removes it — see the L2 section for the 2×2 attribution matrix.
+
+- 2026-08-09 — **S2** — done — extension precompile **55.0 s → 8.3 s** with `set_preferences!(Tortuosity, "precompile_workload" => false)`; **default unchanged, workload still ON** — `95cc2b5` — reviewer CONFIRMED the default path: `workload_enabled` defaults `true` on both the global and per-package preference and on its `catch` branch, so users are unaffected. The plan's `ext/TortuosityCUDAExt.jl:93` was stale; the real block is ~line 116. The same guard was applied to the Metal and AMDGPU extensions, which had the identical bug.
+- 2026-08-09 — **S1** — **done for HDF5, LsqFit, ImageFiltering; BLOCKED for ImageMorphology** — **213 → 152 manifest stanzas, `using Tortuosity` 4.6 s → 3.5 s, 277 → 201 packages loaded** — `139bb80`, `e94504c`, `5e04cea`, `667f614`, `df77df6` — full suite green at **11576/11576** after each.
+
+**Why ImageMorphology could not move — this is a correction to the plan, not a shortfall in execution.** It was implemented fully and the package then failed to precompile at all:
+
+```
+ERROR: LoadError: Imaginator.trim_nonpercolating_paths requires ImageMorphology, ...
+in expression starting at src\Tortuosity.jl:1
+```
+
+`label_components` is reached from `_warn_nonpercolating` (`src/simulations.jl:63-68`), which runs **by default** from every `SteadyDiffusionProblem` on an image under 50 M voxels; `src/caverns.jl` uses it too; and the CPU `@compile_workload` builds a `SteadyDiffusionProblem`. So ImageMorphology is load-bearing at precompile time. Making it optional would mean either dropping the percolation check from the default path or silently degrading it when the package is absent — both user-visible behaviour changes well beyond "load a package first", and both barred by constraint 1. The work was reverted cleanly.
+
+**Consequence: the plan's headline S1 figure of 212 → 134 packages / 6.1 s → 4.1 s is not reachable** without changing when that warning fires. The achieved figure is 213 → 152 stanzas and 4.6 s → 3.5 s. Anyone quoting the original number should stop.
+
+**The L1 measurement, in full.** Warm session on `env_path = …/Tortuosity/test/` (which makes julia-mcp run `using TestEnv; TestEnv.activate()` and take the parent as project root — this is how the `[extras]`/`[targets]` layout is handled). Session warm-up 44.0 s, paid once. Then three consecutive edit → reload → test cycles on `test/test_transient.jl`:
+
+| cycle | edit→green | assertions | probe verified |
+| --- | --- | --- | --- |
+| 1 | 4.58 s | 175 / 175 | yes (probe = 2) |
+| 2 | 1.14 s | 175 / 175 | yes (probe = 3) |
+| 3 | 1.13 s | 175 / 175 | yes (probe = 4) |
+
+Cycle 1 is slower because the reloaded methods are re-JITted once. **Steady state is 1.13 s against a 173.9 s fresh-process baseline.**
+
+## Final report
+
+**Status: Phase 1 complete and verified. Phase 2 complete except ImageMorphology, which is blocked on evidence. Phase 3 incomplete — an independent review returned DO NOT SHIP and its fixes were still in flight when the run's turn budget ended.** The branch `perf/dev-loop` is green but must not be merged until the review findings below are closed.
+
+**What was achieved.**
+
+| loop | before | after | factor |
+| --- | --- | --- | --- |
+| edit → one test file | 173.9 s | **1.13 s** | **154×** |
+| `using Tortuosity` | 4.6 s | **3.5 s** | 1.3× |
+| manifest stanzas | 213 | **152** | −61 |
+| full `Pkg.test()` | 265.4 s / 11576 assertions | 229 s / 11576 assertions | — |
+
+The inner loop — the one that actually hurt — is the whole story, and it came from the process model, exactly as the plan predicted. No source change was needed for it.
+
+**The three things this run learned that the plan had wrong.**
+
+1. **L2 (`-O1`) is not free.** It saves 23 s of cold suite and fails `test_transient.jl:462`, which asserts exact bitwise float equality. The design phase measured speed and never checked correctness. Rejected and removed.
+2. **S1 is only 3/4 achievable.** ImageMorphology is load-bearing at precompile time; the 212 → 134 target was never reachable.
+3. **The real baseline was 173.9 s, not ~106 s.** The plan's figure came from a CPU-only path on an isolated copy; the environment an agent actually runs in resolves CUDA, so an edit also rebuilds the 92 s extension.
+
+**Open, and blocking a merge.** The independent reviewer's findings, in its priority order: the docs claim weak dependencies are installed with the package (they are not — `Pkg.add` resolves `[deps]` only, so the README and `docs/src/index.md` quick-start both fail on their first line); no test can reach any of the new stub error paths, because the suite loads all three optional packages up front and Julia cannot unload an extension, leaving the only user-visible behaviour change unverified; five extensions now import `PrecompileTools.workload_enabled`, which is **not exported** and is pinned loosely at `1.2`, so a 1.x release dropping it would break extension *loading* and silently drop the GPU backends to CPU; `docs/src/index.md` advertises `export_to_hdf5`, which is not exported; the stubs' `kwargs...` catch-all will eventually tell a user to load a package they already have; the scratch-env dev-loop recipe in `2026-08-08-matrix-path-optimization.md:134` no longer installs enough packages to run `test/runtests.jl`; and the version is not bumped and has no release note, though `CHANGELOG.md` now carries an `## Unreleased` section with the `breaking` keyword AutoMerge requires.
+
+**Also found, out of scope, not fixed:** `test_transient.jl:462`'s bitwise float comparison is latent fragility independent of this plan — it survives only because `-O2` codegen happens to match on both paths. And `src/utils.jl:125` `get_taufactor_conc` references `pyconvert`, `Py` and `pad`, none of which are defined anywhere in the package; that function cannot run today and did not before this work.
+
+**Deferred as planned:** X1 (dependency sysimage) and X2 (parallel test execution) were not attempted. Phase 1 removed the loop they would have optimised, which is precisely why the plan deferred them.
+
+The staleness hazard the plan flags was handled the way the plan demanded, not assumed away: each edit bumped a probe function's return value and the session **asserted the new value before running the tests**, so a missed reload would have errored rather than silently reporting a pass. All three cycles verified clean. The harness driving this is `warm_loop.mjs`, a small stdio MCP client; it is measurement scaffolding and is not preserved in the repo.
