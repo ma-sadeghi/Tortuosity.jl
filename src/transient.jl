@@ -319,6 +319,9 @@ function build_transient_operator(
     A = laplacian(am)
     _free!(am)
 
+    # Editing `nzval` in place is a mutation like any other, so the matrix's
+    # claims about its own contents go first.
+    _invalidate_cache!(A)
     nonzeros(A) .= nonzeros(A) ./ (-voxel_size^2)
 
     # Zero rows so Dirichlet values remain constant during integration. The

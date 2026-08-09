@@ -114,6 +114,12 @@ function _invalidate_cache!(A::PortableSparseCSC)
     return nothing
 end
 
+# No-op for any other matrix: a `SparseMatrixCSC` remembers nothing about its
+# own contents, so there is nothing to drop. Having the fallback lets a mutator
+# that runs on either representation call it unconditionally, which is what
+# makes "any mutation invalidates" a rule rather than a convention.
+_invalidate_cache!(::Any) = nothing
+
 # Releasing a matrix means releasing its three arrays; the cached artifact has
 # to go first or it is left describing freed storage.
 function _free!(A::PortableSparseCSC)
