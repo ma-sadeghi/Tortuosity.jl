@@ -15,6 +15,18 @@ Pkg.add("Tortuosity")
 
 **Requirements:** Julia 1.10+. GPU acceleration is optional — load the corresponding package (`CUDA.jl`, `Metal.jl`, or `AMDGPU.jl`) to activate it. See [GPU backends](@ref) below.
 
+## Optional dependencies
+
+Parts of the API live in package extensions, so `using Tortuosity` stays light for people who do not need them. Each is installed with Tortuosity; you only have to load it.
+
+| Load this | To use |
+|-----------|--------|
+| `using ImageFiltering` | `Imaginator.blobs`, `Imaginator.apply_gaussian_blur` |
+| `using LsqFit`         | `fit_effective_diffusivity`, `fit_voxel_diffusivity` |
+| `using HDF5`           | `export_to_hdf5` |
+
+Calling one of these without its package raises an error naming the package to load. Everything else — problem construction, solving, the observables, `Imaginator.trim_nonpercolating_paths` — works with `using Tortuosity` alone.
+
 ## Quick example
 
 ```@example
