@@ -18,11 +18,17 @@ rescale to `[lb, ub]`. This is the standard PoreSpy normalization: standardize
 """
 function norm_to_uniform(img; scale=(minimum(img), maximum(img)))
     lb, ub = scale
-    img = (img .- mean(img)) / std(img)
-    img = 1 / 2 * erfc.(-img / sqrt(2))
+    mu, sd = mean(img), std(img)
+    # Two passes over one buffer. Only the reductions force a pass boundary: the
+    # CDF map needs `mean`/`std` of the input, and the rescale needs the extrema
+    # of the CDF output. Everything between them is elementwise, so writing it as
+    # a chain of separate expressions would materialise ten full-size temporaries
+    # — 41 GB at 800³ — for arithmetic that fits in a register.
+    out = @. 1 / 2 * erfc(-((img - mu) / sd) / sqrt(2))
     # Normalize to [0, 1] using actual post-erfc bounds, then rescale to [lb, ub]
-    img = (img .- minimum(img)) / (maximum(img) - minimum(img))
-    return img * (ub - lb) .+ lb
+    lo, hi = extrema(out)
+    @. out = (out - lo) / (hi - lo) * (ub - lb) + lb
+    return out
 end
 
 """
