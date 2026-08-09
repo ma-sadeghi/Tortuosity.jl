@@ -41,6 +41,11 @@ precond_fixtures() = [
         img[2:11, 2:11, 2:11] .= false
         img
     end),
+    # Thinner than one block along y, so the block grid is one deep there and
+    # the offset between a block and its z-neighbour collides with the offset
+    # to its y-neighbour. Couplings still have to land on the right pair.
+    ("thin slab 24x3x24", ones(Bool, 24, 3, 24)),
+    ("thin slab 3x24x24", ones(Bool, 3, 24, 24)),
 ]
 
 const PRECOND_IMAGES = precond_fixtures()
@@ -123,8 +128,13 @@ end
                                                                       PRECOND_IMAGES
     sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
     P = two_level_preconditioner(sim; block=4)
-    plain = solve(sim.prob, KrylovJL_CG(); reltol=1e-12, verbose=false)
-    prec = solve(sim.prob, KrylovJL_CG(); Pl=P, reltol=1e-12, verbose=false)
+    # `abstol` has to be forced down as well: LinearSolve defaults it to
+    # sqrt(eps(Float64)) = 1.5e-8, and Krylov stops at `abstol + reltol·‖r₀‖`,
+    # so at a tight `reltol` the absolute term is what actually ends both runs —
+    # and it ends them at different places, because a preconditioned CG measures
+    # the residual in the M⁻¹ norm rather than the 2-norm.
+    plain = solve(sim.prob, KrylovJL_CG(); reltol=1e-12, abstol=1e-14, verbose=false)
+    prec = solve(sim.prob, KrylovJL_CG(); Pl=P, reltol=1e-12, abstol=1e-14, verbose=false)
 
     tau_plain = tortuosity(reconstruct_field(plain.u, img), img; axis=:x)
     tau_prec = tortuosity(reconstruct_field(prec.u, img), img; axis=:x)
@@ -192,8 +202,8 @@ end
     W = prolongation(P, size(sim.prob.A, 1))
     @test Matrix(W' * sim.prob.A * W) ≈ Matrix(W' * sim.prob.A * W)' rtol = 1e-12
 
-    plain = solve(sim.prob, KrylovJL_CG(); reltol=1e-12, verbose=false)
-    prec = solve(sim.prob, KrylovJL_CG(); Pl=P, reltol=1e-12, verbose=false)
+    plain = solve(sim.prob, KrylovJL_CG(); reltol=1e-12, abstol=1e-14, verbose=false)
+    prec = solve(sim.prob, KrylovJL_CG(); Pl=P, reltol=1e-12, abstol=1e-14, verbose=false)
     @test Tortuosity.effective_diffusivity(reconstruct_field(prec.u, img), img; axis=:x) ≈
           Tortuosity.effective_diffusivity(reconstruct_field(plain.u, img), img; axis=:x) rtol =
         1e-8

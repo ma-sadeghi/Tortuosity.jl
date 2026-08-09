@@ -98,6 +98,14 @@ end
 # the two block indices. Two face-neighbour voxels always land in blocks that
 # differ by one of these six offsets, so `0` means "not a face coupling" and the
 # entry is dropped rather than misfiled.
+#
+# When the block grid is one deep along a dimension two of the six offsets
+# coincide, and a coupling can then be filed under a slot naming the wrong
+# direction. That is harmless: the direction whose offset was taken over has no
+# block neighbour to couple to, so its own slot stays empty, and both slots
+# describe the same pair of blocks — `_coarse_operator` emits each once and the
+# two halves add back up. `test_preconditioner.jl` pins it with a slab thinner
+# than one block.
 @inline function _coarse_slot(d, nbx, nbxy)
     d == -nbxy && return 2
     d == -nbx && return 3
