@@ -4,7 +4,7 @@ module TortuosityAMDGPUExt
 using AMDGPU
 using Tortuosity
 using KernelAbstractions
-using PrecompileTools: @setup_workload, @compile_workload
+using PrecompileTools: @setup_workload, @compile_workload, workload_enabled
 
 function __init__()
     if AMDGPU.functional()
@@ -19,8 +19,11 @@ Tortuosity._on_gpu(::ROCArray) = true
 # Only runs when an AMDGPU device is actually present at extension-precompile
 # time; on machines without a GPU it's a no-op and users pay full TTFX on
 # first solve.
+# `workload_enabled(Tortuosity)` rather than the extension's own preference:
+# `set_preferences!` refuses an extension UUID, so only the parent package's
+# `precompile_workload` preference can switch this off. On by default.
 @setup_workload begin
-    if AMDGPU.functional()
+    if workload_enabled(Tortuosity) && AMDGPU.functional()
         img = ones(Bool, 12, 12, 12)
         @compile_workload begin
             Tortuosity._preferred_gpu_backend[] = ROCBackend()
