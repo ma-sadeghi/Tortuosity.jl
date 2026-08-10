@@ -19,6 +19,7 @@ using Tortuosity:
     build_adjacency_matrix,
     build_connectivity_list,
     build_pore_index,
+    build_steady_system,
     effective_diffusivity,
     tortuosity,
     _build_connectivity_list_cpu,
@@ -476,6 +477,72 @@ end
     # check in the file that shares no code with `build_steady_system`, so
     # a silently-skipped run would look identical to a passing one.
     @test checked == length(ASSEMBLY_IMAGES)
+end
+
+@testset "index type selection" begin
+    # An image past the bound is far larger than any machine on hand, so the
+    # rule is tested through the predicates rather than by building one.
+    wall = fld(typemax(Int32) - 1, 7)           # 7*nnodes + 1 <= typemax(Int32)
+
+    @test Tortuosity._assembled_index_type(1000) === Int32
+    @test Tortuosity._assembled_index_type(wall) === Int32
+    @test Tortuosity._assembled_index_type(wall + 1) === Int
+    # Both backends widen. The refusal this replaced was a GPU-only branch.
+    @test Tortuosity._assembled_index_type(Int64(typemax(Int32))) === Int
+
+    # The ordinal's bound is `nnodes`, the offsets' is `7 * nnodes`, so the two
+    # sit a factor of seven apart and the ordinal stays narrow well past the
+    # point where the offsets have to widen. That gap is the whole reason `idx`
+    # carries its own type.
+    @test Tortuosity._ordinal_index_type(1000) === Int32
+    @test Tortuosity._ordinal_index_type(wall + 1) === Int32
+    @test Tortuosity._ordinal_index_type(typemax(Int32) - 1) === Int32
+    @test Tortuosity._ordinal_index_type(Int64(typemax(Int32))) === Int
+
+    # The wrap the bound exists to prevent.
+    @test Int32(typemax(Int32)) + Int32(1) == typemin(Int32)
+end
+
+@testset "the Ti keyword is honoured or refused, never ignored" begin
+    wall = fld(typemax(Int32) - 1, 7)
+
+    @test Tortuosity._resolve_index_type(nothing, 1000) === Int32
+    @test Tortuosity._resolve_index_type(nothing, wall + 1) === Int
+    # Asking for more range than the image needs costs memory and nothing else.
+    @test Tortuosity._resolve_index_type(Int64, 1000) === Int64
+    @test Tortuosity._resolve_index_type(Int32, wall) === Int32
+    # Granting Int32 past the bound would reinstate the wrap-around corruption
+    # the bound exists to prevent; a keyword does not get to switch that off.
+    @test_throws ArgumentError Tortuosity._resolve_index_type(Int32, wall + 1)
+    @test_throws ArgumentError Tortuosity._resolve_index_type(Int16, 1000)
+    @test_throws ArgumentError Tortuosity._resolve_index_type(Float64, 1000)
+
+    img = ASSEMBLY_IMAGES[2][2]
+    @test_throws ArgumentError SteadyDiffusionProblem(img; axis=:x, gpu=false, Ti=Int16)
+    # `Ti` describes the assembled matrix; silently ignoring it on the
+    # matrix-free path would leave a caller believing they got a wide index.
+    @test_throws ArgumentError SteadyDiffusionProblem(
+        img; axis=:x, gpu=false, matrixfree=true, Ti=Int64
+    )
+end
+
+@testset "Ti=Int64 changes the index width and nothing else — $(label)" for
+        (label, img) in ASSEMBLY_IMAGES
+    n = count(img)
+    for (axis, D) in ((:x, nothing), (:y, nothing), (:z, fill(2.0, size(img)) .* img))
+        A32, b32 = build_steady_system(img; nnodes=n, axis=axis, D=D)
+        A64, b64 = build_steady_system(img; nnodes=n, axis=axis, D=D, Ti=Int64)
+
+        @test A32 isa SparseMatrixCSC{Float64,Int32}
+        @test A64 isa SparseMatrixCSC{Float64,Int64}
+        # The wide build must be the narrow one widened: same pattern, same
+        # values to the last bit. Anything else means an offset was computed
+        # differently rather than merely stored differently.
+        @test SparseArrays.getcolptr(A32) == SparseArrays.getcolptr(A64)
+        @test rowvals(A32) == rowvals(A64)
+        @test nonzeros(A32) == nonzeros(A64)
+        @test b32 == b64
+    end
 end
 
 @testset "open box reproduces the exact linear profile" begin

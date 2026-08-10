@@ -103,6 +103,47 @@ end
     @test prec.iters < plain.iters
 end
 
+# The image that forces `Ti=Int64` on its own has >306M pore voxels and needs
+# ~27 GB of matrix before the solve allocates, so the wide path is exercised by
+# asking for it at a size that fits instead. Everything below the type is
+# identical either way, which is the property worth pinning: the wide build must
+# be the narrow one widened, not a differently-computed one.
+@testset "Ti=Int64 on GPU matches the narrow build (seed=$(seed))" for seed in (1, 42)
+    img = Array{Bool}(
+        Imaginator.blobs(; shape=(32, 32, 32), porosity=0.6f0, blobiness=1, seed=seed)
+    )
+    (any(img[1, :, :]) && any(img[end, :, :])) || return
+
+    narrow = SteadyDiffusionProblem(img; axis=:x, gpu=true)
+    wide = SteadyDiffusionProblem(img; axis=:x, gpu=true, Ti=Int64)
+
+    @test eltype(narrow.prob.A.colptr) === Int32
+    @test eltype(wide.prob.A.colptr) === Int64
+    @test eltype(wide.prob.A.rowval) === Int64
+    # The symmetry claim is what selects the CSR fast path; losing it on the
+    # wide build would silently cost a gather-for-scatter downgrade.
+    @test wide.prob.A.symmetric
+
+    @test Array(narrow.prob.A.colptr) == Array(wide.prob.A.colptr)
+    @test Array(narrow.prob.A.rowval) == Array(wide.prob.A.rowval)
+    @test Array(narrow.prob.A.nzval) == Array(wide.prob.A.nzval)
+    @test Array(narrow.prob.b) == Array(wide.prob.b)
+
+    tau(sim) = tortuosity(
+        reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1.0f-8).u, sim.img),
+        sim.img; axis=:x,
+    )
+    @test tau(wide) ≈ tau(narrow) rtol = 1e-4
+
+    # The preconditioner reads `colptr`/`rowval` straight out of the matrix, so
+    # it has to cope with the wide index too.
+    Pl = Tortuosity.two_level_preconditioner(wide; block=8)
+    @test Pl isa Tortuosity.TwoLevelPreconditioner
+    prec = solve(wide.prob, KrylovJL_CG(); Pl=Pl, reltol=1.0f-8)
+    @test tortuosity(reconstruct_field(prec.u, wide.img), wide.img; axis=:x) ≈
+          tau(narrow) rtol = 1e-3
+end
+
 @testset "CPU/GPU parity with variable D (seed=$(seed))" for seed in (3, 17)
     img = Array{Bool}(
         Imaginator.blobs(; shape=(24, 24, 24), porosity=0.6f0, blobiness=1, seed=seed)

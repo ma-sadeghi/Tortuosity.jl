@@ -343,3 +343,46 @@ end
         @test isapprox(Array(A_sorted * CuArray(x)), y_ref; rtol=1e-4)
     end
 end
+
+# Regression: `_as_cusparse` used to convert any non-Int32 index array down to
+# Int32 before wrapping. Below the Int32 wall that only wasted memory — it
+# cached a second copy of both index arrays — but past the wall it is the exact
+# silent corruption the index-type bound exists to prevent, and it would have
+# fired on every matrix the widened assembly path produces. CUSPARSE indexes
+# with Int64 directly, so the wide arrays are handed over as they stand.
+
+@testset "a 64-bit indexed matrix reaches CUSPARSE without being narrowed" begin
+    ext = Base.get_extension(Tortuosity, :TortuosityCUDAExt)
+    @test ext !== nothing
+
+    img = CUDA.cu(ones(Bool, 24, 24, 24))
+    n = 24^3
+    narrow, _ = Tortuosity.build_steady_system(img; nnodes=n, axis=:x, T=Float32)
+    wide, _ = Tortuosity.build_steady_system(img; nnodes=n, axis=:x, T=Float32, Ti=Int64)
+
+    @test ext._as_cusparse(narrow) isa CUDA.CUSPARSE.CuSparseMatrixCSR{Float32,Int32}
+    @test ext._as_cusparse(wide) isa CUDA.CUSPARSE.CuSparseMatrixCSR{Float32,Int64}
+    # No conversion means the wrapper points at the matrix's own storage, so a
+    # later mutation cannot leave the two disagreeing.
+    @test ext._as_cusparse(wide).rowPtr === wide.colptr
+    @test ext._as_cusparse(wide).colVal === wide.rowval
+
+    x = CUDA.rand(Float32, n)
+    @test isapprox(Array(narrow * x), Array(wide * x); rtol=1e-5)
+
+    # An index type CUSPARSE does not take at all still goes down the
+    # converting fallback, which is what that branch is now for. Built on a
+    # smaller image because 24³ already carries more entries than Int16 indexes.
+    tiny, _ = Tortuosity.build_steady_system(
+        CUDA.cu(ones(Bool, 8, 8, 8)); nnodes=8^3, axis=:x, T=Float32
+    )
+    @test SparseArrays.nnz(tiny) + 1 <= typemax(Int16)   # premise of the Int16 build
+    odd = PortableSparseCSC(
+        tiny.m, tiny.n,
+        CuVector{Int16}(tiny.colptr), CuVector{Int16}(tiny.rowval),
+        copy(tiny.nzval); symmetric=true,
+    )
+    x_tiny = CUDA.rand(Float32, 8^3)
+    @test ext._as_cusparse(odd) isa CUDA.CUSPARSE.CuSparseMatrixCSR{Float32,Int32}
+    @test Array(odd * x_tiny) == Array(tiny * x_tiny)
+end

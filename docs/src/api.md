@@ -55,6 +55,11 @@ per grid voxel against the assembled path's 40 — which is what makes images pa
 roughly 850³ solvable on a 24 GiB card, and its apply is about twice as fast on
 GPU and six times as fast threaded on CPU.
 
+That is a memory limit rather than a refusal. Both paths run at any size their
+storage fits: the assembled one widens its indices to 64-bit once an image
+carries more than 306,783,378 pore voxels, and past that point it simply needs a
+card or a host with the room. Nothing switches between the two on your behalf.
+
 The two paths are peers. They produce the same pore numbering, the same
 right-hand side, the same number of Krylov iterations and the same `τ`, so
 everything downstream is unchanged and the keyword is the only difference. Keep
