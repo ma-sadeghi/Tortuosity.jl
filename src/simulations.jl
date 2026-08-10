@@ -126,17 +126,28 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
 - `matrixfree`: build the operator as a matrix-free stencil
   ([`MaskedLaplacian`](@ref)) instead of an assembled sparse matrix. Same pore
   numbering, same right-hand side and the same `τ`, at a fraction of the memory
-  — which is what makes images past the assembled path's ~850³ ceiling solvable
-  — and a faster apply. Default: `false`, the assembled path.
+  and with a faster apply: measured at 600³ on GPU, both paths converging in 106
+  iterations, 6.31 s and 7.92 GB against the assembled path's 8.33 s and
+  19.09 GB. Worth reaching for from a few hundred voxels per side up. Default:
+  `false`, the assembled path — nothing switches between them on your behalf.
+- `Ti`: index type of the assembled matrix, `Int32` or `Int64`. `nothing`
+  (default) picks the narrowest that fits. Rejected together with
+  `matrixfree=true`, whose operator indexes on its own terms.
 - `verbose`: print progress messages. Default: `false`.
 """
 function SteadyDiffusionProblem(
     img; axis, D=nothing, gpu=nothing, warn_nonpercolating=nothing,
-    matrixfree::Bool=false, verbose=false,
+    matrixfree::Bool=false, Ti=nothing, verbose=false,
 )
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
     @assert img isa AbstractArray{Bool} "Image must be a boolean array"
+    # Silently ignoring `Ti` on the matrix-free path would leave a caller who
+    # asked for a wide index believing they got one.
+    (matrixfree && !isnothing(Ti)) && throw(ArgumentError(
+        "`Ti` sets the index type of the assembled matrix and has no meaning for the \
+         matrix-free operator, which chooses its own; pass one or the other"
+    ))
     # The struct holds `img` on CPU so postprocessing helpers (tortuosity,
     # effective_diffusivity, ...) work against a GPU-built sim. If the caller
     # handed us a GPU array, copy it back and warn once.
@@ -201,7 +212,7 @@ function SteadyDiffusionProblem(
         build_steady_operator(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T,
                               owns_D=(!isnothing(D_dev) && D_dev !== D))
     else
-        build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T)
+        build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T, Ti=Ti)
     end
     if gpu
         # The device copies are dead the moment the system is built; releasing

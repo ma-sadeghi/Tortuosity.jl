@@ -24,9 +24,12 @@ Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrix) = true
 Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
 
 # --- Fast path: wrap PortableSparseCSC for CUSPARSE SpMV ---
-# CUSPARSE expects Int32 indices. Wrapping is cheap (just stores pointers), but
-# within a Krylov solve `mul!` is called hundreds of times so even cheap
-# allocations accumulate, so we cache the wrapper in `A._cache`.
+# CUSPARSE indexes with either 32-bit or 64-bit integers — `cusparseCreateCsr`
+# takes the index type as an argument, and CUDA.jl maps `Int64` to
+# `CUSPARSE_INDEX_64I` — so both of the types `build_steady_system` produces are
+# wrapped as they stand, with no conversion. Wrapping is cheap (just stores
+# pointers), but within a Krylov solve `mul!` is called hundreds of times so even
+# cheap allocations accumulate, so we cache the wrapper in `A._cache`.
 #
 # A matrix that its builder declared `symmetric` is wrapped as CSR rather than
 # CSC. The three arrays are the same bytes read the other way round, and CSC
@@ -45,17 +48,17 @@ Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
 # would then pass the check while describing an array of a different length.
 
 @inline function _as_cusparse(
-    A::PortableSparseCSC{Tv,Int32,V,Vi}
-) where {Tv,V<:CuVector,Vi<:CuVector{Int32}}
+    A::PortableSparseCSC{Tv,Ti,V,Vi}
+) where {Tv,Ti<:Union{Int32,Int64},V<:CuVector,Vi<:CuVector{Ti}}
     cached = A._cache[]
     if A.symmetric
-        cached isa CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Int32} && return cached
-        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Int32}(
+        cached isa CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Ti} && return cached
+        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSR{Tv,Ti}(
             A.colptr, A.rowval, A.nzval, (A.m, A.n)
         )
     else
-        cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32} && return cached
-        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Int32}(
+        cached isa CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti} && return cached
+        wrapped = CUDA.CUSPARSE.CuSparseMatrixCSC{Tv,Ti}(
             A.colptr, A.rowval, A.nzval, (A.m, A.n)
         )
     end
@@ -63,11 +66,16 @@ Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
     return wrapped
 end
 
-# Fallback when the index type is not Int32: CUSPARSE needs Int32, so `colptr`
-# and `rowval` are converted. Cached like the fast path — uncached this
-# reconverted both index arrays on *every* `mul!`, several GB per Krylov
-# iteration on a large matrix, which reads as an unexplained slowdown rather
-# than as an error. Construct with Int32 indices to skip the conversion.
+# Fallback for an index type CUSPARSE does not take at all — anything but Int32
+# or Int64 — whose `colptr` and `rowval` are converted to Int32. Cached like the
+# fast path: uncached this reconverted both index arrays on *every* `mul!`,
+# several GB per Krylov iteration on a large matrix, which reads as an
+# unexplained slowdown rather than as an error.
+#
+# The range check is what keeps the conversion honest. Narrowing an index that
+# does not fit raises `InexactError` inside a device broadcast kernel, where
+# there is nothing to catch it and the message names neither the matrix nor the
+# reason; refuse on the host instead, before a kernel is launched.
 #
 # Unlike the fast path this caches copies of the index arrays, so it relies on
 # `rowval`/`colptr` never being edited in place. `_invalidate_cache!` covers it:
@@ -75,6 +83,12 @@ end
 function _as_cusparse(
     A::PortableSparseCSC{Tv,Ti,V,Vi}
 ) where {Tv,Ti,V<:CuVector,Vi<:CuVector}
+    (max(A.m, A.n) <= typemax(Int32) && nnz(A) + 1 <= typemax(Int32)) || throw(ArgumentError(
+        "a $(A.m)×$(A.n) `PortableSparseCSC{$(Tv),$(Ti)}` with $(nnz(A)) stored entries \
+         needs more index range than CUSPARSE's 32-bit indexing offers, and $(Ti) is \
+         not one of the types it indexes with directly (`Int32`, `Int64`); rebuild it \
+         with `Int64` indices"
+    ))
     cached = A._cache[]
     colptr32() = convert(CuVector{Int32}, A.colptr)
     rowval32() = convert(CuVector{Int32}, A.rowval)

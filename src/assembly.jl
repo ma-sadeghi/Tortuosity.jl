@@ -153,35 +153,85 @@ slot range, so there are no atomics and the output is bit-reproducible.
 end
 
 """
-    _assembled_index_type(on_gpu, nnodes)
+    _assembled_index_type(nnodes)
 
-The integer type the CSC index arrays are stored in, or an error when no
-supported type fits.
+The integer type the CSC index arrays are stored in.
 
 `Int32` halves the index traffic, which is what an unpreconditioned CG spends
 nearly all of its time on: 16 B per stored entry becomes 12 B. That holds only
 while every offset the assembly computes fits in 32 bits. A column holds at most
 seven entries — its diagonal and six face neighbours — so `7 * nnodes` bounds
-`nnz` from above, and the bound sits near 900³ at half porosity.
+`nnz` from above, and the bound sits at 306,783,378 pore voxels. That is a pore
+count rather than an edge length, so porosity decides which image reaches it:
+roughly 1150³ at ε = 0.2, 800³ at ε = 0.6, 690³ at ε = 0.95. Measured
+`nnz / nnodes` on blob images falls between 6.2 and 6.9 across ε = 0.3 to 0.95
+and 128³ to 400³, so the bound sits within a tenth of the truth and counting the
+entries exactly would buy almost nothing.
 
-Past it the failure is silent and then fatal: `accumulate(+, counts)` and
+Past the bound every offset widens to `Int`, on host and device alike. The
+alternative is not a slower path but a wrong one: `accumulate(+, counts)` and
 `colptr` wrap to negative rather than saturating, `nnz_A` comes out wrong, and
 `_steady_fill_kernel!` writes through `@inbounds` at the true offsets — off the
 end of arrays sized from the wrapped count. On the host that corrupts memory; on
 the device it faults with `ERROR_ILLEGAL_ADDRESS`, asynchronously and
-uncatchably. The host widens to `Int`; the device has no 64-bit index path, so
-it refuses. Mirrors [`_operator_index_type`](@ref) for the matrix-free operator,
-whose bound is `nnodes` rather than `7 * nnodes`.
+uncatchably.
+
+Widening doubles index storage exactly where device memory binds, and index
+traffic is what the SpMV spends its time on: measured at 400³ on an RTX PRO
+5000, one `Float32` SpMV takes 3.45 ms with `Int32` indices against 4.03 ms with
+`Int64`, for 0.93 GiB of index storage against 1.85 GiB. At the bound the whole
+matrix goes from 15.9 GB to 24.4 GB, against 8.6 GB for the matrix-free
+operator, which also measured faster at equal iteration counts — 6.31 s against
+8.33 s at 600³. So `matrixfree=true` is the recommendation at these sizes, and
+only a recommendation: nothing routes there on its own.
+
+Only the offsets widen. A pore ordinal is bounded by `nnodes` rather than by
+`7 * nnodes` and carries its own type; see [`_ordinal_index_type`](@ref).
 """
-function _assembled_index_type(on_gpu::Bool, nnodes::Integer)
-    7 * nnodes + 1 <= typemax(Int32) && return Int32
-    on_gpu && throw(ArgumentError(
-        "image has $(nnodes) pore voxels, whose assembled matrix needs more index \
-         range than 32 bits can address ($(typemax(Int32))); the GPU assembled path \
-         has no 64-bit index path — use the matrix-free operator (`matrixfree=true`) \
-         at this size"
+_assembled_index_type(nnodes::Integer) = 7 * nnodes + 1 <= typemax(Int32) ? Int32 : Int
+
+"""
+    _ordinal_index_type(nnodes)
+
+The integer type a pore ordinal is stored in: the element type of `idx`, and of
+the row indices read out of it.
+
+An ordinal is bounded by `nnodes` where an offset is bounded by `7 * nnodes`, so
+the two walls sit a factor of seven apart and `idx` has no reason to widen when
+the offsets do. `idx` spans the whole grid rather than the pore space, so holding
+it at `Int32` past the offset wall is worth 4 B per voxel — 2.3 GB at 850³,
+taken off the peak at the moment the matrix is live.
+
+[`_operator_index_type`](@ref) applies this same bound to the matrix-free
+operator, where the ordinal is the only index in play.
+"""
+_ordinal_index_type(nnodes::Integer) = nnodes + 1 <= typemax(Int32) ? Int32 : Int
+
+"""
+    _resolve_index_type(Ti, nnodes)
+
+Apply the caller's `Ti` request against what [`_assembled_index_type`](@ref)
+would have chosen, or error when the request cannot be honoured.
+
+`nothing` takes the automatic choice. `Int64` is always honoured — asking for
+more range than the image needs costs memory and nothing else. `Int32` is
+honoured only while the bound holds: granting it past the bound would reinstate
+the wrap-around corruption the bound exists to prevent, which is not something a
+keyword argument gets to switch off.
+"""
+function _resolve_index_type(Ti, nnodes::Integer)
+    isnothing(Ti) && return _assembled_index_type(nnodes)
+    Ti === Int64 && return Int64
+    Ti === Int32 || throw(ArgumentError(
+        "`Ti` must be `Int32`, `Int64` or `nothing` (choose automatically); got $(Ti)"
     ))
-    return Int
+    _assembled_index_type(nnodes) === Int32 || throw(ArgumentError(
+        "`Ti=Int32` was requested for an image with $(nnodes) pore voxels, whose \
+         assembled matrix needs more index range than 32 bits can address \
+         ($(typemax(Int32))); pass `Ti=Int64`, or leave `Ti` unset to widen \
+         automatically"
+    ))
+    return Int32
 end
 
 """
@@ -207,20 +257,27 @@ compare against.
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
 - `D`: diffusivity array matching `img`, or `nothing` for uniform `D = 1`.
 - `T`: element type of `b`. `A` follows `D`'s element type when one is given.
+- `Ti`: index type of `A`, `Int32` or `Int64`. `nothing` (default) picks the
+  narrowest that fits — see [`_assembled_index_type`](@ref). Force `Int64` to
+  exercise the wide path below the size that needs it, or on a card with room to
+  spare; force `Int32` to have the request checked against the bound rather than
+  assumed.
 """
-function build_steady_system(img; nnodes, axis, D=nothing, T=Float64)
+function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing)
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
     on_gpu = _on_gpu(img)
-    Ti = _assembled_index_type(on_gpu, nnodes)
+    Ti = _resolve_index_type(Ti, nnodes)
     Tv = isnothing(D) ? T : eltype(D)
     D0 = one(Tv)
 
     # Pore numbering: an inclusive scan over the mask hands each pore voxel its
     # ordinal, and masking the solids back to zero lets `idx` double as the
-    # pore/solid test — so neither kernel below ever reads `img`.
-    idx = similar(img, Ti)
+    # pore/solid test — so neither kernel below ever reads `img`. Its element
+    # type is the ordinal's, not the offsets': the two bounds differ by a factor
+    # of seven, and this array spans the grid rather than the pore space.
+    idx = similar(img, _ordinal_index_type(nnodes))
     cumsum!(vec(idx), vec(img))
     idx .*= img
     backend = get_backend(idx)
