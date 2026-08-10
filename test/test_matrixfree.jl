@@ -427,6 +427,42 @@ end
     @test occursin("assembled", sprint(show, SteadyDiffusionProblem(img; axis=:x)))
 end
 
+@testset "mul! rejects a mismatched vector instead of writing past the end" begin
+    img = trues(6, 6, 6)
+    img[3, 3, 3] = false
+    nnodes = count(img)
+    A, _ = build_steady_system(img; nnodes=nnodes, axis=:x)
+    op, _ = build_steady_operator(img; nnodes=nnodes, axis=:x)
+
+    # The kernel body is @inbounds, so a short vector is a memory-safety
+    # question, not an accuracy one. The assembled path is the contract.
+    for (leny, lenx) in ((nnodes - 32, nnodes), (nnodes, nnodes - 64), (nnodes + 8, nnodes))
+        @test_throws DimensionMismatch mul!(zeros(leny), op, zeros(lenx))
+        @test_throws DimensionMismatch mul!(zeros(leny), A, zeros(lenx))
+        @test_throws DimensionMismatch mul!(zeros(leny), op, zeros(lenx), 1.0, 0.0)
+    end
+    @test mul!(zeros(nnodes), op, zeros(nnodes)) == zeros(nnodes)
+end
+
+@testset "the operator releases only the arrays it owns" begin
+    img = trues(8, 6, 6)
+    nnodes = count(img)
+    D = fill(2.0, size(img))
+
+    # Built directly, `D` is the caller's and stays theirs.
+    op, _ = build_steady_operator(img; nnodes=nnodes, axis=:x, D=D)
+    @test op.owns_D === false
+    @test Tortuosity._free!(op) === nothing
+
+    owning, _ = build_steady_operator(img; nnodes=nnodes, axis=:x, D=copy(D), owns_D=true)
+    @test owning.owns_D === true
+    @test Tortuosity._free!(owning) === nothing
+
+    # Through the constructor on CPU there is no copy to own.
+    sim = SteadyDiffusionProblem(img; axis=:x, D=D .* img, matrixfree=true)
+    @test sim.prob.A.owns_D === false
+end
+
 @testset "the package solve entry point" begin
     img = trues(24, 14, 14)
     img[9:12, 4:7, 4:7] .= false
@@ -465,6 +501,34 @@ end
         @test count(img) < Tortuosity._PRECOND_MIN_NODES
         sentinel = Tortuosity.two_level_preconditioner(sim; block=4)
         @test Tortuosity._resolve_precond(sentinel, sim, false) === sentinel
+    end
+
+    @testset "drives the preconditioner on a problem large enough to want one" begin
+        # Above _PRECOND_MIN_NODES the entry point reaches for the two-level
+        # coarse space, which is the one path where the matrix-free operator has
+        # to satisfy a consumer other than the Krylov solver.
+        big = Imaginator.blobs(; shape=(64, 64, 64), porosity=0.65, blobiness=1, seed=42)
+        @test count(big) > Tortuosity._PRECOND_MIN_NODES
+        # Pinned to CPU: this file is the host-side suite, and the image is over
+        # the size where construction would otherwise auto-detect a GPU.
+        simb = SteadyDiffusionProblem(big; axis=:x, gpu=false, matrixfree=true,
+                                      warn_nonpercolating=false)
+        sima = SteadyDiffusionProblem(big; axis=:x, gpu=false, warn_nonpercolating=false)
+        @test !isnothing(Tortuosity._resolve_precond(:auto, simb, false))
+
+        solb = solve(simb; reltol=1e-10)
+        sola = solve(sima; reltol=1e-10)
+        @test Symbol(solb.retcode) === :Success
+        @test Symbol(sola.retcode) === :Success
+        @test solb.iters == sola.iters
+        taub = tortuosity(reconstruct_field(solb.u, big), big; axis=:x)
+        taua = tortuosity(reconstruct_field(sola.u, big), big; axis=:x)
+        @test isapprox(taub, taua; rtol=1e-8)
+
+        # The preconditioner has to be doing something, or the comparison above
+        # would pass just as well with an inert one.
+        plain = solve(simb; precond=:none, reltol=1e-10)
+        @test plain.iters > solb.iters
     end
 
     @testset "forwards the tolerance and the algorithm" begin

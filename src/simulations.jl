@@ -194,18 +194,23 @@ function SteadyDiffusionProblem(
     # concentration drop of 1.0 between inlet and outlet is the boundary
     # condition, and the two faces are implied by `axis`.
     verbose && @info "Assembling the linear system..."
-    build = matrixfree ? build_steady_operator : build_steady_system
-    A, b = build(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T)
+    # The matrix-free operator recomputes its weights from `D` on every apply, so
+    # it holds that array for its whole life. When the device copy is one we
+    # made, ownership goes with it — otherwise nothing would ever release it.
+    A, b = if matrixfree
+        build_steady_operator(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T,
+                              owns_D=(!isnothing(D_dev) && D_dev !== D))
+    else
+        build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T)
+    end
     if gpu
         # The device copies are dead the moment the system is built; releasing
         # them here rather than at the next GC frees ~2.4 GiB at 800³ before the
         # solver starts allocating its Krylov vectors. Only the copies we made
-        # are ours to release — `_gpu_adapt` hands a `D` that is already a device
-        # array of the right eltype straight back.
+        # are ours to release, and `_gpu_adapt` allocates one even when `D` is
+        # already a device array of the right element type, so `D_dev === D`
+        # holds on the CPU path alone.
         _free!(img_dev)
-        # The matrix-free operator recomputes its weights from `D` on every
-        # apply, so it holds that array for its whole life; only the assembled
-        # path is finished with it here.
         (matrixfree || D_dev === D) || _free!(D_dev)
     end
 

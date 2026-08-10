@@ -32,6 +32,8 @@ which is all `LinearProblem(A, b)` with `KrylovJL_CG()` needs.
   coordinate along that axis is `1` (inlet) or `nbc` (outlet).
 - `D`: full-grid node diffusivity, or `nothing` for uniform diffusivity.
 - `D0`: the unit diffusivity used when `D === nothing`.
+- `owns_D`: whether `_free!` should release `D` as well as `idx`. True only when
+  `D` is a device copy made on the operator's behalf.
 """
 struct MaskedLaplacian{T,Ti<:Integer,A<:AbstractArray{Ti,3},DT} <: AbstractMatrix{T}
     idx::A
@@ -40,25 +42,33 @@ struct MaskedLaplacian{T,Ti<:Integer,A<:AbstractArray{Ti,3},DT} <: AbstractMatri
     nbc::Int
     D::DT
     D0::T
+    owns_D::Bool
 
     function MaskedLaplacian{T,Ti,A,DT}(
-        idx::A, nnodes::Integer, bcdim::Integer, nbc::Integer, D::DT, D0::T
+        idx::A, nnodes::Integer, bcdim::Integer, nbc::Integer, D::DT, D0::T, owns_D::Bool
     ) where {T,Ti<:Integer,A<:AbstractArray{Ti,3},DT}
-        return new{T,Ti,A,DT}(idx, Int(nnodes), Int(bcdim), Int(nbc), D, D0)
+        return new{T,Ti,A,DT}(idx, Int(nnodes), Int(bcdim), Int(nbc), D, D0, owns_D)
     end
 end
 
 function MaskedLaplacian(
-    idx::AbstractArray{Ti,3}, nnodes::Integer, bcdim::Integer, nbc::Integer, D, D0::T
+    idx::AbstractArray{Ti,3}, nnodes::Integer, bcdim::Integer, nbc::Integer, D, D0::T,
+    owns_D::Bool=false,
 ) where {T,Ti<:Integer}
-    return MaskedLaplacian{T,Ti,typeof(idx),typeof(D)}(idx, nnodes, bcdim, nbc, D, D0)
+    return MaskedLaplacian{T,Ti,typeof(idx),typeof(D)}(idx, nnodes, bcdim, nbc, D, D0, owns_D)
 end
 
 Base.size(A::MaskedLaplacian) = (A.nnodes, A.nnodes)
 
-# The index array is the operator's whole state and is the only thing it owns —
-# `D` belongs to whoever passed it in.
-_free!(A::MaskedLaplacian) = (_free!(A.idx); nothing)
+# The index array is always the operator's to release. `D` usually belongs to
+# the caller, but when the device copy was made on the operator's behalf nobody
+# else holds a reference to it, so `owns_D` records that and it is released here
+# too. Getting this wrong either leaks a grid-sized array or frees the caller's.
+function _free!(A::MaskedLaplacian)
+    _free!(A.idx)
+    A.owns_D && _free!(A.D)
+    return nothing
+end
 
 # Override the AbstractMatrix fallback — scalar indexing isn't supported, and
 # the default `show` path walks every entry. Print a concise summary instead.
@@ -169,6 +179,15 @@ function LinearAlgebra.mul!(
     y::AbstractVector, A::MaskedLaplacian, x::AbstractVector,
     alpha::Number, beta::Number,
 )
+    # The kernel body is `@inbounds`, so a mismatched vector is not a wrong
+    # answer but a write past the end of `y`. The assembled path raises here and
+    # so must this one.
+    if length(y) != A.nnodes || length(x) != A.nnodes
+        throw(DimensionMismatch(
+            "operator is $(A.nnodes)×$(A.nnodes) but y has length $(length(y)) \
+             and x has length $(length(x))"
+        ))
+    end
     # No nodes means no output row to write, and `y` is empty, so `beta` has
     # nothing to scale either.
     A.nnodes == 0 && return y
@@ -266,8 +285,10 @@ every apply.
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
 - `D`: diffusivity array matching `img`, or `nothing` for uniform `D = 1`.
 - `T`: element type of `b`. `A` follows `D`'s element type when one is given.
+- `owns_D`: hand the operator ownership of `D`, so that `_free!` releases it.
+  Set this only when `D` is a copy made for the operator and held nowhere else.
 """
-function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64)
+function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::Bool=false)
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
@@ -298,7 +319,7 @@ function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64)
     KernelAbstractions.synchronize(backend)
 
     # `idx` is not released here: it is the operator's state, not scratch.
-    A = MaskedLaplacian(idx, nnodes, bcdim, nbc, D, D0)
+    A = MaskedLaplacian(idx, nnodes, bcdim, nbc, D, D0, owns_D)
     return A, b
 end
 

@@ -280,6 +280,33 @@ end
     @test size(op) == (nnodes, nnodes)
     @test size(op.idx) == size(img)
 
+    @test op.owns_D === false
     @test _free!(op) === nothing
     release!(b, d_img)
+end
+
+@testset "the constructor hands the operator the device D it made for it" begin
+    img = ones(Bool, 20, 16, 16)
+    D = fill(1.5, size(img))
+
+    # `D` arrives on the host, so construction makes a device copy that only the
+    # operator will ever reference. Without ownership that copy is a leak, and
+    # it is grid-sized — the one array where leaking it matters.
+    sim = SteadyDiffusionProblem(img; axis=:x, D=D, gpu=true, matrixfree=true)
+    op = sim.prob.A
+    @test op.D isa CuArray
+    @test op.D !== D
+    @test op.owns_D === true
+    @test _free!(op) === nothing
+
+    # Handing in a device array does not avoid the copy — the adapter allocates
+    # a fresh one even for a `CuArray` that is already the right element type —
+    # so the operator owns that one too, and the caller's array is left alone.
+    d_D = CuArray(Float32.(D))
+    kept = SteadyDiffusionProblem(img; axis=:x, D=d_D, gpu=true, matrixfree=true)
+    @test kept.prob.A.D !== d_D
+    @test kept.prob.A.owns_D === true
+    @test _free!(kept.prob.A) === nothing
+    @test Array(d_D) == Float32.(D)
+    release!(d_D)
 end
