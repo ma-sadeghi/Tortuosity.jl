@@ -53,7 +53,11 @@ function reconstruct_field(u, img::AbstractArray{Bool})
     @assert length(u) == count(img) "Length of u must match the number of true voxels in img"
     # Logical-indexing a CPU Array with a GPU Bool mask triggers scalar
     # iteration, so pull img to CPU when it isn't already there.
-    img_cpu = _on_gpu(img) ? Array(img) : img
+    # `_on_gpu` is defined on the bare device array types only, so a device mask
+    # behind a wrapper — a strided `SubArray`, a `PermutedDimsArray` — reports
+    # false and would reach the logical index below still on the device. Test for
+    # the host types that can be indexed directly instead, and copy anything else.
+    img_cpu = img isa Union{Array,BitArray} ? img : Array(img)
     T = eltype(u)
     c = fill(T(NaN), size(img_cpu))
     c[img_cpu] = Array(u)
