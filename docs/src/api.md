@@ -35,6 +35,37 @@ two_level_preconditioner
 Tortuosity.TwoLevelPreconditioner
 ```
 
+Rather than make those choices yourself, you can hand the whole problem to the
+package and let it decide the preconditioner and the tolerance:
+
+```julia
+sol = solve(sim)                    # two-level coarse space above 100k pore voxels
+sol = solve(sim; precond=:none)     # or opt out
+```
+
+`solve(sim.prob, alg; ...)` is unaffected by this and remains the unopinionated
+form that takes LinearSolve's defaults.
+
+### Matrix-free operator
+
+`SteadyDiffusionProblem(img; axis, matrixfree=true)` builds the operator as a
+7-point stencil applied straight from the pore mask instead of an assembled
+sparse matrix. It stores one `Int32` index array over the grid — about 14 bytes
+per grid voxel against the assembled path's 40 — which is what makes images past
+roughly 850³ solvable on a 24 GiB card, and its apply is about twice as fast on
+GPU and six times as fast threaded on CPU.
+
+The two paths are peers. They produce the same pore numbering, the same
+right-hand side, the same number of Krylov iterations and the same `τ`, so
+everything downstream is unchanged and the keyword is the only difference. Keep
+the assembled path when you want the matrix itself — it is the CUSPARSE-backed
+one, and the only one whose entries can be read.
+
+```@docs
+Tortuosity.MaskedLaplacian
+Tortuosity.build_steady_operator
+```
+
 Once a steady-state concentration field has been solved for, the following
 helpers derive the usual transport descriptors.
 

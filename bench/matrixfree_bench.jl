@@ -885,6 +885,18 @@ function main(args)
         )
         for (path, pass) in todo
             matrixfree = path == "matrixfree"
+            # The assembled path indexes with Int32 on GPU and its largest index
+            # is 7 * nnodes, so past this bound it does not run out of memory: it
+            # faults with an illegal address and takes the process down, which no
+            # `try` can catch and which would lose every row still to come. Skip
+            # it, and record the skip so the gap in the table has a reason.
+            if !matrixfree && gpu && 7 * count(img) + 1 > typemax(Int32)
+                @warn "n=$(n) path=assembled pass=$(pass): skipped, 7*nnodes overflows Int32"
+                row = base_row_for(base, path, pass)
+                row["note"] = "7*nnodes exceeds typemax(Int32)"
+                emit!(csv, skipped_row(row, "int32_overflow"; rep=1))
+                continue
+            end
             @info "n=$(n) path=$(path) pass=$(pass)"
             st = if pass == "apply"
                 run_apply_pass!(csv, base, path; img, gpu, matrixfree, axis)
