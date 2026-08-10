@@ -79,11 +79,17 @@ Works on any backend (CPU via Base, GPU via GPUArrays).
 Written as the inclusive scan minus each element's own contribution, which is
 exact for the integer counters this backs and needs neither a second buffer the
 size of the scan nor a shifting kernel to read it.
+
+`out` and `inp` must not alias: the subtraction reads `inp` after `cumsum!` has
+already overwritten it, so an aliased call would subtract the inclusive scan
+from itself and return all zeros. Aliasing is rejected rather than silently
+answered, since zeros are a plausible-looking scan of an all-zero input.
 """
 function exclusive_scan!(out::AbstractVector{T}, inp::AbstractVector{T}) where {T}
     n = length(inp)
     n == 0 && return out
     length(out) != n && throw(DimensionMismatch("Output must match input length"))
+    out === inp && throw(ArgumentError("`out` and `inp` must not alias"))
 
     cumsum!(out, inp)
     out .-= inp

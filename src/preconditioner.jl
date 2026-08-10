@@ -471,6 +471,11 @@ function two_level_preconditioner(
     @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
     img = atleast_3d(img)
     n = size(A, 1)
+    # `agg` is sized from `n` but filled at the pore ordinals `img` produces, so a
+    # mask that disagrees with the matrix leaves entries unwritten — and `agg` is
+    # read back as an unchecked index into `stencil`. Uninitialised memory there
+    # is an out-of-bounds device write, not a wrong answer, so refuse up front.
+    @assert count(img) == n "`img` must be the pore mask `A` was built from: it has $(count(img)) pore voxels against `A`'s $(n) rows"
     nnz(A) == 0 && return nothing
 
     nx, ny, nz = size(img)
