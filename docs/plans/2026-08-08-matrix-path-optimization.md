@@ -124,7 +124,7 @@ Three pinned conventions that an "optimization" can silently violate. **All thre
 
 If a constraint genuinely blocks a large win, do not work around it silently. Record it as a blocker with the full tradeoff and move on.
 
-**Out of scope:** the `Int32` index overflow (`nedges` crosses `typemax(Int32)` around 900³). Amin has deferred this. Do not fix it here; do not make it worse. Where a wider accumulator is free, use one.
+**Out of scope — ~~as stated below~~ LIFTED 2026-08-09.** The original constraint read: *"the `Int32` index overflow (`nedges` crosses `typemax(Int32)` around 900³). Amin has deferred this. Do not fix it here; do not make it worse. Where a wider accumulator is free, use one."* The deferral was lifted after this campaign's post-merge code review, on the grounds that 307M pore voxels — a 900³ blob at half porosity — sits inside the package's advertised range, so the limit is reached in ordinary use. `_assembled_index_type` (`src/assembly.jl`) now applies the `7 * nnodes` bound to both branches: the host widens to `Int`, and the device, which has no 64-bit index path, raises and names `matrixfree=true` as the way to run at that size. A 64-bit device index path is still unimplemented and still out of scope.
 
 ## Test and measurement workflow
 
