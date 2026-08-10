@@ -5,9 +5,9 @@
 #
 # Usage
 # -----
-#   julia --project=benchmarks bench/scaling_bench.jl              # 200 400 600 800
-#   julia --project=benchmarks bench/scaling_bench.jl 100 200      # explicit sizes
-#   julia --project=benchmarks bench/scaling_bench.jl --help
+#   julia --project=bench bench/scaling_bench.jl              # 200 400 600 800
+#   julia --project=bench bench/scaling_bench.jl 100 200      # explicit sizes
+#   julia --project=bench bench/scaling_bench.jl --help
 #
 # Positional integer arguments are the cube edge lengths. Flags:
 #   --devices=gpu,cpu   which paths to measure (default gpu,cpu)
@@ -121,7 +121,7 @@ const CSV_COLUMNS = [
 # --- Options ---------------------------------------------------------------
 
 const USAGE = """
-julia --project=benchmarks bench/scaling_bench.jl [SIZES...] [FLAGS]
+julia --project=bench bench/scaling_bench.jl [SIZES...] [FLAGS]
 
   SIZES               cube edge lengths (default $(join(DEFAULT_SIZES, ' ')))
   --devices=gpu,cpu   which paths to measure
