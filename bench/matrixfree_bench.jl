@@ -491,16 +491,20 @@ end
 `mul!` on its own: the operator is already built, the output vector preallocated
 and the input random, so what is left is the apply and nothing else.
 
-One row per timed repeat. The memory figures describe the whole block of
-repeats, for the reason the header comment gives.
+One row per timed repeat. The memory figures come from the construction and
+warm-up block rather than from the repeats, for the reason the header comment
+gives.
 """
 function run_apply_pass!(csv, base, path; img, gpu, matrixfree, axis)
     br = base_row_for(base, path, "apply")
+    # A failure before the repeats start has a duration, but it is not an apply
+    # time — leave `wall_s` empty so nothing averages it in with the real ones.
     fail!(m) = begin
-        emit!(csv, stage_row(br, "mul", m; rep=1))
+        emit!(csv, stage_row(br, "mul", merge(m, (; wall=nothing)); rep=1))
         for r in 2:APPLY_REPS
             emit!(csv, skipped_row(br, "mul"; rep=r))
         end
+        release!(gpu)
         return m.status
     end
 
