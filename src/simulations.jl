@@ -96,7 +96,8 @@ end
 
 function Base.show(io::IO, ts::SteadyDiffusionProblem)
     gpu = _on_gpu(ts.prob.b)
-    msg = "SteadyDiffusionProblem(shape=$(size(ts.img)), axis=$(ts.axis), gpu=$(gpu))"
+    form = ts.prob.A isa MaskedLaplacian ? "matrix-free" : "assembled"
+    msg = "SteadyDiffusionProblem(shape=$(size(ts.img)), axis=$(ts.axis), gpu=$(gpu), $(form))"
     return print(io, msg)
 end
 
@@ -122,10 +123,16 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
   steady flux but still count toward porosity, so `τ` includes stagnant volume.
   `nothing` (default) runs the check for images up to ~50M voxels and skips it
   above that; `true`/`false` force it. See [`_warn_nonpercolating`](@ref).
+- `matrixfree`: build the operator as a matrix-free stencil
+  ([`MaskedLaplacian`](@ref)) instead of an assembled sparse matrix. Same pore
+  numbering, same right-hand side and the same `τ`, at a fraction of the memory
+  — which is what makes images past the assembled path's ~850³ ceiling solvable
+  — and a faster apply. Default: `false`, the assembled path.
 - `verbose`: print progress messages. Default: `false`.
 """
 function SteadyDiffusionProblem(
-    img; axis, D=nothing, gpu=nothing, warn_nonpercolating=nothing, verbose=false,
+    img; axis, D=nothing, gpu=nothing, warn_nonpercolating=nothing,
+    matrixfree::Bool=false, verbose=false,
 )
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
@@ -187,16 +194,101 @@ function SteadyDiffusionProblem(
     # concentration drop of 1.0 between inlet and outlet is the boundary
     # condition, and the two faces are implied by `axis`.
     verbose && @info "Assembling the linear system..."
-    A, b = build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T)
+    # The matrix-free operator recomputes its weights from `D` on every apply, so
+    # it holds that array for its whole life. When the device copy is one we
+    # made, ownership goes with it — otherwise nothing would ever release it.
+    A, b = if matrixfree
+        build_steady_operator(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T,
+                              owns_D=(!isnothing(D_dev) && D_dev !== D))
+    else
+        build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T)
+    end
     if gpu
         # The device copies are dead the moment the system is built; releasing
         # them here rather than at the next GC frees ~2.4 GiB at 800³ before the
         # solver starts allocating its Krylov vectors. Only the copies we made
-        # are ours to release — `_gpu_adapt` hands a `D` that is already a device
-        # array of the right eltype straight back.
+        # are ours to release, and `_gpu_adapt` allocates one even when `D` is
+        # already a device array of the right element type, so `D_dev === D`
+        # holds on the CPU path alone.
         _free!(img_dev)
-        D_dev === D || _free!(D_dev)
+        (matrixfree || D_dev === D) || _free!(D_dev)
     end
 
     return SteadyDiffusionProblem(img, axis, LinearProblem(A, b))
+end
+
+"""
+    solve(sim::SteadyDiffusionProblem, alg=KrylovJL_CG(); precond=:auto, reltol=nothing, ...)
+
+Solve a steady diffusion problem, choosing the preconditioner and the tolerance
+for you.
+
+This is the package-owned entry point. `solve(sim.prob, alg)` remains the
+unopinionated one and is untouched by anything here: it takes LinearSolve's
+defaults, no preconditioner, and whatever tolerance you pass. Use this form when
+you want the settings the package considers right for the problem in front of
+it, and that one when you want to drive LinearSolve yourself.
+
+What it decides:
+
+- **Preconditioner.** `precond=:auto` (the default) builds a
+  [`two_level_preconditioner`](@ref) once the problem is large enough to pay for
+  the coarse solve, and runs unpreconditioned below that. The coarse space cuts
+  iteration counts by an order of magnitude at bench sizes and — unlike a cheap
+  diagonal scaling — keeps them nearly flat as the image grows. Pass
+  `precond=:none` to disable it, or a preconditioner object to supply your own.
+- **Tolerance.** `reltol=nothing` picks `1e-10` for a `Float64` (CPU) system and
+  `1e-6` for a `Float32` (GPU) one. `Float32` CG stalls before `1e-7`, so a
+  tolerance carried over from a CPU run is a request the solver cannot meet.
+
+# Arguments
+- `sim`: the problem, from [`SteadyDiffusionProblem`](@ref).
+- `alg`: any LinearSolve algorithm. Default: `KrylovJL_CG()`.
+
+# Keyword Arguments
+- `precond`: `:auto`, `:none`, or a preconditioner to use as `Pl`.
+- `reltol`, `abstol`, `maxiters`: passed to `solve`; `nothing` means "decide".
+- `verbose`: print what was chosen. Default: `false`.
+- Any other keyword is forwarded to LinearSolve unchanged.
+
+# Returns
+The LinearSolve solution. `sol.u` is the pore-ordered concentration vector, in
+the same numbering either path produces, so it feeds
+[`reconstruct_field`](@ref) directly.
+"""
+function LinearSolve.solve(
+    sim::SteadyDiffusionProblem, alg=KrylovJL_CG();
+    precond=:auto, reltol=nothing, abstol=nothing, maxiters=nothing,
+    verbose=false, kwargs...,
+)
+    T = eltype(sim.prob.b)
+    reltol = isnothing(reltol) ? _default_reltol(T) : reltol
+    Pl = _resolve_precond(precond, sim, verbose)
+    opts = Any[:reltol => reltol]
+    isnothing(abstol) || push!(opts, :abstol => abstol)
+    isnothing(maxiters) || push!(opts, :maxiters => maxiters)
+    isnothing(Pl) || push!(opts, :Pl => Pl)
+    verbose && @info "Solving" alg reltol precond = isnothing(Pl) ? :none : :two_level
+    return solve(sim.prob, alg; opts..., kwargs...)
+end
+
+# `Float32` CG cannot drive the relative residual much below `1e-6`; asking it to
+# is how a GPU run ends in `maxiters` rather than `Success`.
+_default_reltol(::Type{Float32}) = 1.0f-6
+_default_reltol(::Type{T}) where {T} = T(1e-10)
+
+# Below this the coarse solve costs more than the iterations it removes, and it
+# is also the size at which a system stops fitting comfortably in cache.
+const _PRECOND_MIN_NODES = 100_000
+
+function _resolve_precond(precond, sim, verbose)
+    precond === :none && return nothing
+    precond === :auto || return precond
+    size(sim.prob.A, 1) < _PRECOND_MIN_NODES && return nothing
+    Pl = two_level_preconditioner(sim)
+    # `two_level_preconditioner` returns `nothing` when there is no usable coarse
+    # space — an empty system, every block dropped, or a coarse factorization
+    # that failed. Running unpreconditioned is the honest fallback.
+    verbose && isnothing(Pl) && @info "No usable coarse space; solving unpreconditioned"
+    return Pl
 end

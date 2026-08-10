@@ -100,6 +100,14 @@ const _has_gpu = _has_cuda || _has_metal
         include("test_impl_parity.jl")
     end
 
+    @testset verbose = true "Matrix-free operator" begin
+        include("test_matrixfree.jl")
+    end
+
+    @testset verbose = true "Matrix-free two-level preconditioner" begin
+        include("test_matrixfree_precond.jl")
+    end
+
     @testset verbose = true "Input validation and error paths" begin
         include("test_errors.jl")
     end
@@ -115,6 +123,10 @@ const _has_gpu = _has_cuda || _has_metal
     if _has_cuda
         @testset verbose = true "GPU parity vs old CUDA baseline" begin
             include("test_gpu_parity.jl")
+        end
+
+        @testset verbose = true "Matrix-free operator on GPU" begin
+            include("test_matrixfree_gpu.jl")
         end
     else
         @info "Skipping CUDA parity tests (CUDA not functional)"
