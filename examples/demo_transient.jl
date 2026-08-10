@@ -1,6 +1,8 @@
 # %%
 # Imports
 
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
+using LsqFit  # optional dependency, needed by fit_effective_diffusivity
 using Plots
 using Printf
 using Tortuosity

@@ -18,9 +18,20 @@ using Pkg
 Pkg.add("Tortuosity")
 ```
 
+Some entry points live in package extensions, and Julia does not install an extension's package for you. Add the ones you need:
+
+```julia
+Pkg.add("ImageFiltering")  # Imaginator.blobs, Imaginator.apply_gaussian_blur
+Pkg.add("LsqFit")          # fit_effective_diffusivity, fit_voxel_diffusivity
+Pkg.add("HDF5")            # Tortuosity.export_to_hdf5
+```
+
+GPU backends work the same way: `Pkg.add("CUDA")` (or `"Metal"`, or `"AMDGPU"`), then load it before building a simulation.
+
 ## Usage
 
 ```julia
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
 using Tortuosity: tortuosity, reconstruct_field
 

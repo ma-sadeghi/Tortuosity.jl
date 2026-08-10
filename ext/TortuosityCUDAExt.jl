@@ -113,8 +113,15 @@ end
 # on machines without a GPU it's a no-op and users pay full TTFX on first solve.
 # Note: `__init__` hasn't run yet during precompile, so we register the backend
 # refs manually inside the workload and restore them after.
+#
+# The workload macros resolve the `precompile_workload` preference against the
+# module they expand in, which here is the extension — and `set_preferences!`
+# refuses an extension's UUID, so that preference is unreachable. Consulting
+# `Tortuosity` explicitly is what lets
+# `set_preferences!(Tortuosity, "precompile_workload" => false)` switch this
+# workload off along with the CPU one. Enabled by default, as for users.
 @setup_workload begin
-    if CUDA.functional()
+    if Tortuosity._workload_enabled() && CUDA.functional()
         img = ones(Bool, 12, 12, 12)
         @compile_workload begin
             Tortuosity._preferred_gpu_backend[] = CUDABackend()

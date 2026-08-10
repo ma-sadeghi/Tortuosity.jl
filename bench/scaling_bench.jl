@@ -89,6 +89,7 @@
 
 using CUDA
 using Dates
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Printf
 using SparseArrays
 using Statistics

@@ -17,6 +17,7 @@ The steady-state solver tells you the *equilibrium* transport properties of a po
 The transient API is a thin adapter on top of [SciML's ODE machinery](https://docs.sciml.ai/OrdinaryDiffEq/stable/). You construct a `TransientDiffusionProblem` (the PDE discretisation), then call `solve(prob, alg; kwargs...)` exactly as you would with any other SciML problem:
 
 ```@example transient
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Plots
 using Tortuosity
 

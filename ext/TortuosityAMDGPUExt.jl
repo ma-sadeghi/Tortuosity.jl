@@ -19,8 +19,11 @@ Tortuosity._on_gpu(::ROCArray) = true
 # Only runs when an AMDGPU device is actually present at extension-precompile
 # time; on machines without a GPU it's a no-op and users pay full TTFX on
 # first solve.
+# `Tortuosity._workload_enabled()` rather than the extension's own preference:
+# `set_preferences!` refuses an extension UUID, so only the parent package's
+# `precompile_workload` preference can switch this off. On by default.
 @setup_workload begin
-    if AMDGPU.functional()
+    if Tortuosity._workload_enabled() && AMDGPU.functional()
         img = ones(Bool, 12, 12, 12)
         @compile_workload begin
             Tortuosity._preferred_gpu_backend[] = ROCBackend()

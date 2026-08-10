@@ -15,6 +15,7 @@ where $\varepsilon$ is the porosity, $D_0$ is the free-phase diffusivity, and $D
 The input is a 3D `BitArray` where `true` = pore and `false` = solid. You can load your own image or generate a synthetic one with the `Imaginator` submodule (see [Imaginator](../imaginator.md) for details).
 
 ```@example steady
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Plots
 using Tortuosity
 

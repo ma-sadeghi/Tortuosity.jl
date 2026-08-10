@@ -2,6 +2,7 @@
 #
 # The CPU loop implementations ARE the old code (unchanged algorithms).
 # The KA kernels are the new backend-agnostic path, here tested on CPU.
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
 using Tortuosity:
     _build_connectivity_list_cpu,

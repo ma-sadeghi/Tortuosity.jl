@@ -12,6 +12,7 @@ Assume you have a binary image where the `true` voxels are 5x more conductive th
     Tortuosity is ill-defined when the entire image is the domain, since there is no distinct void phase. The concentration field is the primary quantity of interest in this case, but you can still compute a tortuosity factor for comparison.
 
 ```@example
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
 
 USE_GPU = false
@@ -57,6 +58,7 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-plot.svg"))><figcaption>Co
 This example uses only the pore phase as the computational domain, with a random diffusivity field assigned to each pore voxel. For illustration, we draw diffusivities from a uniform distribution.
 
 ```@example
+using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
 
 USE_GPU = false

@@ -30,9 +30,12 @@ end
 
 Write keyword arguments as datasets to an HDF5 file. Each keyword becomes a
 dataset named after the keyword.
+
+Requires `HDF5.jl`, an optional dependency that does not install with Tortuosity:
+run `Pkg.add("HDF5")`, then `using HDF5`, before calling this.
 """
 function export_to_hdf5(fname; kwargs...)
-    h5open(fname, "w") do fid
+    _h5open(fname, "w") do fid
         for (name, value) in pairs(kwargs)
             fid[String(name)] = value
         end

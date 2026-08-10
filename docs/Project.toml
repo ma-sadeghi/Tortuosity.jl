@@ -1,6 +1,8 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+ImageFiltering = "6a3955dd-da59-5b1f-98d4-e7296123deb5"
 LiveServer = "16fef848-5104-11e9-1b77-fb7a48bbb589"
+LsqFit = "2fda8390-95c7-5789-9bda-21331edee243"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 Tortuosity = "80bb5c7f-3561-4bbc-a7c3-5e29a4cab6cc"
 

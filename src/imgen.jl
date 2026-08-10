@@ -1,10 +1,12 @@
 module Imaginator
 
-using ImageFiltering
 using ImageMorphology
 using Random
 using SpecialFunctions
 using Statistics
+
+# Hooks for the optional dependencies this submodule needs; see src/weakdeps.jl.
+using ..Tortuosity: _gaussian_blur
 
 """
     norm_to_uniform(img; scale=(minimum(img), maximum(img)))
@@ -36,11 +38,13 @@ end
 
 Apply an isotropic Gaussian blur with standard deviation `sigma` in each dimension
 using symmetric boundary padding.
+
+Requires `ImageFiltering.jl`, an optional dependency that does not install with
+Tortuosity: run `Pkg.add("ImageFiltering")`, then `using ImageFiltering`, before
+calling this.
 """
 function apply_gaussian_blur(img, sigma)
-    sigma = tuple(fill(sigma, ndims(img))...)
-    kernel = Kernel.gaussian(sigma)
-    return imfilter(img, kernel, "symmetric")
+    return _gaussian_blur(img, sigma)
 end
 
 """
@@ -100,6 +104,10 @@ The algorithm: random noise → Gaussian blur (σ = mean(shape) / 40 / blobiness
 - `porosity`: target pore fraction in `[0, 1]`.
 - `blobiness`: controls feature size (higher = finer features).
 - `seed`: random seed for reproducibility. Default: `nothing`.
+
+Requires `ImageFiltering.jl`, an optional dependency that does not install with
+Tortuosity: run `Pkg.add("ImageFiltering")`, then `using ImageFiltering`, before
+calling this.
 """
 function blobs(; shape, porosity, blobiness, seed=nothing)
     Random.seed!(seed)
