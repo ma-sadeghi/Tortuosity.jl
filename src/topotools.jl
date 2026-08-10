@@ -100,9 +100,11 @@ function _build_connectivity_list_ka(img; inds=nothing)
 
     idx_gpu = nothing
     num_true = 0
-    # Only the index array we build ourselves is ours to release; one passed in
-    # through `inds` belongs to the caller.
-    owns_idx = isnothing(inds)
+    # Only an index array this function allocates is ours to release. That covers
+    # the one built below *and* the device copy a host `inds` is adapted into —
+    # a caller's own array is the only one we must leave alone, so ownership is
+    # decided where the array is produced, not from whether `inds` was supplied.
+    owns_idx = false
 
     if isnothing(inds)
         # An inclusive scan over the mask *is* the pore numbering: at a pore
@@ -112,6 +114,7 @@ function _build_connectivity_list_ka(img; inds=nothing)
         # Solid voxels inherit the running count and are masked back to zero,
         # which is the sentinel every kernel downstream tests for.
         idx_gpu = similar(img, Int32)
+        owns_idx = true
         cumsum!(vec(idx_gpu), vec(img))
         num_true = Int(Array(@view vec(idx_gpu)[end:end])[1])
         num_true == 0 && return Matrix{Int}(undef, 0, 2)
@@ -121,8 +124,12 @@ function _build_connectivity_list_ka(img; inds=nothing)
             error("Provided `inds` array must have the same dimensions as `img`")
         end
         idx_gpu = _on_gpu(inds) ? inds : _gpu_adapt[](inds)
+        owns_idx = idx_gpu !== inds
         num_true = Int(maximum(idx_gpu))
-        num_true == 0 && return Matrix{Int}(undef, 0, 2)
+        if num_true == 0
+            owns_idx && _free!(idx_gpu)
+            return Matrix{Int}(undef, 0, 2)
+        end
     end
 
     # Pass 1: histogram. Use Int32 buckets — half the memory traffic.
