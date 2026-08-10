@@ -104,6 +104,10 @@ const _has_gpu = _has_cuda || _has_metal
         include("test_matrixfree.jl")
     end
 
+    @testset verbose = true "Matrix-free two-level preconditioner" begin
+        include("test_matrixfree_precond.jl")
+    end
+
     @testset verbose = true "Input validation and error paths" begin
         include("test_errors.jl")
     end

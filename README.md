@@ -53,3 +53,27 @@ c = reconstruct_field(sol.u, img)
 τ = tortuosity(c; axis=:x)
 println("τ = $τ")
 ```
+
+### Two operator paths
+
+The steady operator comes in two forms, both fully supported. They produce the same pore numbering, the same right-hand side and the same `τ`, so everything downstream is identical and you can switch with one keyword.
+
+| | assembled (default) | matrix-free |
+|---|---|---|
+| how to ask for it | `SteadyDiffusionProblem(img; axis=:x)` | `SteadyDiffusionProblem(img; axis=:x, matrixfree=true)` |
+| what it stores | the sparse matrix: column pointers, row indices, values | one `Int32` index array over the grid |
+| device memory | ~40 bytes per grid voxel | ~14 bytes per grid voxel |
+| largest cube on a 24 GiB card | ~850³ | ~1100³ |
+| GPU apply at 800³ | 30.4 ms (CUSPARSE CSR) | 15.4 ms |
+| CPU apply at 200³, 20 threads | 36.7 ms (`SparseArrays`) | 5.4 ms |
+
+Take the assembled path when you want the CUSPARSE-backed matrix itself, or anything that reads matrix entries. Take the matrix-free path when the image is large, when memory is the binding constraint, or when you simply want the solve to be faster.
+
+There is also a package-owned `solve` that picks the preconditioner and the tolerance for you:
+
+```julia
+sim = SteadyDiffusionProblem(img; axis=:x, matrixfree=true)
+sol = solve(sim)          # two-level preconditioner above 100k pore voxels; reltol from the element type
+```
+
+`solve(sim.prob, alg; ...)` stays exactly as it was — the unopinionated form that takes LinearSolve's defaults.

@@ -144,6 +144,120 @@ end
     end
 end
 
+# `max` has no atomic instruction for floating-point values on the host backend,
+# so the running maximum is taken by compare-and-swap. The ordinary read that
+# seeds the loop is deliberate: a thread that cannot raise the maximum touches
+# nothing, which is what keeps one shared slot from serialising the whole grid
+# pass, and a read that loses the race only costs the loop one more turn.
+@inline function _atomic_max!(dst, i, v)
+    ref = Atomix.IndexableRef(dst, (Int(i),))
+    @inbounds old = dst[i]
+    while v > old
+        replaced = Atomix.replace!(ref, old, v)
+        replaced.success && return nothing
+        old = replaced.old
+    end
+    return nothing
+end
+
+# The same `WᵀAW` the kernel above accumulates, taken over the grid instead of
+# over stored entries, for an operator that stores none. A thread owns one pore
+# voxel and recomputes the column [`_steady_fill_kernel!`](@ref) would have
+# written for it, so the entry set has to be that kernel's exactly: a Dirichlet
+# column holds only its diagonal, a free column holds its diagonal plus one
+# entry per free neighbour, and a free column with no neighbour at all holds
+# nothing.
+#
+# `dmax` collects the largest diagonal in the same pass. That is the largest
+# stored value of the matrix this operator stands for, because the diagonals are
+# its only positive entries.
+@kernel function _coarse_grid_stencil_kernel!(
+    stencil, dmax, @Const(idx), @Const(agg), D, nx, ny, nz, bcdim, nbc, D0, nbx, nbxy,
+)
+    i, j, k = @index(Global, NTuple)
+    @inbounds begin
+        c0 = idx[i, j, k]
+        if c0 > 0
+            Tv = typeof(D0)
+            Ts = eltype(stencil)
+            a = Int(agg[c0])
+            self_bc = _is_bc(_face_coord(i, j, k, bcdim), nbc)
+            da = _node_diffusivity(D, D0, i, j, k)
+
+            deg = zero(Tv)
+            self = zero(Ts)
+            for (di, dj, dk) in _NEIGHBOURS
+                ii, jj, kk = i + di, j + dj, k + dk
+                (1 <= ii <= nx && 1 <= jj <= ny && 1 <= kk <= nz) || continue
+                q = idx[ii, jj, kk]
+                q > 0 || continue
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, ii, jj, kk))
+                deg += w
+                # The degree sums every pore neighbour, but only a free node
+                # facing a free neighbour leaves an off-diagonal behind: a
+                # Dirichlet column was emptied, and a Dirichlet neighbour's
+                # entry was eliminated into the right-hand side.
+                (self_bc || _is_bc(_face_coord(ii, jj, kk, bcdim), nbc)) && continue
+                b = Int(agg[q])
+                if b == a
+                    self += Ts(-w)
+                else
+                    s = _coarse_slot(b - a, nbx, nbxy)
+                    s == 0 && continue
+                    Atomix.@atomic stencil[(a - 1) * _COARSE_SLOTS + s] += Ts(-w)
+                end
+            end
+
+            # A free node with no neighbour has an empty column: no diagonal to
+            # contribute, and nothing to fold into the running maximum either.
+            if self_bc || !iszero(deg)
+                d = (self_bc && iszero(deg)) ? one(Tv) : deg
+                self += Ts(d)
+                _atomic_max!(dmax, 1, d)
+            end
+            if !iszero(self)
+                Atomix.@atomic stencil[(a - 1) * _COARSE_SLOTS + 1] += self
+            end
+        end
+    end
+end
+
+"""
+Accumulate `WᵀAW` into `stencil` and return the largest diagonal of `A`.
+
+The two methods are the same coarse operator read out of the two
+representations: one pass over the stored entries of an assembled matrix, or one
+pass over the grid for a [`MaskedLaplacian`](@ref).
+"""
+function _coarse_stencil!(stencil, A, agg, nbx, nbxy)
+    nzv = nonzeros(A)
+    n = size(A, 1)
+    backend = get_backend(nzv)
+    _coarse_stencil_kernel!(backend)(
+        stencil, SparseArrays.getcolptr(A), rowvals(A), nzv, agg,
+        nbx, nbxy, n; ndrange=n,
+    )
+    KernelAbstractions.synchronize(backend)
+    # The diagonal entries are the only positive ones, so the largest stored
+    # value is the largest diagonal — the quantity the grid pass reports.
+    return maximum(nzv)
+end
+
+function _coarse_stencil!(stencil, A::MaskedLaplacian, agg, nbx, nbxy)
+    T = eltype(A)
+    nx, ny, nz = size(A.idx)
+    backend = get_backend(A.idx)
+    dmax = fill!(similar(A.idx, T, 1), zero(T))
+    _coarse_grid_stencil_kernel!(backend, (64, 4, 1))(
+        stencil, dmax, A.idx, agg, A.D, nx, ny, nz, A.bcdim, A.nbc, A.D0, nbx, nbxy;
+        ndrange=(nx, ny, nz),
+    )
+    KernelAbstractions.synchronize(backend)
+    maximum_diagonal = Array(dmax)[1]
+    _free!(dmax)
+    return maximum_diagonal
+end
+
 @kernel function _remap_aggregates_kernel!(agg, @Const(remap), n)
     i = @index(Global)
     if i <= n
@@ -206,12 +320,105 @@ function _coarse_operator(S::Vector{Float64}, nc0, nbx, nbxy, shift)
     return sparse(rows, cols, vals, nc, nc), remap
 end
 
+# The device array every allocation here is modelled on, and whose backend the
+# kernels launch on: the stored values of an assembled matrix, the index grid of
+# a matrix-free one.
+_precond_template(A) = nonzeros(A)
+_precond_template(A::MaskedLaplacian) = A.idx
+
+"""
+Coarse index of every pore voxel: the cubic block its grid position falls in.
+
+`idx` is the pore numbering the caller already holds — the assembled path builds
+one for this pass, the matrix-free operator is one — and stays the caller's to
+release.
+"""
+function _aggregate(idx, n, nc0, bs, nbx, nby)
+    # `nc0` is capped well inside `Int16`, and `agg` is one entry per pore voxel
+    # — the largest array this preconditioner keeps alive during the solve.
+    Ta = nc0 <= typemax(Int16) ? Int16 : Int32
+    agg = similar(idx, Ta, n)
+    backend = get_backend(idx)
+    _aggregate_kernel!(backend, (64, 4, 1))(
+        agg, idx, bs, nbx, nby; ndrange=size(idx),
+    )
+    KernelAbstractions.synchronize(backend)
+    return agg
+end
+
+"""
+Everything the two constructors share once the aggregates exist: the coarse
+operator, its factorisation, the remap that renumbers `agg` over the blocks that
+survived, and the preconditioner itself. `nothing` when no block carries a
+coarse unknown or the factorisation fails.
+
+Only [`_coarse_stencil!`](@ref) knows which representation `A` is.
+"""
+function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
+    n = size(A, 1)
+    nc0 = nbx * nby * nbz
+    nbxy = nbx * nby
+    proto = _precond_template(A)
+    on_gpu = _on_gpu(proto)
+    backend = get_backend(proto)
+    T = eltype(A)
+
+    stencil = similar(proto, Float64, _COARSE_SLOTS * nc0)
+    fill!(stencil, 0.0)
+    maximum_diagonal = _coarse_stencil!(stencil, A, agg, nbx, nbxy)
+    S = Array(stencil)
+    _free!(stencil)
+
+    Ac, remap = _coarse_operator(S, nc0, nbx, nbxy, shift)
+    nc = size(Ac, 1)
+    if nc == 0
+        _free!(agg)
+        return nothing
+    end
+
+    t0 = time_ns()
+    fact = try
+        cholesky(Symmetric(Ac))
+    catch err
+        # `Ac + shift·diag(Ac)` is provably definite, so this only fires if the
+        # assumption behind that — that `A` itself is positive semi-definite —
+        # has been broken. Running without a preconditioner is slow; running
+        # with a broken one is wrong.
+        @warn "coarse factorisation failed; solving without a preconditioner" exception = err
+        _free!(agg)
+        return nothing
+    end
+    verbose && @info "two-level coarse space" block = bs nc = nc nnz_L = nnz(fact) seconds =
+        (time_ns() - t0) / 1e9
+
+    # Same element type as `agg`, so the remap kernel never converts in device
+    # code where a range check has nowhere to throw.
+    remap = convert(Vector{eltype(agg)}, remap)
+    remap_dev = on_gpu ? _gpu_adapt[](remap) : remap
+    _remap_aggregates_kernel!(backend)(agg, remap_dev, n; ndrange=n)
+    KernelAbstractions.synchronize(backend)
+    on_gpu && _free!(remap_dev)
+
+    # Gershgorin: every column of this Laplacian has |offdiagonals| summing to
+    # its diagonal, so twice the largest diagonal bounds every eigenvalue.
+    inv_lambda = T(1) / (2 * maximum_diagonal)
+
+    return TwoLevelPreconditioner(
+        agg, nc, fact, inv_lambda, bs,
+        fill!(similar(proto, T, nc), zero(T)), fill!(similar(proto, T, nc), zero(T)),
+        zeros(T, nc), zeros(Float64, nc),
+    )
+end
+
 """
     two_level_preconditioner(A, img; block=nothing, max_coarse, shift, verbose=false)
     two_level_preconditioner(sim::SteadyDiffusionProblem; kwargs...)
 
-Build a [`TwoLevelPreconditioner`](@ref) for the assembled steady system `A` on
-the pore mask `img`, or `nothing` when no usable coarse space exists.
+Build a [`TwoLevelPreconditioner`](@ref) for the steady system `A` on the pore
+mask `img`, or `nothing` when no usable coarse space exists. `A` is either an
+assembled matrix or a matrix-free [`MaskedLaplacian`](@ref); the coarse space is
+the same either way, read out of the stored entries in one case and off the grid
+in the other.
 
 Pass it to the solver as a left preconditioner:
 
@@ -269,81 +476,44 @@ function two_level_preconditioner(
     nx, ny, nz = size(img)
     bs = isnothing(block) ? _choose_block(nx, ny, nz, max_coarse) : block
     nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
-    nc0 = nbx * nby * nbz
-
-    nzv = nonzeros(A)
-    on_gpu = _on_gpu(nzv)
-    backend = get_backend(nzv)
 
     # Pore ordinals are the prefix sum of the mask, exactly as in
     # `build_steady_system`; both scratch arrays go before the coarse operator
     # is assembled, so this pass never coincides with the solve's peak.
-    img_dev = on_gpu ? _gpu_adapt[](img) : img
+    img_dev = _on_gpu(nonzeros(A)) ? _gpu_adapt[](img) : img
     idx = similar(img_dev, Int32)
     cumsum!(vec(idx), vec(img_dev))
     idx .*= img_dev
-    # `nc0` is capped well inside `Int16`, and `agg` is one entry per pore voxel
-    # — the largest array this preconditioner keeps alive during the solve.
-    Ta = nc0 <= typemax(Int16) ? Int16 : Int32
-    agg = similar(idx, Ta, n)
-    _aggregate_kernel!(backend, (64, 4, 1))(
-        agg, idx, bs, nbx, nby; ndrange=(nx, ny, nz),
-    )
-    KernelAbstractions.synchronize(backend)
+    agg = _aggregate(idx, n, nbx * nby * nbz, bs, nbx, nby)
     _free!(idx)
     img_dev === img || _free!(img_dev)
 
-    stencil = similar(nzv, Float64, _COARSE_SLOTS * nc0)
-    fill!(stencil, 0.0)
-    _coarse_stencil_kernel!(backend)(
-        stencil, SparseArrays.getcolptr(A), rowvals(A), nzv, agg,
-        nbx, nbx * nby, n; ndrange=n,
-    )
-    KernelAbstractions.synchronize(backend)
-    S = Array(stencil)
-    _free!(stencil)
+    return _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
+end
 
-    Ac, remap = _coarse_operator(S, nc0, nbx, nbx * nby, shift)
-    nc = size(Ac, 1)
-    if nc == 0
-        _free!(agg)
-        return nothing
-    end
+function two_level_preconditioner(
+    A::MaskedLaplacian, img;
+    block=nothing, max_coarse=DEFAULT_MAX_COARSE, shift=DEFAULT_COARSE_SHIFT,
+    verbose=false,
+)
+    @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
+    img = atleast_3d(img)
+    @assert size(img) == size(A.idx) "`img` must be the pore mask `A` was built from"
+    # An operator of order zero is the matrix-free reading of `nnz(A) == 0`.
+    # Every other degenerate pore space — isolated voxels, whose columns are all
+    # empty — leaves no block carrying a coarse unknown, and falls out below.
+    A.nnodes == 0 && return nothing
 
-    t0 = time_ns()
-    fact = try
-        cholesky(Symmetric(Ac))
-    catch err
-        # `Ac + shift·diag(Ac)` is provably definite, so this only fires if the
-        # assumption behind that — that `A` itself is positive semi-definite —
-        # has been broken. Running without a preconditioner is slow; running
-        # with a broken one is wrong.
-        @warn "coarse factorisation failed; solving without a preconditioner" exception = err
-        _free!(agg)
-        return nothing
-    end
-    verbose && @info "two-level coarse space" block = bs nc = nc nnz_L = nnz(fact) seconds =
-        (time_ns() - t0) / 1e9
+    nx, ny, nz = size(img)
+    bs = isnothing(block) ? _choose_block(nx, ny, nz, max_coarse) : block
+    nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
 
-    # Same element type as `agg`, so the remap kernel never converts in device
-    # code where a range check has nowhere to throw.
-    remap = convert(Vector{Ta}, remap)
-    remap_dev = on_gpu ? _gpu_adapt[](remap) : remap
-    _remap_aggregates_kernel!(backend)(agg, remap_dev, n; ndrange=n)
-    KernelAbstractions.synchronize(backend)
-    on_gpu && _free!(remap_dev)
+    # The operator's index array is the pore numbering the aggregation needs, so
+    # it stands in for the scratch array the assembled path builds here. It is
+    # the operator's state, not scratch, and is not released.
+    agg = _aggregate(A.idx, A.nnodes, nbx * nby * nbz, bs, nbx, nby)
 
-    T = eltype(nzv)
-    # Gershgorin: every column of this Laplacian has |offdiagonals| summing to
-    # its diagonal, so twice the largest stored value bounds every eigenvalue.
-    # The diagonal entries are the only positive ones.
-    inv_lambda = T(1) / (2 * maximum(nzv))
-
-    return TwoLevelPreconditioner(
-        agg, nc, fact, inv_lambda, bs,
-        fill!(similar(nzv, nc), zero(T)), fill!(similar(nzv, nc), zero(T)),
-        zeros(T, nc), zeros(Float64, nc),
-    )
+    return _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
 end
 
 function two_level_preconditioner(sim::SteadyDiffusionProblem; kwargs...)
