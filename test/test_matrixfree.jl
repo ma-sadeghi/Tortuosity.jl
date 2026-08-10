@@ -392,3 +392,88 @@ end
         end
     end
 end
+
+@testset "the matrixfree keyword routes construction without moving the default" begin
+    img = trues(24, 14, 14)
+    img[9:12, 4:7, 4:7] .= false
+    img[3, 3, 3] = false
+
+    # The public constructor requires `D` to vanish on the solids, which the
+    # low-level fixtures do not bother with.
+    for (dlabel, D0) in diffusivity_cases(img), axis in transport_axes
+        D = isnothing(D0) ? nothing : D0 .* img
+        @testset "$(dlabel) — axis=$(axis)" begin
+            sim = SteadyDiffusionProblem(img; axis=axis, D=D)
+            simf = SteadyDiffusionProblem(img; axis=axis, D=D, matrixfree=true)
+
+            # The default has to stay exactly where it was.
+            @test sim.prob.A isa SparseMatrixCSC
+            @test simf.prob.A isa Tortuosity.MaskedLaplacian
+            @test size(simf.prob.A) == size(sim.prob.A)
+            @test eltype(simf.prob.b) === eltype(sim.prob.b)
+            @test simf.prob.b == sim.prob.b
+            @test simf.img == sim.img
+            @test simf.axis === sim.axis
+
+            sol = solve(sim.prob, KrylovJL_CG(); reltol=1e-12)
+            solf = solve(simf.prob, KrylovJL_CG(); reltol=1e-12)
+            tau = tortuosity(reconstruct_field(sol.u, img), img; axis=axis)
+            tauf = tortuosity(reconstruct_field(solf.u, img), img; axis=axis)
+            @test isapprox(tauf, tau; rtol=1e-8)
+        end
+    end
+
+    @test occursin("matrix-free", sprint(show, SteadyDiffusionProblem(img; axis=:x, matrixfree=true)))
+    @test occursin("assembled", sprint(show, SteadyDiffusionProblem(img; axis=:x)))
+end
+
+@testset "the package solve entry point" begin
+    img = trues(24, 14, 14)
+    img[9:12, 4:7, 4:7] .= false
+    sim = SteadyDiffusionProblem(img; axis=:x)
+    simf = SteadyDiffusionProblem(img; axis=:x, matrixfree=true)
+    reference = tortuosity(
+        reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u, img), img; axis=:x
+    )
+
+    @testset "solves both paths to the same answer" begin
+        for s in (sim, simf)
+            sol = solve(s)
+            @test Symbol(sol.retcode) === :Success
+            tau = tortuosity(reconstruct_field(sol.u, img), img; axis=:x)
+            @test isapprox(tau, reference; rtol=1e-8)
+        end
+    end
+
+    @testset "leaves solve(sim.prob, alg) untouched" begin
+        # The unopinionated form takes no preconditioner and the tolerance it is
+        # handed, which is what every existing caller depends on.
+        direct = solve(sim.prob, KrylovJL_CG(); reltol=1e-12)
+        again = solve(sim.prob, KrylovJL_CG(); reltol=1e-12)
+        @test direct.u == again.u
+    end
+
+    @testset "picks the tolerance from the element type" begin
+        @test Tortuosity._default_reltol(Float64) == 1e-10
+        @test Tortuosity._default_reltol(Float32) === 1.0f-6
+    end
+
+    @testset "resolves the preconditioner" begin
+        # This image is far below the size where a coarse solve pays for itself.
+        @test Tortuosity._resolve_precond(:auto, sim, false) === nothing
+        @test Tortuosity._resolve_precond(:none, sim, false) === nothing
+        @test count(img) < Tortuosity._PRECOND_MIN_NODES
+        sentinel = Tortuosity.two_level_preconditioner(sim; block=4)
+        @test Tortuosity._resolve_precond(sentinel, sim, false) === sentinel
+    end
+
+    @testset "forwards the tolerance and the algorithm" begin
+        loose = solve(simf, KrylovJL_CG(); reltol=1e-4, precond=:none)
+        tight = solve(simf, KrylovJL_CG(); reltol=1e-12, precond=:none)
+        @test Symbol(loose.retcode) === :Success
+        @test Symbol(tight.retcode) === :Success
+        tau_tight = tortuosity(reconstruct_field(tight.u, img), img; axis=:x)
+        @test isapprox(tau_tight, reference; rtol=1e-8)
+        @test loose.u != tight.u
+    end
+end
