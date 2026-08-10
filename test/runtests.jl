@@ -120,6 +120,10 @@ const _has_gpu = _has_cuda || _has_metal
         @testset verbose = true "GPU parity vs old CUDA baseline" begin
             include("test_gpu_parity.jl")
         end
+
+        @testset verbose = true "Matrix-free operator on GPU" begin
+            include("test_matrixfree_gpu.jl")
+        end
     else
         @info "Skipping CUDA parity tests (CUDA not functional)"
     end
