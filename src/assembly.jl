@@ -153,6 +153,38 @@ slot range, so there are no atomics and the output is bit-reproducible.
 end
 
 """
+    _assembled_index_type(on_gpu, nnodes)
+
+The integer type the CSC index arrays are stored in, or an error when no
+supported type fits.
+
+`Int32` halves the index traffic, which is what an unpreconditioned CG spends
+nearly all of its time on: 16 B per stored entry becomes 12 B. That holds only
+while every offset the assembly computes fits in 32 bits. A column holds at most
+seven entries — its diagonal and six face neighbours — so `7 * nnodes` bounds
+`nnz` from above, and the bound sits near 900³ at half porosity.
+
+Past it the failure is silent and then fatal: `accumulate(+, counts)` and
+`colptr` wrap to negative rather than saturating, `nnz_A` comes out wrong, and
+`_steady_fill_kernel!` writes through `@inbounds` at the true offsets — off the
+end of arrays sized from the wrapped count. On the host that corrupts memory; on
+the device it faults with `ERROR_ILLEGAL_ADDRESS`, asynchronously and
+uncatchably. The host widens to `Int`; the device has no 64-bit index path, so
+it refuses. Mirrors [`_operator_index_type`](@ref) for the matrix-free operator,
+whose bound is `nnodes` rather than `7 * nnodes`.
+"""
+function _assembled_index_type(on_gpu::Bool, nnodes::Integer)
+    7 * nnodes + 1 <= typemax(Int32) && return Int32
+    on_gpu && throw(ArgumentError(
+        "image has $(nnodes) pore voxels, whose assembled matrix needs more index \
+         range than 32 bits can address ($(typemax(Int32))); the GPU assembled path \
+         has no 64-bit index path — use the matrix-free operator (`matrixfree=true`) \
+         at this size"
+    ))
+    return Int
+end
+
+"""
     build_steady_system(img; nnodes, axis, D=nothing, T=Float64)
 
 Assemble the steady diffusion system `(A, b)` directly from the pore mask `img`,
@@ -181,13 +213,7 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
     on_gpu = _on_gpu(img)
-    # Int32 halves the index traffic, which is what an unpreconditioned CG spends
-    # nearly all of its time on: 16 B per stored entry becomes 12 B. The device
-    # path has always used it. The host path takes it too, but only while the
-    # matrix is provably small enough — a column holds at most seven entries (its
-    # diagonal and six face neighbours), so `7 * nnodes` bounds `nnz` from above,
-    # and above that bound the host falls back to `Int`.
-    Ti = (on_gpu || 7 * nnodes + 1 <= typemax(Int32)) ? Int32 : Int
+    Ti = _assembled_index_type(on_gpu, nnodes)
     Tv = isnothing(D) ? T : eltype(D)
     D0 = one(Tv)
 
