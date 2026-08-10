@@ -287,6 +287,24 @@ The five questions this plan was drafted with were put to Amin on 2026-08-09 and
 | variable-`D` apply, 600³ | 11.9 ms | 11.2 ms (1.06×) |
 | apply parity | — | 1.0e-7 Float32, sub-ULP Float64 |
 
+### The benchmark table
+
+Quiet card, GPU, Float32, seed 42, ε 0.5, `reltol=1e-6`, `bench/results/matrixfree.csv` (254 rows, regenerated from empty). `e2e` sums build + preconditioner + solve + post; `peak` is the maximum over those stages.
+
+| N | apply (ms) | | solve e2e (s) | | preconditioned e2e (s) | | peak, preconditioned (GiB) | | iters (plain / precond) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | asm | **mf** | asm | **mf** | asm | **mf** | asm | **mf** | both paths |
+| 200³ | 0.38 | **0.22** | 0.74 | **0.63** | 0.30 | **0.28** | 1.78 | **1.53** | 1044 / 82 |
+| 400³ | 3.44 | **2.11** | 14.33 | **11.32** | 2.42 | **2.26** | 4.50 | **2.47** | 2094 / 168 |
+| 600³ | 11.90 | **6.96** | 66.26 | **52.74** | 9.27 | **7.91** | 11.97 | **5.03** | 2983 / 223 |
+| 800³ | 29.10 | **15.74** | 195.09 | **144.27** | 21.15 | **17.22** | 22.44 | **9.94** | 3620 / 202 |
+| 1000³ | *fails* | **29.19** | *fails* | **368.86** | *fails* | **66.65** | *fails* | **18.89** | — / 4805, 363 |
+| 1100³ | — | **37.40** | — | **538.52** | — | **79.62** | — | **23.89** | — / 5059, 298 |
+
+**Iteration counts are identical between the two paths at every size where both run** — two different operators reaching the same Krylov trajectory. τ agrees to 4–5 significant figures. At 800³ the matrix-free path is **26 % faster end to end unpreconditioned, 19 % preconditioned, on 44 % of the peak memory**; the plan projected −24 % and −12 %, so both came in slightly better.
+
+The 1000³ and 1100³ *assembled* cells say **fails**, not "out of memory": the assembled path aborts with `ERROR_ILLEGAL_ADDRESS` from the unchecked `Int32` overflow described in the Progress log, at a point where it has allocated only 11.6 GiB of a 23.9 GiB card. That is the campaign's scale case stated as plainly as it can be — the ceiling is not memory, it is an overflow that faults.
+
 The 14.16 B/voxel figure lands on the plan's predicted 14 — the memory model was right. The 1.97× apply beat the plan's 1.38× working assumption because **the KernelAbstractions port gap the plan budgeted M8 to close does not exist**: the portable kernel matches the raw-CUDA prototype. No CUDA-specialized apply was written, and `ext/TortuosityCUDAExt.jl` was not touched.
 
 ### What the campaign learned that the plan had wrong
@@ -314,6 +332,17 @@ The 14.16 B/voxel figure lands on the plan's predicted 14 — the memory model w
 | M11 CPU threaded apply | **done** — 6.76× at 200³ |
 | M12 transient operator | **out of scope** by Decision 3 |
 | M13 docs | **done** — operator and entry-point docstrings, README two-path section, `CHANGELOG.md` `## Unreleased` entry |
+
+### Defects found by review and fixed
+
+The independent review of the diff found two real defects, both since fixed and covered by tests (`4584b28`):
+
+- **`mul!` did no dimension checking.** The kernel body is `@inbounds`, so a short `y` was written past its end and the call returned quietly, where the assembled path raises `DimensionMismatch`. A memory-safety hole, not an accuracy one.
+- **`_free!` leaked the device `D` copy the package itself allocated.** The operator holds `D` for its whole life, so the constructor deliberately skips freeing it — and nothing else ever did. `MaskedLaplacian` gained `owns_D`.
+
+Fixing the second one also proved a neighbouring comment false: `_gpu_adapt` allocates a fresh device array even for a `CuArray` that is already the right element type, so `D_dev === D` holds on the CPU path alone. The comment is corrected; no behaviour depended on it.
+
+A third finding — `solve(sim)` failing for `matrixfree=true` above `_PRECOND_MIN_NODES` — was real between `e08f606` and `0cbf7ad` and is closed by M5. It had no test, which is why nothing caught it; there is one now, at 170k nodes.
 
 ### Carried forward
 
@@ -346,7 +375,8 @@ Format: `date — id(s) — status — memory delta — speed delta — commit s
 2026-08-09 — **The assembled path does not fail cleanly past its Int32 wall — it corrupts memory.** The bench sweep completed 200/400/600/800/1000³ on **both** paths (369 CSV rows) and then died at 1100³ assembled, in the apply pass, with `CUDA error: an illegal memory access was encountered (code 700, ERROR_ILLEGAL_ADDRESS)` surfacing asynchronously in `cuMemGetInfo`. Cause: `build_steady_system` selects `Ti = Int32` **unconditionally when `on_gpu`** (`assembly.jl`: `Ti = (on_gpu || 7 * nnodes + 1 <= typemax(Int32)) ? Int32 : Int`), and at 1100³ `7 * nnodes` is 4.66e9 against a `typemax(Int32)` of 2.15e9. The plan predicted this wall at ~856³ and treated it as a *capacity* limit; it is worse than that — the overflow produces out-of-range offsets and a faulting kernel, not an error message. This strengthens the campaign's scale argument (the matrix-free operator's binding index is `nnodes`, ~1630³) and it is a **pre-existing assembled-path defect, untouched by this campaign** and out of scope by constraint 5. It deserves its own issue: at minimum `build_steady_system` should raise when `7 * nnodes + 1 > typemax(Int32)` on GPU rather than launch.
 2026-08-09 — bench sweep, **status: rows collected but not quotable.** 369 rows cover 200–1000³ on both paths, but the run overlapped the 1100³ certification and the full test suite on the same card, and the harness's author documents that under contention `peak_dev_bytes` goes negative and apply medians swing 10×. The **contention-independent** contents are trustworthy — iteration counts, τ, `nnz`, retcodes, and the 1100³ assembled crash. The timings are not. `bench/results/matrixfree.csv` must be deleted and the sweep re-run on a quiet card before any number from it is published.
 2026-08-09 — **Suite gate: PASSED.** Foreground fresh-process `Pkg.test()` at HEAD: **12677 assertions, 0 failures, 0 errors, 4m49s, exit 0**, GPU included — against the campaign floor of 11576, so the operator, its GPU tests and the matrix-free preconditioner tests add 1101 assertions and break nothing.
-2026-08-09 — **UNVERIFIED at halt — one item.** The benchmark sweep at 200–1100³ across both paths (`bench/matrixfree_bench.jl`) never emitted a row: it was launched into a card already busy with the 1100³ certification and two agents, and the harness's own author warns that under contention `peak_dev_bytes` goes negative and apply medians swing 10×. **`bench/results/matrixfree.csv` currently holds mixed rows from three run_ids and must be deleted before the real run.** Everything the sweep needs is in place — both fixtures cached, both scripts committed, the `Pkg.develop` trap fixed — so this is one quiet-card invocation: `julia --project=bench bench/matrixfree_bench.jl 200 400 600 800 1000 1100`, expecting the assembled path to OOM at 1000³ and 1100³ and the harness to record that as a row rather than a crash. The apply-vs-CSR and certification numbers quoted throughout this document were each measured directly and do not depend on that sweep.
+2026-08-09 — **Benchmark sweep: complete, on a quiet card, both paths, 200–1100³.** `bench/results/matrixfree.csv` was deleted and regenerated from scratch (254 rows, exit 0 on both invocations). Iteration counts are **identical between the two paths at every size** — 1044 / 2094 / 2983 / 3620 unpreconditioned and 82 / 168 / 223 / 202 preconditioned at 200–800³ — which is the strongest correctness signal the campaign has: two different operators, two different arithmetic orders, the same Krylov trajectory. τ agrees to 4–5 significant figures throughout. The table is in the Final report.
+2026-08-09 — **Correction to the 1100³ certification's timing.** The certification reported a 314.5 s solve; the clean sweep measures the same configuration at **74.9 s (79.6 s end to end)**. The certification ran while the bench sweep and the full test suite were both on the card, so its *timing* was contaminated — exactly the hazard the harness's author flagged. Its *memory* figure is unaffected and reproduces: peak **23.889 GiB, the entire card**, in both runs. So the caveat about 1100³ narrows: the "1.05 s per iteration" observation was an artefact of contention (the clean figure is 0.251 s/iteration, most of it the preconditioner's per-iteration host round-trip), but **zero headroom and the −0.0004 concentration stand**. 1000³ remains the number to quote.
 2026-08-09 — **Phase 4 independent review — verdict: constraints hold, two defects open.** Reviewed `37c0404..976d5f4` (so *before* `0cbf7ad`), re-derived the stencil from `assembly.jl` and ran ~100 extra parity configurations: 2-voxel-thick axes, single-pore-voxel images at inlet/interior/outlet, `1×4×4`, random non-cubic shapes on all three axes, uniform and variable `D`, Float32/Float64 mixing. **No stencil defect found** — `b` exactly equal in every case, apply ≤1e-13 relative. Goldens 23/23, no existing test modified, `runtests.jl` purely additive, the `_free!` guard provably reduces to the old expression when `matrixfree=false`, `solve(sim.prob, KrylovJL_CG())` still dispatches to LinearSolve's own method.
 2026-08-09 — **OPEN DEFECT 1 — `mul!` does no dimension checking** (`src/matrixfree.jl:168-186`). The kernel body is `@inbounds` and nothing validates `length(y)`/`length(x)` against `nnodes`, so `mul!(zeros(184), op, randn(216))` writes 32 elements past the end and returns quietly. The assembled path raises `DimensionMismatch` for the same call. This is both a divergence from the executable specification and a memory-safety hole. Fix: a `DimensionMismatch` check in the 5-argument `mul!` before the launch, plus tests for both the short-`y` and short-`x` cases. **Must land before this branch merges.**
 2026-08-09 — **OPEN DEFECT 2 — `_free!(::MaskedLaplacian)` leaks the package's own `D` copy** (`src/matrixfree.jl:59-61`). The comment claims `D` belongs to the caller; that is false on the constructor path, where `simulations.jl` deliberately skips freeing `D_dev` because the operator holds it — so with `gpu=true, matrixfree=true` and a host `D`, the operator owns a package-made, grid-sized device array that `_free!` never releases. Verified on a 60³ variable-`D` GPU sim. Fix: have the constructor record ownership (or free `D` when the operator made the copy) and correct the comment.
