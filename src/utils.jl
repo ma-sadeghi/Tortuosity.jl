@@ -147,3 +147,34 @@ function get_taufactor_conc(tau_solver; fill_value=NaN, normalize=true)
     c = normalize ? (c .- c_low) ./ (c_high - c_low) : c
     return c
 end
+
+"""
+    check_flux_convergence(c, img, axis; D=1, reltol=1e-3)
+
+Evaluate whether the slice‑wise flux along a chosen axis has converged to constant
+main-axis flux within the given reltol.
+
+Solver tolerance is not directly related to flux convergence, so certain geometries may
+require relatively tight solver tolerance before the flux will converge
+
+# Arguments
+- `c::Array`: Concentration field (full 3D array).
+- `img::Array{Bool}`: Pore mask (`true` = pore, `false` = solid).
+- `axis::Symbol`: One of `:x`, `:y`, or `:z`, specifying the direction of flux.
+
+# Keyword Arguments
+- `D`: Diffusivity. Only relevant if non‑uniform; defaults to `1`.
+- `reltol::Real`: Maximum allowed relative deviation from the mean flux.
+  Default is `1e-3`.
+
+# Returns
+`true` if the maximum relative flux deviation is below `reltol`, otherwise `false`.
+"""
+function check_flux_convergence(c, img, axis; D=1, reltol = 1e-3)
+
+    flux_dist = flux_distribution(c, D, 1, img, axis) #voxel_size is arbitrary, so is D if it's a scalar
+    avg_flux = sum(flux_dist) ./length(flux_dist)
+    max_rel_error = maximum(abs.((flux_dist .- avg_flux)/avg_flux))
+
+    return max_rel_error < reltol
+end

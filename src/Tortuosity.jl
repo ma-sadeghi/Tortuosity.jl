@@ -92,6 +92,7 @@ export tortuosity
 export effective_diffusivity
 export formation_factor
 export reconstruct_field
+export check_flux_convergence
 
 # Transient solver + stop conditions
 export StopAtSteadyState

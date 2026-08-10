@@ -108,6 +108,66 @@ function flux(c_hist::AbstractVector{<:Array}, D, voxel_size, img, axis; ind=:en
 end
 
 """
+    flux_distribution(c, D, voxel_size, img, axis)
+
+Compute the slice‑wise diffusive flux along a chosen axis of a 3D voxel domain.
+The same measurement as `Tortuosity.flux()` for each slice along the main axis.
+
+# Arguments
+- `c::Array`: Concentration field. May be a full 3D array matching `img`, or a
+  vector of pore‑voxel values.
+- `D`: Diffusivity. Either a scalar or a 3D array of the same size as `img`.
+  When `D` is an array, the harmonic mean is used at each voxel interface.
+- `voxel_size::Real`: Physical spacing between adjacent voxels along the main axis.
+- `img::BitArray` or `Array{Bool}`: Pore mask (`true` = pore, `false` = solid).
+- `axis::Symbol`: One of `:x`, `:y`, or `:z`, specifying the direction of flux.
+
+# Returns
+A 1D vector of flux values, one for each interface between adjacent slices
+along `axis`. Each entry represents the total flux through that slice,
+normalized by the cross‑sectional voxel count.
+
+# Notes
+- When `D` is an array, the interface diffusivity is computed as:
+
+      D_eff = 2 * D₁ * D₂ / (D₁ + D₂)
+
+  with zero assigned where both sides are solid.
+"""
+function flux_distribution(c, D, voxel_size, img, axis)
+
+    dims = size(img)
+    full_c = size(c) == dims ? c : reconstruct_field(c, img)
+    perp_dims = orthogonal_dims(axis)
+    main_dim = axis_dim(axis)
+    N = dims[main_dim]
+
+    I1 = Any[: , : , :]
+    I1[main_dim] = 1:N-1
+    I2 = Any[: , : , :]
+    I2[main_dim] = 2:N
+
+    D_eff = nothing
+    if D isa Number
+        D_eff = D
+    elseif size(D) == size(img)
+        D1 = @view D[I1...]
+        D2 = @view D[I2...]
+        denom = D1 .+ D2
+        D_eff = @. ifelse(denom == 0, zero(denom), 2 * D1 * D2 / (denom))
+    else
+        error("D must be a scalar or a scalar field with dimensions of img")
+    end
+
+    directional_flux = D_eff .* (full_c[I1...] .- full_c[I2...])
+
+    flux_dist = dropdims(nansum(directional_flux, dims = perp_dims),dims = perp_dims)
+    cross_section_count = size(img)[perp_dims[1]] * size(img)[perp_dims[2]]
+
+    return flux_dist ./ voxel_size ./ cross_section_count
+end
+
+"""
     mass_uptake(c_hist, img; c0_total=nothing)
     mass_uptake(c_hist, prob::TransientDiffusionProblem; c0_total=0)
 
@@ -169,6 +229,9 @@ slice_concentration(c, prob::TransientDiffusionProblem, ind; pore_only::Bool=fal
 
 flux(c, prob::TransientDiffusionProblem; ind=:end) =
     flux(c, prob.D, prob.voxel_size, prob.img, prob.axis; ind=ind, pore_index=prob.pore_index)
+    
+flux_distribution(c, prob::TransientDiffusionProblem) =
+    flux_distribution(c, prob.D, prob.voxel_size, prob.img, prob.axis)
 
 mass_uptake(c_hist, prob::TransientDiffusionProblem; c0_total::Real=0) =
     mass_uptake(c_hist, prob.img; c0_total=c0_total)
