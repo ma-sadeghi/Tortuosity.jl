@@ -213,6 +213,32 @@ end
 # --- Right-hand side and construction ---
 
 """
+    _operator_index_type(on_gpu, nnodes)
+
+The integer type the pore ordinals are stored in, or an error when no supported
+type fits.
+
+On GPU the ordinal is always `Int32`: `idx` is the operator's whole state and
+halving its traffic is what the apply spends its time on. That holds only while
+an ordinal fits in 32 bits, and it fails silently if it does not — `cumsum!`
+into an `Int32` buffer wraps to `typemin` rather than saturating, so `idx` would
+go negative, the kernel's `c0 > 0` test would drop most voxels, and `y` would
+come back partly unwritten with no error raised anywhere. Refuse instead.
+
+The bound is `nnodes`, not the assembled path's `7 * nnodes`, which puts it near
+1625³ at half porosity — past this card, but reachable on an 80 GiB one, which
+is the regime the operator exists for.
+"""
+function _operator_index_type(on_gpu::Bool, nnodes::Integer)
+    nnodes + 1 <= typemax(Int32) && return Int32
+    on_gpu && throw(ArgumentError(
+        "image has $(nnodes) pore voxels, more than a 32-bit pore ordinal can address \
+         ($(typemax(Int32))); the GPU operator has no 64-bit index path"
+    ))
+    return Int
+end
+
+"""
     _steady_rhs_kernel!(b, idx, D, nx, ny, nz, bcdim, nbc, D0)
 
 KA kernel: one thread per grid voxel writes that node's right-hand-side value.
@@ -293,10 +319,7 @@ function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
     on_gpu = _on_gpu(img)
-    # The same Int32-halves-the-index-traffic argument `build_steady_system`
-    # makes, against a smaller bound: the only index the operator ever holds is
-    # a pore ordinal, so `nnodes` bounds it rather than that path's `7 * nnodes`.
-    Ti = (on_gpu || nnodes + 1 <= typemax(Int32)) ? Int32 : Int
+    Ti = _operator_index_type(on_gpu, nnodes)
     Tv = isnothing(D) ? T : eltype(D)
     D0 = one(Tv)
 

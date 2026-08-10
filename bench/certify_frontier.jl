@@ -36,19 +36,27 @@ fixture_path(n) = joinpath(CACHE, "blobs_n$(n)_p$(POROSITY)_b$(BLOBINESS)_seed$(
 
 function cached_blobs(n)
     path = fixture_path(n)
-    if isfile(path)
+    # A cache entry is only usable at its full size. An interrupted write leaves
+    # a short file that `isfile` still accepts and `read!` then fails on for
+    # good, so check the length and regenerate rather than inherit the stump.
+    if isfile(path) && filesize(path) == n^3
         img = Array{Bool}(undef, n, n, n)
         read!(path, img)
         return img
     end
+    isfile(path) && @warn "discarding truncated fixture ($(filesize(path)) of $(n^3) bytes)" path
     @info "Generating $(n)^3 fixture (this allocates a Float64 grid of $(round(8 * n^3 / 2^30; digits=1)) GiB)"
     img = Imaginator.blobs(;
         shape=(n, n, n), porosity=Float32(POROSITY), blobiness=Int(BLOBINESS), seed=SEED
     )
     mkpath(CACHE)
-    open(path, "w") do io
+    # Write beside the target and rename, so the cached path only ever exists
+    # complete — an interrupted run then costs a regeneration, not a wedge.
+    tmp = path * ".partial"
+    open(tmp, "w") do io
         write(io, img)
     end
+    mv(tmp, path; force=true)
     return Array(img)
 end
 

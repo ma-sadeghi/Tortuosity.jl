@@ -378,14 +378,14 @@ Terminal states: **done** (landed), **rejected** (considered, declined, reasonin
 | B14 | **moot** | A7 deleted the call site |
 | B15 | **moot** | `dropzeros!` has no production caller anywhere |
 | B16 | **moot** | Reachable only from `apply_dirichlet_bc_fast!`, which has no production caller |
-| B17 | **BLOCKED** | CPU solve −57 % (4 threads) / −15 % (1 thread), kernel already committed. Needs an API ruling — see Blockers |
+| B17 | **BLOCKED; superseded in practice** | CPU solve −57 % (4 threads) / −15 % (1 thread), kernel already committed. Needs an API ruling — see Blockers. The matrix-free campaign's M11 delivers **6.76× on the CPU apply at 200³** without touching any `SparseMatrixCSC` public, so this is worth doing only if the *assembled* CPU path specifically matters — recommend re-triaging to rejected-unless-asked |
 | B18 | **done** | Commit `1cf8726`. Accepted on the "simplifying/neutral" branch; needed no new branch because the scalar/array split already existed |
 | B19 | **done** | Phase 4 r1 |
 | B20 | **done** | Phase 4 r1 |
 | B21 | **moot for steady** | Transient-only |
 | B22 | **done (transient); retired moot (steady)** | Steady never enumerates BC nodes — `_is_bc` is a coordinate test in-kernel |
-| B23 | **BLOCKED** | No mechanism — LinearSolve never consults `prob.kwargs`. Same fix as B24-as-default |
-| B24 | **done; default BLOCKED** | 800³ e2e −89.1 %, iterations 3620 → 202, flat in N. **Opt-in only** — see Blockers |
+| B23 | **RESOLVED** by `docs/plans/2026-08-08-matrix-free-operator.md` M4 | The package-owned `solve(sim, alg)` entry point is the home the tolerance policy lacked: `1e-10` on a Float64 system, `1e-6` on a Float32 one, because Float32 CG cannot drive the relative residual below ~1e-6 |
+| B24 | **done; default RESOLVED** by matrix-free M4 | 800³ e2e −89.1 %, iterations 3620 → 202, flat in N. The same entry point now builds the two-level preconditioner by default above 100k pore voxels, so the −89 % is opt-out rather than opt-in. `solve(sim.prob, alg)` is unchanged and still takes no preconditioner |
 | B25 | **rejected** | Measured identical iteration counts; `LinearProblem(A,b; u0=…)` does not warm-start KrylovJL |
 | B26 | **done** | Phase 4 r2, 2.32× on the membership pass — the inventory's "5–20×" and "halves peak host memory" were both wrong |
 | B27 | **done (fusion); Float32 half BLOCKED** | Fusion −27 %, bit-identical. Float32 would move two of three golden node counts |

@@ -194,6 +194,12 @@ function parse_args(args)
             opts["force"] = "1"
         elseif _flag(a) && occursin('=', a)
             k, v = split(a[3:end], '='; limit=2)
+            # Values are checked below, but an unrecognised *key* would otherwise
+            # be accepted and ignored — `--path=matrixfree` would silently run
+            # the default set of both paths.
+            haskey(opts, k) || error(
+                "Unknown flag: --$(k) (expected one of $(join(sort(collect(keys(opts))), ", ")))"
+            )
             opts[k] = v
         elseif _flag(a)
             error("Unknown flag: $a")
@@ -894,7 +900,12 @@ function main(args)
                 @warn "n=$(n) path=assembled pass=$(pass): skipped, 7*nnodes overflows Int32"
                 row = base_row_for(base, path, pass)
                 row["note"] = "7*nnodes exceeds typemax(Int32)"
-                emit!(csv, skipped_row(row, "int32_overflow"; rep=1))
+                # Write the pass's own terminal stage, and for `apply` its last
+                # repeat, so `completed_cells` counts the cell as settled — a
+                # stage name of its own would leave every resume re-attempting
+                # it and appending another row.
+                rep = pass == "apply" ? APPLY_REPS : 1
+                emit!(csv, skipped_row(row, TERMINAL_STAGE[pass]; rep=rep))
                 continue
             end
             @info "n=$(n) path=$(path) pass=$(pass)"

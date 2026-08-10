@@ -444,6 +444,24 @@ end
     @test mul!(zeros(nnodes), op, zeros(nnodes)) == zeros(nnodes)
 end
 
+@testset "the pore ordinal type refuses to overflow instead of wrapping" begin
+    # An image this large is far past any device on hand, so the rule is tested
+    # through the predicate rather than by building one.
+    @test Tortuosity._operator_index_type(true, 1000) === Int32
+    @test Tortuosity._operator_index_type(false, 1000) === Int32
+    @test Tortuosity._operator_index_type(true, typemax(Int32) - 1) === Int32
+    @test Tortuosity._operator_index_type(false, typemax(Int32) - 1) === Int32
+
+    # On the host the ordinal simply widens; on device there is no 64-bit path,
+    # and `cumsum!` into an Int32 buffer wraps to typemin rather than saturating,
+    # so silently continuing would return a partly unwritten solution.
+    @test Tortuosity._operator_index_type(false, typemax(Int32)) === Int
+    @test Tortuosity._operator_index_type(false, Int64(typemax(Int32)) + 10) === Int
+    @test_throws ArgumentError Tortuosity._operator_index_type(true, typemax(Int32))
+    @test_throws ArgumentError Tortuosity._operator_index_type(true, Int64(typemax(Int32)) + 10)
+    @test Int32(typemax(Int32)) + Int32(1) == typemin(Int32)
+end
+
 @testset "the operator releases only the arrays it owns" begin
     img = trues(8, 6, 6)
     nnodes = count(img)
@@ -520,7 +538,11 @@ end
         sola = solve(sima; reltol=1e-10)
         @test Symbol(solb.retcode) === :Success
         @test Symbol(sola.retcode) === :Success
-        @test solb.iters == sola.iters
+        # The two applies agree to rounding, not to the bit, so a residual
+        # sitting near the tolerance can cross it one iteration apart. Equality
+        # holds at every size measured, but asserting it would make this test a
+        # tripwire for floating-point reassociation rather than for behaviour.
+        @test abs(solb.iters - sola.iters) <= 1
         taub = tortuosity(reconstruct_field(solb.u, big), big; axis=:x)
         taua = tortuosity(reconstruct_field(sola.u, big), big; axis=:x)
         @test isapprox(taub, taua; rtol=1e-8)
