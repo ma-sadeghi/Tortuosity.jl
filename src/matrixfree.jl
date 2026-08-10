@@ -94,7 +94,7 @@ or not: eliminating a boundary column empties it but leaves the diagonal it
 already had, which is what [`_steady_fill_kernel!`](@ref) writes.
 """
 @kernel function _steady_apply_kernel!(
-    y, @Const(x), @Const(idx), D, nx, ny, nz, bcdim, nbc, D0, alpha, beta,
+    y, @Const(x), @Const(idx), @Const(D), nx, ny, nz, bcdim, nbc, D0, alpha, beta,
 )
     i, j, k = @index(Global, NTuple)
     @inbounds begin
