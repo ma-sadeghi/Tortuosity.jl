@@ -63,12 +63,15 @@ the operator, the smoother, the map onto the next grid down, and the scratch the
 cycle writes through.
 
 Every level lives on the host in `Float64`, next to the direct solve the cycle
-ends in. Each is `COARSE_RATIO^3` smaller than the one above, so the hierarchy
-costs a fixed few percent of one preconditioner application whatever the image
-size — measured at 2.1% on a 256³ case.
+ends in. The first one *is* the coarse space — its `A` is the coarse operator
+itself — and each one below is `COARSE_RATIO^3` smaller than the one above, so
+everything under the coarse space costs a fixed few percent of one
+preconditioner application whatever the image size — measured at 2.1% on a 256³
+case.
 
 # Fields
-- `A`: this level's operator, the Galerkin product `WᵀA₊W` of the level above.
+- `A`: this level's operator: the coarse operator at the first level, and the
+  Galerkin product `WᵀA₊W` of the level above at every level under it.
 - `dinv`: `COARSE_SMOOTH_OMEGA ./ diag(A)`, the damped-Jacobi smoother.
 - `parent`: this level's cell → the next level's cell, `0` where dropped. Read by
   `_restrict!` and `_prolong!` exactly as `agg` is at the fine level.
@@ -107,8 +110,9 @@ never the operator it stands for.
   dropped for carrying no coarse unknown. On a device this is an
   [`Aggregation`](@ref), which carries the same map plus its inverse.
 - `nc`: number of coarse unknowns.
-- `levels`: the coarser grids interposed between the coarse space and the direct
-  solve, outermost first. Empty when the coarse space is solved directly.
+- `levels`: the grids the V-cycle sweeps, outermost first. `levels[1]` is the
+  coarse space itself and the rest are the coarser grids interposed between it
+  and the direct solve. Empty when the coarse space is solved directly.
 - `fact`: host Cholesky factorisation of the shifted operator of the *coarsest*
   level, always in `Float64` regardless of the fine precision. That is the
   coarse operator itself when `levels` is empty.
@@ -366,19 +370,19 @@ belongs to a cluster contained entirely within the block and touching neither
 Dirichlet face — in which case the block's coarse basis function lies in the
 null space of `A` and carries no information to correct.
 
-Such a block's diagonal is a sum that cancels to *exactly* zero, so `floor` is
-what decides it rather than a comparison against zero. See
+Such a block's diagonal is a sum that cancels to *exactly* zero, so `diag_floor`
+is what decides it rather than a comparison against zero. See
 [`_coarse_diagonal_floor`](@ref) for why testing against zero is not safe.
 
 Opposite stencil slots hold the same sum accumulated in a different order, so
 averaging them makes `Ac` symmetric to the last bit rather than merely close.
 """
-function _coarse_operator(S::Vector{Float64}, nc0, nbx, nbxy, shift, floor)
+function _coarse_operator(S::Vector{Float64}, nc0, nbx, nbxy, shift, diag_floor)
     offs = (0, -nbxy, -nbx, -1, 1, nbx, nbxy)
     remap = zeros(Int32, nc0)
     nc = 0
     for a in 1:nc0
-        if S[(a - 1) * _COARSE_SLOTS + 1] > floor
+        if S[(a - 1) * _COARSE_SLOTS + 1] > diag_floor
             nc += 1
             remap[a] = nc
         end
@@ -439,10 +443,11 @@ function _coarse_parents(cell_block, dims)
 end
 
 """
-Build the grids interposed between the coarse space and the direct solve.
+Build the grids the V-cycle sweeps between the coarse space and the direct solve.
 
 Returns `(levels, Acoarsest)`: the hierarchy outermost first, and the operator
-the caller is to factorise. `levels` is empty and `Acoarsest === Ac` when the
+the caller is to factorise. `levels[1]` holds `Ac` itself, so the interposed
+grids are `levels[2:end]`. `levels` is empty and `Acoarsest === Ac` when the
 coarse space already fits under `max_coarse`, which is the two-level method
 unchanged.
 
@@ -452,14 +457,17 @@ sits. From there each level is the Galerkin product `WᵀA W` over a
 `COARSE_RATIO`-fold aggregation of the grid, which is again an operator on a
 regular grid and can be coarsened the same way.
 
-A coarse cell is dropped against the same `floor` [`_coarse_operator`](@ref) uses,
-so one rule decides it at every level. It cannot actually fire below the first
-one — an aggregate's diagonal is at least the sum of the diagonals it covers, and
-those already cleared the floor — but a dropped cell is handled rather than
-assumed away. Coarsening stops if it ever fails to shrink the problem, so the
-loop terminates whatever `max_coarse` is asked for.
+A coarse cell is dropped against the same `diag_floor` [`_coarse_operator`](@ref)
+uses, so one rule decides it at every level. It is rare below the first one but
+not impossible: an aggregate's diagonal is the sum of every entry of `A` it
+covers, which for a cluster enclosed within the aggregate collapses to the
+shift's share of those diagonals — `shift` times a diagonal that only had to
+clear the floor itself. Such a cell is dropped and gets no correction from below,
+which is correct rather than merely tolerated: it is the same null direction the
+first-level rule exists to remove. Coarsening stops if it ever fails to shrink
+the problem, so the loop terminates whatever `max_coarse` is asked for.
 """
-function _coarse_hierarchy(Ac, remap, dims, max_coarse, floor)
+function _coarse_hierarchy(Ac, remap, dims, max_coarse, diag_floor)
     levels = CoarseLevel[]
     A = Ac
     # Coarse index → block index, the inverse of the map `_coarse_operator` built.
@@ -482,7 +490,7 @@ function _coarse_hierarchy(Ac, remap, dims, max_coarse, floor)
         B = W' * A * W
         Anext = (B + transpose(B)) / 2
 
-        keep = findall(>(floor), diag(Anext))
+        keep = findall(>(diag_floor), diag(Anext))
         # Nothing to correct on, or a coarsening that buys nothing: stop and let
         # the caller factorise what is already here.
         (isempty(keep) || length(keep) >= n) && break
@@ -559,7 +567,10 @@ levels at all takes that branch directly and is the plain direct coarse solve.
 """
 function _vcycle!(e, levels, l, r, fact)
     if l > length(levels)
-        e .= fact \ r
+        # `ldiv!` rather than `e .= fact \ r`: this runs once per CG iteration,
+        # and the two are bit-identical while only one of them allocates a
+        # coarse-sized vector to throw away.
+        ldiv!(e, fact, r)
         return e
     end
     L = levels[l]
@@ -592,8 +603,11 @@ one for this pass, the matrix-free operator is one — and stays the caller's to
 release.
 """
 function _aggregate(idx, n, nc0, bs, nbx, nby)
-    # `nc0` is capped well inside `Int16`, and `agg` is one entry per pore voxel
-    # — the largest array this preconditioner keeps alive during the solve.
+    # `agg` is one entry per pore voxel and stays alive for the whole solve, so
+    # its element type is worth narrowing. The block edge is fixed, so `nc0`
+    # grows with the image and leaves `Int16` at a 249³ image (32³ blocks);
+    # everything above that pays 4 bytes per pore voxel here, plus the same
+    # again for [`Aggregation`](@ref)'s `fine` on a device.
     Ta = nc0 <= typemax(Int16) ? Int16 : Int32
     agg = similar(idx, Ta, n)
     backend = get_backend(idx)
@@ -714,8 +728,8 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse
     S = Array(stencil)
     _free!(stencil)
 
-    floor = _coarse_diagonal_floor(bs, maximum_diagonal)
-    Ac, remap = _coarse_operator(S, nc0, nbx, nbxy, shift, floor)
+    diag_floor = _coarse_diagonal_floor(bs, maximum_diagonal)
+    Ac, remap = _coarse_operator(S, nc0, nbx, nbxy, shift, diag_floor)
     nc = size(Ac, 1)
     if nc == 0
         _free!(agg)
@@ -726,7 +740,8 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse
     # The block edge is fixed, so a large image gives a large coarse space rather
     # than a coarser one. Grids below it carry that space down to a size the
     # direct solve can still afford.
-    levels, Acoarsest = _coarse_hierarchy(Ac, remap, (nbx, nby, nbz), max_coarse, floor)
+    levels, Acoarsest =
+        _coarse_hierarchy(Ac, remap, (nbx, nby, nbz), max_coarse, diag_floor)
     fact = try
         cholesky(Symmetric(Acoarsest))
     catch err
