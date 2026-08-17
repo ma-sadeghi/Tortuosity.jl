@@ -16,14 +16,15 @@ A fresh process is correct for exactly four things: peak-memory or size-ceiling 
 
 Do not lower the optimisation level (`-O1`, `-O0`) as a speed lever. It changes floating-point codegen; `test/test_transient.jl` asserts exact float equality and flips from pass to fail at `-O1`.
 
-## Directories that are easy to confuse
+## Benchmarking
 
-- `bench/` — this package's benchmark harness. Bench scripts run under `--project=bench`, never `--project=benchmarks`.
-- `benchmarks/` — the JOSS submission's directory. **Do not modify anything under it** unless the task is explicitly JOSS work.
+`benchmarks/` is the only benchmark harness. It compares Tortuosity.jl against taufactor and PuMA over domain size, porosity and microstructure, on both devices, for time and for memory, and it is part of the JOSS submission. Run it under `--project=benchmarks`; read `benchmarks/README.md` before changing anything in it, and `benchmarks/run/ORCHESTRATION.md` before driving a campaign.
+
+There used to be a second directory, `bench/`, holding a frozen copy of the pre-KernelAbstractions implementation and the old-versus-new comparison built around it. It was migration scaffolding, the migration landed, and it was deleted along with `test/test_gpu_parity.jl`. Correctness is covered by properties and golden values in `test/`, which do not need a duplicate implementation to compare against; performance is covered end to end by `benchmarks/`. Do not reintroduce a second harness — a performance assertion inside `Pkg.test()` is flaky by construction, and a per-machine baseline file nobody re-measures is worse than no baseline.
 
 ## Testing
 
-Full suite: `Pkg.test()`, currently **11576 assertions**, ~223 s. It exercises the CUDA GPU path on this machine, so a green local run covers CPU and GPU. Never weaken, loosen or skip a test to make a change pass — if a test fails, the change is wrong.
+Full suite: `Pkg.test()`, roughly three minutes. It exercises the CUDA GPU path on this machine, so a green local run covers CPU and GPU. Never weaken, loosen or skip a test to make a change pass — if a test fails, the change is wrong.
 
 ## Releasing
 

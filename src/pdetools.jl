@@ -3,8 +3,7 @@
 # the transient path zeroes rows instead of eliminating. What is left here is
 # the reference statement of the convention — the readable, obviously-correct
 # form that `test_assembly.jl` and `test_impl_parity.jl` check the fused
-# assembler against, and that `bench/` times the fused path against. Keep it
-# working; do not put it back on the production path.
+# assembler against. Keep it working; do not put it back on the production path.
 #
 # A Dirichlet value is imposed as `diag[i] * x[i] = diag[i] * val[i]`, which
 # preserves the original diagonal and keeps `A` symmetric. That encoding

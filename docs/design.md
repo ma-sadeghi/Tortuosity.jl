@@ -24,9 +24,12 @@ backend the user has loaded — `using CUDA`, `using Metal`, or `using AMDGPU`
 GPU-specific package.
 
 **Data.** Beyond portability, the refactor turned out to be **3.2-3.9× faster
-than the previous CUDA-specific code at all problem sizes** (see
-`bench/baselines/`). Most of the win came from replacing CUSPARSE-mediated
-sparse matrix construction with direct KA kernels — see decision #3.
+than the previous CUDA-specific code at all problem sizes**. That comparison was
+made against a frozen copy of the old implementation, in a harness that has since
+been deleted along with the copy (see decision #6); the figure stands as a record
+of the migration and is not reproducible from the current tree. Most of the win
+came from replacing CUSPARSE-mediated sparse matrix construction with direct KA
+kernels — see decision #3.
 
 **Alternatives considered.**
 
@@ -186,57 +189,62 @@ that aren't bugs.
 
 ---
 
-## 6. `bench/old_baseline.jl` is intentionally retained as a frozen reference
+## 6. The frozen old implementation was deleted once the migration landed
 
-**Decision.** `bench/old_baseline.jl` contains a complete copy of the
-pre-refactor CUDA-specific code as `OldBaseline.create_connectivity_list_old`,
-`OldBaseline.laplacian_old`, etc. It is loaded by `bench/gpu_bench.jl` and
-`test/test_gpu_parity.jl` but never by the user-facing package.
+**Superseded.** This entry previously recorded a decision to *retain*
+`bench/old_baseline.jl` — a complete copy of the pre-refactor CUDA-specific code
+— as an oracle for `bench/gpu_bench.jl` and `test/test_gpu_parity.jl`. It set its
+own condition for removal: delete both after the refactor merged to `main`. That
+merge happened, and both were deleted along with the rest of `bench/`.
 
-**Rationale.** Two purposes:
+**Why it went.** A test whose oracle is a copy of the previous implementation is
+a *differential test*: it asserts that the new code agrees with the old code.
+That is the right instrument during a migration and a weak one afterwards — it
+stops being informative once the new code is trusted, and it can never catch a
+bug that both implementations share.
 
-1. **Bench oracle** — gives `bench/gpu_bench.jl` something to compare *against*
-   so we can detect performance regressions vs the original implementation,
-   not just vs an arbitrary saved baseline.
-2. **Test oracle** — gives `test/test_gpu_parity.jl` a ground truth for 374
-   fuzz tests that verify mathematical equivalence between old and new
-   implementations.
+The original entry justified retention by claiming that deleting the parity tests
+would leave GPU correctness uncovered. That was true when it was written and
+stopped being true when the suite was expanded: `test_gpu_e2e.jl` checks the full
+GPU pipeline against analytic expectations and against the CPU run,
+`test_regression_golden.jl` pins τ on irregular geometry precisely to catch bugs
+that preserve every invariant, `test_impl_parity.jl` compares implementations
+that *both currently exist*, and `test_sparse_ops.jl` unit-tests the mutators
+directly. None of those needs a frozen duplicate.
 
-**Why not delete it?** Without it:
+**What went with it.** `gpu_bench.jl` and `cpu_bench.jl` existed to drive the
+old-versus-new comparison and had nothing left to compare against.
+`matrixfree_bench.jl`, `scaling_bench.jl` and `certify_frontier.jl` were
+self-comparisons that `benchmarks/` now measures over a real case grid with
+properly sampled memory. The migration figures they produced survive in this
+document and in git history.
 
-- The `bench/gpu_bench.jl` "old vs new" columns become meaningless
-- The 374 GPU parity tests can't run, leaving GPU correctness uncovered
-
-**When to delete.** After this refactor branch has been merged to `main` and
-we have a few weeks of confidence in the new code, we can delete
-`bench/old_baseline.jl` and `test/test_gpu_parity.jl` together as a single
-cleanup commit. By then, saved baselines from the post-merge state replace
-the "vs old code" comparison, and the parity tests are no longer needed.
-
-**Cost.** ~600 lines of frozen Julia. Compiles in ~12 seconds at first load,
-cached afterwards. Zero maintenance burden — the file is never edited.
+**Do not reintroduce a second harness.** A performance assertion inside
+`Pkg.test()` is flaky by construction — machine-dependent, noisy, and CI runners
+vary by more than any real regression — and a per-machine baseline file nobody
+re-measures is worse than no baseline. Correctness belongs in `test/`, as
+properties and stored values; performance belongs in `benchmarks/`, end to end.
 
 ---
 
-## 7. `bench/Project.toml` as a separate environment
+## 7. `benchmarks/Project.toml` as a separate environment
 
-**Decision.** Bench tooling (`CUDA`, `JSON`, `BenchmarkTools`, `LinearSolve`,
-`OrdinaryDiffEq`) lives in `bench/Project.toml`, not the main `Project.toml`.
-The bench is invoked as `julia --project=bench bench/gpu_bench.jl`.
+**Decision.** The benchmark harness has its own environment rather than adding
+its dependencies to the package. It is invoked as
+`julia --project=benchmarks benchmarks/bench_tortuosity.jl`.
 
 **Rationale.** The main package's `[deps]` should contain only what users
-actually need at runtime. Adding `BenchmarkTools` and `JSON` to runtime
-dependencies for the sake of an internal benchmark would force every user to
-download them. The separate environment isolates dev tooling from runtime
-deps cleanly.
+actually need at runtime. The sharpest case is CUDA: it is a **weak** dependency
+of Tortuosity.jl, and adding it to the package's own `Project.toml` to satisfy a
+benchmark would turn the CUDA extension into a hard dependency of the released
+package — the opposite of what the extension exists for.
 
-**Why not put the bench tools in `[extras]`?** `[extras]` is for test deps
-(it's how `Pkg.test()` finds things). The bench is not a test — it's a
-performance harness with its own lifecycle. Keeping it separate means the
-test environment doesn't pull `BenchmarkTools` either.
+**Why not `[extras]`?** `[extras]` is for test dependencies; it is how
+`Pkg.test()` finds things. A benchmark is not a test — it has its own lifecycle
+and its own runtime, measured in hours. Keeping it separate also means the test
+environment does not pull the plotting and Python-interop tooling.
 
-**Convention.** This is the standard Julia pattern for benchmark suites
-(e.g., `JuliaLang/Julia` and most SciML packages do the same).
+**Convention.** This is the standard Julia pattern for benchmark suites.
 
 ---
 

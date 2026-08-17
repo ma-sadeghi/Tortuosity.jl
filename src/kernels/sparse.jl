@@ -9,8 +9,8 @@ using Atomix
 # `set_diag!`, `get_diag` and `zero_rows_cols!` below exist to serve
 # `apply_dirichlet_bc_fast!`, which is now parity material rather than
 # production code (see the note at the top of `pdetools.jl`). They are covered
-# directly by `test_sparse_ops.jl` and timed by `bench/`; keep them working, but
-# do not read a call site here as evidence that the solver path uses them.
+# directly by `test_sparse_ops.jl`; keep them working, but do not read a call
+# site here as evidence that the solver path uses them.
 
 """
     set_diag_kernel!(nzval, rowval, colptr, vals, N_diag)

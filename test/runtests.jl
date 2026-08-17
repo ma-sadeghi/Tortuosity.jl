@@ -26,7 +26,7 @@ using Tortuosity
 using ImageFiltering
 using LsqFit
 
-# Try to enable a GPU backend. CUDA is the oracle for test_gpu_parity.jl;
+# Try to enable a GPU backend. CUDA is required by the matrix-free GPU tests;
 # any functional backend is enough for test_gpu_e2e.jl.
 const _has_cuda = try
     @eval using CUDA
@@ -121,15 +121,11 @@ const _has_gpu = _has_cuda || _has_metal
     end
 
     if _has_cuda
-        @testset verbose = true "GPU parity vs old CUDA baseline" begin
-            include("test_gpu_parity.jl")
-        end
-
         @testset verbose = true "Matrix-free operator on GPU" begin
             include("test_matrixfree_gpu.jl")
         end
     else
-        @info "Skipping CUDA parity tests (CUDA not functional)"
+        @info "Skipping CUDA-only tests (CUDA not functional)"
     end
 
     if _has_gpu

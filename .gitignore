@@ -43,10 +43,9 @@ LocalPreferences.toml
 images/
 temp/
 
-# Benchmark output: machine-specific measurements, appended to on every run.
-# Numbers worth keeping go into the campaign plan documents, not into git.
-bench/results/
-
 # System prompts
 .github/copilot-commit-message-instructions.md
 JULIA_PERF_TIPS.md
+
+# Claude worktrees
+.claude/worktrees/
