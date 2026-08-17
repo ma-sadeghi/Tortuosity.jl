@@ -33,6 +33,8 @@ length, and a preconditioner is what stops that growth. Build one with
 ```@docs
 two_level_preconditioner
 Tortuosity.TwoLevelPreconditioner
+Tortuosity.CoarseLevel
+Tortuosity.Aggregation
 ```
 
 Rather than make those choices yourself, you can hand the whole problem to the

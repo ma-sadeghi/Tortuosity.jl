@@ -10,7 +10,7 @@ grid with nothing about the matrix stored.
 
 `idx` maps a grid position to its compact pore ordinal and holds `0` at solids,
 so it doubles as the pore/solid test. It is built by the same `cumsum!`-and-mask
-idiom [`build_steady_system`](@ref) uses and is numbering-identical to it, which
+idiom `build_steady_system` uses and is numbering-identical to it, which
 is what makes `sol.u` the same pore-ordered vector either way — every
 postprocessing helper, [`reconstruct_field`](@ref) included, works unmodified.
 
@@ -299,7 +299,7 @@ Build the steady diffusion system as `(A, b)` with `A` a matrix-free
 `LinearProblem(A, b)` solved with `KrylovJL_CG()` returns what the assembled
 path returns: the Dirichlet values are eliminated the same way (`c = 1` on the
 low face along `axis`, `c = 0` on the high one), the pore numbering is the one
-[`build_steady_system`](@ref) produces, and `b` matches its right-hand side
+`build_steady_system` produces, and `b` matches its right-hand side
 entry for entry — so `sol.u` feeds [`reconstruct_field`](@ref) unchanged.
 
 Setup is an inclusive scan over the mask plus one kernel pass; no edge, row
