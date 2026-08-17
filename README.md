@@ -5,7 +5,7 @@
 > [!WARNING]  
 > We've just released `Tortuosity.jl` on the official Julia package registry. However, it is still under active development, and the API might change.
 
-`Tortuosity.jl` is a Julia package for calculating the tortuosity factor of volumetric images. It is designed to be fast and efficient, leveraging the power of Julia's multiple dispatch to support GPU acceleration right out of the box. You can consider it as a Julia version of the well-known [TauFactor](https://github.com/tldr-group/taufactor), but more efficient and robust (read the [comparison](https://ma-sadeghi.github.io/Tortuosity.jl/taufactor) for more details).
+`Tortuosity.jl` is a Julia package for calculating the tortuosity factor of volumetric images. It is designed to be fast and efficient, leveraging the power of Julia's multiple dispatch to support GPU acceleration right out of the box. You can consider it as a Julia version of the well-known [TauFactor](https://github.com/tldr-group/taufactor).
 
 `Tortuosity.jl` is designed to be granular, allowing users to see what's happening under the hood, and potentially modify the steps to suit their needs, e.g., using a different matrix solver, etc.
 
@@ -50,7 +50,7 @@ sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 # Convert the solution vector to an Nd grid
 c = reconstruct_field(sol.u, img)
 # Compute the tortuosity factor
-τ = tortuosity(c; axis=:x)
+τ = tortuosity(c, img; axis=:x)
 println("τ = $τ")
 ```
 
@@ -68,7 +68,7 @@ The steady operator comes in two forms, both fully supported. They produce the s
 | GPU solve at 800³, preconditioned | 21.2 s, peak 22.4 GiB | 17.2 s, peak 9.9 GiB |
 | CPU apply at 200³, 20 threads | 36.7 ms (`SparseArrays`) | 5.4 ms |
 
-Both paths take the same number of Krylov iterations at every size and agree on τ to 4–5 significant figures. The numbers above come from `bench/matrixfree_bench.jl`; reproduce them with `julia --project=bench bench/matrixfree_bench.jl 200 400 600 800`.
+Both paths take the same number of Krylov iterations at every size and agree on τ to 4–5 significant figures.
 
 Take the assembled path when you want the CUSPARSE-backed matrix itself, or anything that reads matrix entries. Take the matrix-free path when the image is large, when memory is the binding constraint, or when you simply want the solve to be faster.
 
@@ -80,3 +80,15 @@ sol = solve(sim)          # two-level preconditioner above 100k pore voxels; rel
 ```
 
 `solve(sim.prob, alg; ...)` stays exactly as it was — the unopinionated form that takes LinearSolve's defaults.
+
+## Documentation
+
+Full documentation, including tutorials and the API reference, is at [ma-sadeghi.github.io/Tortuosity.jl](https://ma-sadeghi.github.io/Tortuosity.jl/stable/).
+
+## Contributing and support
+
+Bug reports, feature requests, and questions are all welcome on the [issue tracker](https://github.com/ma-sadeghi/Tortuosity.jl/issues). See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and the pull request workflow.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
