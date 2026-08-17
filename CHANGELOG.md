@@ -25,9 +25,11 @@ Calling one of them without its package raises an error naming the package to lo
 
 ### Performance
 
+- The two-level preconditioner no longer loses ground as images grow. Its coarse block edge is fixed rather than sized from the image, so the ratio between the fine and coarse grids stays bounded, and a V-cycle over coarser grids solves the larger coarse space that results. Iteration counts stop tracking the image edge: on GPU at ε≈0.2, 600³ went from 465 iterations to 150. Wall-clock improves at every size and porosity measured — 5% and 34% at 400³, 58% and 35% at 600³ — and images up to about 253³ take the same code path as before, so nothing changes for them. `τ` stays bit-identical across repeats.
 - `using Tortuosity` loads 151 packages instead of 212, and takes about 3.5 s instead of about 4.6 s (Julia 1.12.6, Windows 11, warm cache).
 - The precompile workloads that cover the moved entry points moved with them into their extensions, so first-call latency is unchanged for anyone who loads those packages.
 
 ### Fixed
 
+- A coarse block holding nothing but a pore cluster enclosed within it could be kept in the coarse space on floating-point round-off alone. Its coarse row then carried a diagonal near `1e-16` and the coarse solve amplified along that direction by the same factor — `‖ldiv!‖∞` of 5.6e15 against 6.9 for the same input — and the assembled and matrix-free paths could disagree about whether to keep it. Such a block is now dropped against a round-off floor. Coarse sizes and iteration counts at the default block size are unchanged.
 - `set_preferences!(Tortuosity, "precompile_workload" => false)` now also disables the GPU extensions' precompile workloads. `PrecompileTools` resolved that preference against the extension module, whose UUID `set_preferences!` refuses, so the GPU workload kept running. This is a development-time switch only; the workloads remain enabled by default.
