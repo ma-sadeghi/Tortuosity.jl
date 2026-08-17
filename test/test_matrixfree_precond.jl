@@ -111,6 +111,66 @@ end
     end
 end
 
+# The case that exposed the round-off floor, kept as its regression test.
+#
+# A block holding nothing but an enclosed cluster has a coarse diagonal that
+# cancels to exactly zero, and the two paths sum it in different orders. At
+# `block=2` on this fixture the assembled path landed on `+2.22e-16` and the
+# matrix-free path on `0.0`, so a `> 0` test kept the block on one path and
+# dropped it on the other — leaving the assembled path with a coarse row whose
+# diagonal was 1e-16 and a correction 1e15 times its input. The two paths
+# disagreed by 18 orders of magnitude on the same residual.
+#
+# Small blocks are what make this reachable: they are the ones that can hold a
+# cluster and nothing else. Hence `block=2` here where the rest of the file uses 4.
+@testset "an enclosed cluster is dropped by both paths — $(dlabel)" for (dlabel, D) in
+    mfp_diffusivity_cases(MFP_IMAGES[2][2])
+
+    img = MFP_IMAGES[2][2]                      # blob 32^3 seed=7
+    A, _, P_asm, P_mf = mfp_pair(img, :x, D; block=2, max_coarse=10^9)
+    @test P_mf.nc == P_asm.nc
+    @test Array(P_mf.agg) == Array(P_asm.agg)
+
+    n = size(A, 1)
+    x = randn(MersenneTwister(1), n)
+    y_asm = ldiv!(zeros(n), P_asm, x)
+    y_mf = ldiv!(zeros(n), P_mf, x)
+    @test isapprox(y_asm, y_mf; rtol=1e-10)
+    # A near-null coarse row shows up here and nowhere else: bounded, not 1e15.
+    @test norm(y_asm, Inf) < 1e3 * norm(x, Inf)
+end
+
+# The hierarchy is built from the coarse operator, which the two paths accumulate
+# differently, so it is the part of the coarse space that could agree at the top
+# and drift apart further down. Same `block=4` as everything else here; the
+# ceiling is what is lowered, so several levels come out of these small fixtures.
+@testset "a hierarchical coarse space matches the assembled path" begin
+    for (label, img) in MFP_IMAGES
+        for (dlabel, D) in mfp_diffusivity_cases(img)
+            @testset "$(label) — $(dlabel)" begin
+                A, _, P_asm, P_mf = mfp_pair(img, :x, D; block=4, max_coarse=8)
+                # The smallest fixtures have a coarse space under the ceiling
+                # already, and are here for the parity check rather than the depth.
+                @test isempty(P_mf.levels) == (P_mf.nc <= 8)
+                @test length(P_mf.levels) == length(P_asm.levels)
+                for (Lm, La) in zip(P_mf.levels, P_asm.levels)
+                    @test Lm.parent == La.parent
+                    @test size(Lm.A) == size(La.A)
+                    @test Lm.A ≈ La.A rtol = 1e-12
+                end
+
+                n = size(A, 1)
+                rng = MersenneTwister(2718)
+                for _ in 1:3
+                    x = randn(rng, n)
+                    @test isapprox(ldiv!(zeros(n), P_mf, x), ldiv!(zeros(n), P_asm, x);
+                                   rtol=1e-12)
+                end
+            end
+        end
+    end
+end
+
 # The smoother term divides by a Gershgorin bound the assembled path reads off
 # its stored values. The operator stores none and folds a maximum over the node
 # diagonals into the coarse pass instead, which is the same number because the

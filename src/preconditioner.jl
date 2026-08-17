@@ -1,7 +1,8 @@
 # Two-level preconditioner for the assembled steady system: a coarse space of
-# piecewise-constant indicators over cubic voxel blocks, factorised once and
-# applied directly, plus a scaled identity for everything the coarse space
-# cannot see.
+# piecewise-constant indicators over cubic voxel blocks, plus a scaled identity
+# for everything the coarse space cannot see. The coarse problem is solved
+# directly when it is small, and otherwise by a V-cycle over a hierarchy of
+# coarser grids ending in that same direct solve.
 
 # Slots of the coarse stencil, in this order: the block itself, then its six
 # face neighbours at block-index offsets -nbxy, -nbx, -1, +1, +nbx, +nbxy.
@@ -9,16 +10,43 @@
 # host-side symmetrisation a single indexed lookup.
 const _COARSE_SLOTS = 7
 
-# Default ceiling on the number of coarse unknowns. The coarse solve runs once
-# per CG iteration, so its cost has to stay well under one fine SpMV: measured
-# on a 3-D 7-point operator, a 25³ coarse grid factorises in 0.44 s and solves
-# in 1.9 ms, where a 50³ one takes 1.7 s and 47 ms. The block size is grown
-# until the coarse grid fits under this bound.
+# Default ceiling on the number of unknowns solved *directly*. The direct solve
+# runs once per CG iteration, so its cost has to stay well under one fine SpMV:
+# measured on a 3-D 7-point operator, a 25³ coarse grid factorises in 0.44 s and
+# solves in 1.9 ms, where a 50³ one takes 1.7 s and 47 ms. A coarse grid larger
+# than this gets a hierarchy of coarser grids built under it, ending in a direct
+# solve that does fit — see [`_coarse_hierarchy`](@ref).
 const DEFAULT_MAX_COARSE = 32_000
 
-# The smallest block worth aggregating over. Below this the coarse problem
-# stops being much smaller than the fine one.
-const MIN_COARSE_BLOCK = 8
+# Edge length in voxels of a coarse block. Fixed, and deliberately so: the ratio
+# between the fine and coarse grids is what decides whether the method is
+# mesh-independent, and growing the block with the image is what used to cost
+# this preconditioner an iteration count proportional to the image edge.
+const DEFAULT_COARSE_BLOCK = 8
+
+# Edge ratio between one coarse grid and the next. A two-level method is
+# mesh-independent only while the ratio is bounded, and 2 is both the standard
+# choice and the measured best: 152 iterations on a 256³ spot check against 187
+# at ratio 3 and 194 at ratio 4.
+const COARSE_RATIO = 2
+
+# Damped-Jacobi weight for the coarse smoother.
+#
+# Every operator in the hierarchy is a weakly diagonally dominant M-matrix — the
+# aggregated row sums inherit the fine operator's, and the shift keeps the
+# diagonal strictly the larger — so `λmax(D⁻¹A) ≤ 2` and the symmetric cycle is
+# SPD for any `ω < 1`. Measured on both coarse levels of a 256³ case: 1.996.
+#
+# That bound is not slack. At `ω = 1.2` CG rejects the preconditioner outright.
+# 0.8 keeps a real margin (2/0.8 = 2.5 against the measured 1.996) and costs
+# 152 iterations against 150 at an unsafe 1.0.
+const COARSE_SMOOTH_OMEGA = 0.8
+
+# Rows below which the coarse apply runs serially. Threading it costs a flat
+# ~11 µs of startup whatever the size, against a serial pass that is ~10 µs at
+# 4096 rows and ~40 µs at 15 625 — so this is the measured crossover, and the
+# levels below it are the ones where the startup would be the whole cost.
+const COARSE_MUL_MIN_THREADED = 4096
 
 # Relative diagonal shift applied to the coarse operator before factorisation.
 # `WᵀAW` is only positive *semi*-definite — a pore cluster that reaches neither
@@ -26,6 +54,35 @@ const MIN_COARSE_BLOCK = 8
 # makes the Cholesky exist at all. See `two_level_preconditioner` for why the
 # size of the shift is a tradeoff rather than "as small as possible".
 const DEFAULT_COARSE_SHIFT = 1.0e-3
+
+"""
+    CoarseLevel
+
+One grid of the coarse hierarchy, holding what a V-cycle needs at that level:
+the operator, the smoother, the map onto the next grid down, and the scratch the
+cycle writes through.
+
+Every level lives on the host in `Float64`, next to the direct solve the cycle
+ends in. Each is `COARSE_RATIO^3` smaller than the one above, so the hierarchy
+costs a fixed few percent of one preconditioner application whatever the image
+size — measured at 2.1% on a 256³ case.
+
+# Fields
+- `A`: this level's operator, the Galerkin product `WᵀA₊W` of the level above.
+- `dinv`: `COARSE_SMOOTH_OMEGA ./ diag(A)`, the damped-Jacobi smoother.
+- `parent`: this level's cell → the next level's cell, `0` where dropped. Read by
+  `_restrict!` and `_prolong!` exactly as `agg` is at the fine level.
+- `t`, `rc`, `ec`: scratch for the residual here, and for the residual and
+  correction one level down.
+"""
+struct CoarseLevel
+    A::SparseMatrixCSC{Float64,Int}
+    dinv::Vector{Float64}
+    parent::Vector{Int32}
+    t::Vector{Float64}
+    rc::Vector{Float64}
+    ec::Vector{Float64}
+end
 
 """
     TwoLevelPreconditioner
@@ -39,19 +96,29 @@ Left preconditioner for the steady diffusion system, applied through
 residual over a block and `W xc` broadcasts a block's correction back to its
 voxels. Build one with [`two_level_preconditioner`](@ref).
 
+Two-level is the shape of the preconditioner, not the depth of its machinery.
+The coarse inverse above is applied by a direct solve when the coarse space is
+small, and by a V-cycle over [`CoarseLevel`](@ref) grids ending in that same
+direct solve when it is not. Which one runs changes the cost of an application,
+never the operator it stands for.
+
 # Fields
 - `agg`: coarse index of each pore voxel, `0` where the voxel's block was
   dropped for carrying no coarse unknown. On a device this is an
   [`Aggregation`](@ref), which carries the same map plus its inverse.
 - `nc`: number of coarse unknowns.
-- `fact`: host Cholesky factorisation of the shifted coarse operator, always in
-  `Float64` regardless of the fine precision.
+- `levels`: the coarser grids interposed between the coarse space and the direct
+  solve, outermost first. Empty when the coarse space is solved directly.
+- `fact`: host Cholesky factorisation of the shifted operator of the *coarsest*
+  level, always in `Float64` regardless of the fine precision. That is the
+  coarse operator itself when `levels` is empty.
 - `inv_lambda`: reciprocal of a Gershgorin bound on `λmax(A)`.
 - `block`: edge length in voxels of one coarse block.
 """
 struct TwoLevelPreconditioner{T,Vi,Vc<:AbstractVector{T},F}
     agg::Vi
     nc::Int
+    levels::Vector{CoarseLevel}
     fact::F
     inv_lambda::T
     block::Int
@@ -59,12 +126,15 @@ struct TwoLevelPreconditioner{T,Vi,Vc<:AbstractVector{T},F}
     xc::Vc                  # nc-length device scratch, coarse correction
     rc_host::Vector{T}
     coarse_rhs::Vector{Float64}
+    coarse_sol::Vector{Float64}
 end
 
 function Base.show(io::IO, P::TwoLevelPreconditioner)
+    depth = isempty(P.levels) ? "" : ", levels=$(length(P.levels) + 2)"
     return print(
         io,
-        "TwoLevelPreconditioner(block=$(P.block)^3, nc=$(P.nc), nnz(L)=$(nnz(P.fact)))",
+        "TwoLevelPreconditioner(block=$(P.block)^3, nc=$(P.nc)$(depth), \
+         nnz(L)=$(nnz(P.fact)))",
     )
 end
 
@@ -72,15 +142,6 @@ Base.size(P::TwoLevelPreconditioner) = (length(P.agg), length(P.agg))
 Base.eltype(::TwoLevelPreconditioner{T}) where {T} = T
 
 # --- Coarse-space construction ---------------------------------------------
-
-"""Smallest block edge that keeps the coarse grid under `max_coarse` unknowns."""
-function _choose_block(nx, ny, nz, max_coarse)
-    bs = MIN_COARSE_BLOCK
-    while cld(nx, bs) * cld(ny, bs) * cld(nz, bs) > max_coarse
-        bs += 1
-    end
-    return bs
-end
 
 @kernel function _aggregate_kernel!(agg, @Const(idx), bs, nbx, nby)
     i, j, k = @index(Global, NTuple)
@@ -267,6 +328,32 @@ end
 end
 
 """
+    _coarse_diagonal_floor(bs, maximum_diagonal)
+
+Below what value an accumulated coarse diagonal is round-off rather than a
+coarse unknown.
+
+A block whose pore voxels all belong to clusters contained inside it has a
+coarse diagonal of **exactly** zero: the degrees and the couplings that make it
+up cancel term for term. Summed in floating point they cancel to a residue
+instead, whose sign is decided by the order the threads happened to arrive in.
+So `> 0` keeps such a block roughly half the time, and what it keeps is a coarse
+row with a ~1e-16 diagonal — a direction along which the coarse solve amplifies
+by 1e16. Measured on a 32³ blob with variable `D` at `block=2`: the assembled
+path reached `+2.22e-16` where the matrix-free path reached `0.0`, and keeping it
+took `‖ldiv!‖∞` from 6.9 to **5.6e15**.
+
+The floor is the round-off bound for that sum. A block accumulates at most
+`_COARSE_SLOTS` terms per voxel, each no larger than the biggest diagonal of `A`,
+so a cancelling sum cannot leave more than `n·eps` times that behind; the
+constant is slack on top. Nothing legitimate is anywhere near it — the smallest
+diagonal a real coarse unknown can carry is a single edge weight, and in the case
+above the kept diagonals went straight from `2.2e-16` to `0.76`.
+"""
+_coarse_diagonal_floor(bs, maximum_diagonal) =
+    64 * _COARSE_SLOTS * bs^3 * eps(Float64) * abs(maximum_diagonal)
+
+"""
 Assemble the coarse operator on the host from the accumulated stencil.
 
 Returns `(Ac, remap)`: the shifted coarse matrix over the blocks that carry a
@@ -279,15 +366,19 @@ belongs to a cluster contained entirely within the block and touching neither
 Dirichlet face — in which case the block's coarse basis function lies in the
 null space of `A` and carries no information to correct.
 
+Such a block's diagonal is a sum that cancels to *exactly* zero, so `floor` is
+what decides it rather than a comparison against zero. See
+[`_coarse_diagonal_floor`](@ref) for why testing against zero is not safe.
+
 Opposite stencil slots hold the same sum accumulated in a different order, so
 averaging them makes `Ac` symmetric to the last bit rather than merely close.
 """
-function _coarse_operator(S::Vector{Float64}, nc0, nbx, nbxy, shift)
+function _coarse_operator(S::Vector{Float64}, nc0, nbx, nbxy, shift, floor)
     offs = (0, -nbxy, -nbx, -1, 1, nbx, nbxy)
     remap = zeros(Int32, nc0)
     nc = 0
     for a in 1:nc0
-        if S[(a - 1) * _COARSE_SLOTS + 1] > 0
+        if S[(a - 1) * _COARSE_SLOTS + 1] > floor
             nc += 1
             remap[a] = nc
         end
@@ -319,6 +410,172 @@ function _coarse_operator(S::Vector{Float64}, nc0, nbx, nbxy, shift)
         end
     end
     return sparse(rows, cols, vals, nc, nc), remap
+end
+
+"""
+Each cell's parent under a `COARSE_RATIO`-fold coarsening of the block grid.
+
+`cell_block` is the block index of every cell of the current level, in a grid of
+`dims` blocks. Returns the parent block index of each, and the coarsened grid.
+
+Levels below the first are structured — one cell per surviving block of a
+regular grid — so a parent is integer division of the block's coordinates, and
+no geometry has to be carried down from the image.
+"""
+function _coarse_parents(cell_block, dims)
+    nbx, nby = dims[1], dims[2]
+    cdims = cld.(dims, COARSE_RATIO)
+    cnx, cny = cdims[1], cdims[2]
+    pblock = Vector{Int}(undef, length(cell_block))
+    @inbounds for (c, b0) in enumerate(cell_block)
+        b = b0 - 1
+        bi = b % nbx
+        bj = (b ÷ nbx) % nby
+        bk = b ÷ (nbx * nby)
+        pblock[c] = 1 + (bi ÷ COARSE_RATIO) + cnx * (bj ÷ COARSE_RATIO) +
+                    cnx * cny * (bk ÷ COARSE_RATIO)
+    end
+    return pblock, cdims
+end
+
+"""
+Build the grids interposed between the coarse space and the direct solve.
+
+Returns `(levels, Acoarsest)`: the hierarchy outermost first, and the operator
+the caller is to factorise. `levels` is empty and `Acoarsest === Ac` when the
+coarse space already fits under `max_coarse`, which is the two-level method
+unchanged.
+
+`Ac` is the coarse operator over the block grid `dims` and `remap` maps a block
+index to its coarse index, so inverting `remap` recovers where each coarse cell
+sits. From there each level is the Galerkin product `WᵀA W` over a
+`COARSE_RATIO`-fold aggregation of the grid, which is again an operator on a
+regular grid and can be coarsened the same way.
+
+A coarse cell is dropped against the same `floor` [`_coarse_operator`](@ref) uses,
+so one rule decides it at every level. It cannot actually fire below the first
+one — an aggregate's diagonal is at least the sum of the diagonals it covers, and
+those already cleared the floor — but a dropped cell is handled rather than
+assumed away. Coarsening stops if it ever fails to shrink the problem, so the
+loop terminates whatever `max_coarse` is asked for.
+"""
+function _coarse_hierarchy(Ac, remap, dims, max_coarse, floor)
+    levels = CoarseLevel[]
+    A = Ac
+    # Coarse index → block index, the inverse of the map `_coarse_operator` built.
+    cell_block = zeros(Int, size(A, 1))
+    for (b, c) in enumerate(remap)
+        c > 0 && (cell_block[c] = b)
+    end
+
+    while size(A, 1) > max_coarse
+        n = size(A, 1)
+        pblock, cdims = _coarse_parents(cell_block, dims)
+        nc0 = prod(cdims)
+        W = sparse(1:n, pblock, ones(Float64, n), n, nc0)
+        # `(B + Bᵀ)/2` rather than `B`: entry `(i, j)` of the Galerkin product
+        # sums the same terms as `(j, i)` but in the transposed order, and a
+        # float sum is not associative, so the product is symmetric only to
+        # rounding. Averaging makes it symmetric to the last bit — float addition
+        # is commutative and halving is exact — which is what lets
+        # [`_coarse_mul!`](@ref) read a column as a row.
+        B = W' * A * W
+        Anext = (B + transpose(B)) / 2
+
+        keep = findall(>(floor), diag(Anext))
+        # Nothing to correct on, or a coarsening that buys nothing: stop and let
+        # the caller factorise what is already here.
+        (isempty(keep) || length(keep) >= n) && break
+
+        cmap = zeros(Int32, nc0)
+        for (i, c) in enumerate(keep)
+            cmap[c] = Int32(i)
+        end
+        parent = Int32[cmap[p] for p in pblock]
+
+        push!(levels, CoarseLevel(
+            A, COARSE_SMOOTH_OMEGA ./ diag(A), parent,
+            zeros(n), zeros(length(keep)), zeros(length(keep)),
+        ))
+        A = Anext[keep, keep]
+        cell_block = keep
+        dims = cdims
+    end
+    return levels, A
+end
+
+"""
+    _coarse_mul!(y, A, x)
+
+`y = A x` for a coarse operator, read down its columns rather than across them.
+
+Every operator in the hierarchy is symmetric to the last bit — `_coarse_operator`
+averages opposite stencil slots and [`_coarse_hierarchy`](@ref) averages each
+Galerkin product — so column `j` of `A` *is* row `j`, and the product can be a
+gather of independent dot products instead of the scatter `mul!` performs. That
+buys two things the scatter cannot give: the rows split across threads with no
+atomic, and each output element is summed in one fixed order, so the result does
+not depend on the schedule. It is also bit-identical to `mul!`, since both walk a
+row's entries in ascending index order.
+
+Two of these run per level per CG iteration and they are the bulk of the cycle's
+cost — 0.609 ms of 0.888 ms at 49 642 rows before threading, 0.068 ms after.
+"""
+function _coarse_mul!(y, A, x)
+    cp = SparseArrays.getcolptr(A)
+    rv = rowvals(A)
+    nz = nonzeros(A)
+    n = size(A, 2)
+    if n >= COARSE_MUL_MIN_THREADED
+        Threads.@threads for j in 1:n
+            acc = zero(eltype(y))
+            @inbounds for k in cp[j]:(cp[j + 1] - 1)
+                acc += nz[k] * x[rv[k]]
+            end
+            @inbounds y[j] = acc
+        end
+    else
+        @inbounds for j in 1:n
+            acc = zero(eltype(y))
+            for k in cp[j]:(cp[j + 1] - 1)
+                acc += nz[k] * x[rv[k]]
+            end
+            y[j] = acc
+        end
+    end
+    return y
+end
+
+"""
+Apply one symmetric V(1,1) cycle at level `l`: `e ← B r`, with `B ≈ A⁻¹`.
+
+Pre-smooth from a zero guess, correct from the level below, post-smooth. The
+smoother is diagonal and so is its own transpose, and the coarsest solve is a
+Cholesky, which makes `B` symmetric — the property CG needs and the reason the
+cycle is not truncated to a cheaper one-sided sweep.
+
+Below the last level the residual is solved exactly, so a preconditioner with no
+levels at all takes that branch directly and is the plain direct coarse solve.
+"""
+function _vcycle!(e, levels, l, r, fact)
+    if l > length(levels)
+        e .= fact \ r
+        return e
+    end
+    L = levels[l]
+    @. e = L.dinv * r
+    _coarse_mul!(L.t, L.A, e)
+    @. L.t = r - L.t
+    _restrict!(L.rc, L.parent, L.t)
+    _vcycle!(L.ec, levels, l + 1, L.rc, fact)
+    # `e` is both the correction being added to and the vector carrying the
+    # identity term, which is what `_prolong!`'s last argument scales. Every
+    # method of it reads and writes index `i` alone, so the two may alias.
+    _prolong!(e, L.parent, L.ec, e, 1.0)
+    _coarse_mul!(L.t, L.A, e)
+    @. L.t = r - L.t
+    @. e += L.dinv * L.t
+    return e
 end
 
 # The device array every allocation here is modelled on, and whose backend the
@@ -442,7 +699,7 @@ coarse unknown or the factorisation fails.
 
 Only [`_coarse_stencil!`](@ref) knows which representation `A` is.
 """
-function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
+function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse, verbose)
     n = size(A, 1)
     nc0 = nbx * nby * nbz
     nbxy = nbx * nby
@@ -457,7 +714,8 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
     S = Array(stencil)
     _free!(stencil)
 
-    Ac, remap = _coarse_operator(S, nc0, nbx, nbxy, shift)
+    floor = _coarse_diagonal_floor(bs, maximum_diagonal)
+    Ac, remap = _coarse_operator(S, nc0, nbx, nbxy, shift, floor)
     nc = size(Ac, 1)
     if nc == 0
         _free!(agg)
@@ -465,19 +723,23 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
     end
 
     t0 = time_ns()
+    # The block edge is fixed, so a large image gives a large coarse space rather
+    # than a coarser one. Grids below it carry that space down to a size the
+    # direct solve can still afford.
+    levels, Acoarsest = _coarse_hierarchy(Ac, remap, (nbx, nby, nbz), max_coarse, floor)
     fact = try
-        cholesky(Symmetric(Ac))
+        cholesky(Symmetric(Acoarsest))
     catch err
-        # `Ac + shift·diag(Ac)` is provably definite, so this only fires if the
-        # assumption behind that — that `A` itself is positive semi-definite —
-        # has been broken. Running without a preconditioner is slow; running
-        # with a broken one is wrong.
+        # `Ac + shift·diag(Ac)` is provably definite, and every Galerkin product
+        # below it inherits that, so this only fires if the assumption behind it
+        # — that `A` itself is positive semi-definite — has been broken. Running
+        # without a preconditioner is slow; running with a broken one is wrong.
         @warn "coarse factorisation failed; solving without a preconditioner" exception = err
         _free!(agg)
         return nothing
     end
-    verbose && @info "two-level coarse space" block = bs nc = nc nnz_L = nnz(fact) seconds =
-        (time_ns() - t0) / 1e9
+    verbose && @info "two-level coarse space" block = bs nc = nc levels = length(levels) + 2 coarsest =
+        size(Acoarsest, 1) nnz_L = nnz(fact) seconds = (time_ns() - t0) / 1e9
 
     # Same element type as `agg`, so the remap kernel never converts in device
     # code where a range check has nowhere to throw.
@@ -502,9 +764,9 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
     inv_lambda = T(1) / (2 * maximum_diagonal)
 
     return TwoLevelPreconditioner(
-        agg, nc, fact, inv_lambda, bs,
+        agg, nc, levels, fact, inv_lambda, bs,
         fill!(similar(proto, T, nc), zero(T)), fill!(similar(proto, T, nc), zero(T)),
-        zeros(T, nc), zeros(Float64, nc),
+        zeros(T, nc), zeros(Float64, nc), zeros(Float64, nc),
     )
 end
 
@@ -532,6 +794,14 @@ ones that span the whole domain. A coarse space of block indicators resolves
 exactly those modes and removes that growth; the `x / λmax` term covers the
 high-frequency error the coarse space is blind to.
 
+Removing the growth needs the ratio between the two grids to stay bounded, which
+is why the block edge is fixed rather than sized from the image. A large image
+therefore gets a large coarse space, and that space is solved by a V-cycle over
+coarser grids rather than directly. Measured across 64³–256³ at a coarsening
+ratio matched to the released one, iterations go flat where they used to track
+the image edge: at ε≈0.5, 222 / 362 / 798 before against 222 / 204 / 152 after,
+and at ε≈0.2, 614 / 1203 / 2333 against 614 / 454 / 422.
+
 The result is a genuine preconditioner, not an approximate solve: it is
 symmetric positive definite by construction, so CG converges to the same
 solution as it would without it. Only the iteration count changes.
@@ -539,8 +809,8 @@ solution as it would without it. Only the iteration count changes.
 Worth building only when the unpreconditioned iteration count is large, which
 in practice means images of a few hundred voxels per side and up. Measured on
 blob images (seed 42, porosity 0.5) with the default block size: 400³ takes
-2094 iterations and 13.4 s without it against 111 and 1.5 s with it, and 600³
-2983 and 64.6 s against 223 and 8.1 s. On a 12³ image it costs iterations
+2094 iterations and 11.4 s without it against 99 and 1.01 s with it, and 600³
+2983 and 50.2 s against 132 and 3.66 s. On a 12³ image it costs iterations
 rather than saving them.
 
 Note that CG's stopping test is taken in the `M⁻¹` norm once a preconditioner is
@@ -549,17 +819,21 @@ residuals. They agree on `tortuosity` to solver tolerance — verified to 1e-9 a
 `reltol=1e-10` — but not bit for bit at a loose one.
 
 # Keyword Arguments
-- `block`: edge length in voxels of a coarse block. `nothing` (default) grows it
-  from 8 until the coarse grid fits under `max_coarse`.
-- `max_coarse`: ceiling on the number of coarse unknowns. The coarse solve runs
-  once per iteration, so a larger coarse space stops paying for itself.
+- `block`: edge length in voxels of a coarse block. `nothing` (default) is
+  `DEFAULT_COARSE_BLOCK`, the same edge at every image size — see above for why
+  it does not grow with the image.
+- `max_coarse`: ceiling on the number of unknowns solved *directly*. The direct
+  solve runs once per iteration, so a larger one stops paying for itself; a
+  coarse space above the ceiling gets coarser grids built under it instead of
+  being made coarser itself.
 - `shift`: relative diagonal shift applied before factorisation. `WᵀAW` is
   positive semi-definite, not definite — a pore cluster reaching neither
   Dirichlet face spans blocks whose coarse rows sum to zero — so the shift is
   what makes the factorisation exist. It also bounds how far the coarse solve
   can amplify a residual that lies along one of those null directions, which is
   why the default is not the smallest number that works.
-- `verbose`: report the coarse size and factorisation cost.
+- `verbose`: report the coarse size, the depth of the hierarchy under it, and the
+  setup cost.
 """
 function two_level_preconditioner(
     A, img;
@@ -577,7 +851,7 @@ function two_level_preconditioner(
     nnz(A) == 0 && return nothing
 
     nx, ny, nz = size(img)
-    bs = isnothing(block) ? _choose_block(nx, ny, nz, max_coarse) : block
+    bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
     nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
 
     # Pore ordinals are the prefix sum of the mask, exactly as in
@@ -591,7 +865,7 @@ function two_level_preconditioner(
     _free!(idx)
     img_dev === img || _free!(img_dev)
 
-    return _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
+    return _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse, verbose)
 end
 
 function two_level_preconditioner(
@@ -608,7 +882,7 @@ function two_level_preconditioner(
     A.nnodes == 0 && return nothing
 
     nx, ny, nz = size(img)
-    bs = isnothing(block) ? _choose_block(nx, ny, nz, max_coarse) : block
+    bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
     nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
 
     # The operator's index array is the pore numbering the aggregation needs, so
@@ -616,7 +890,7 @@ function two_level_preconditioner(
     # the operator's state, not scratch, and is not released.
     agg = _aggregate(A.idx, A.nnodes, nbx * nby * nbz, bs, nbx, nby)
 
-    return _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
+    return _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse, verbose)
 end
 
 function two_level_preconditioner(sim::SteadyDiffusionProblem; kwargs...)
@@ -709,9 +983,13 @@ function LinearAlgebra.ldiv!(
     copyto!(P.rc_host, P.rc)
     # The coarse solve is always double precision: the fine problem may run in
     # Float32, but the coarse operator is the near-singular one and it is small
-    # enough that the extra precision is free.
+    # enough that the extra precision is free. It is also entirely on the host,
+    # and every step of it — the cycle's gathers included — sums each output
+    # element in one fixed order, so it cannot reintroduce the schedule-dependent
+    # reduction the gather in `_restrict!` exists to avoid.
     P.coarse_rhs .= P.rc_host
-    P.rc_host .= P.fact \ P.coarse_rhs
+    _vcycle!(P.coarse_sol, P.levels, 1, P.coarse_rhs, P.fact)
+    P.rc_host .= P.coarse_sol
     copyto!(P.xc, P.rc_host)
 
     _prolong!(y, P.agg, P.xc, x, P.inv_lambda)

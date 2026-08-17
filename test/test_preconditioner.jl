@@ -14,7 +14,11 @@ using Tortuosity:
     TwoLevelPreconditioner,
     two_level_preconditioner,
     DEFAULT_COARSE_SHIFT,
-    _choose_block,
+    DEFAULT_COARSE_BLOCK,
+    COARSE_RATIO,
+    _COARSE_SLOTS,
+    _coarse_operator,
+    _coarse_diagonal_floor,
     reconstruct_field,
     tortuosity
 
@@ -50,14 +54,135 @@ precond_fixtures() = [
 
 const PRECOND_IMAGES = precond_fixtures()
 
-@testset "block size honours the coarse-size ceiling" begin
-    @test _choose_block(64, 64, 64, 32_000) == 8       # 8^3 = 512 blocks, well under
-    @test _choose_block(800, 800, 800, 32_000) == 26   # 31^3 = 29791
-    for max_coarse in (500, 5_000, 32_000)
-        bs = _choose_block(200, 200, 200, max_coarse)
-        @test cld(200, bs)^3 <= max_coarse
-        @test bs == 8 || cld(200, bs - 1)^3 > max_coarse   # smallest that fits
+# The coarse-size ceiling used to be met by growing the block, which is what made
+# the method's iteration count track the image edge. It is met by adding grids
+# under the coarse space instead, and the block edge is now the same at every
+# size. These pin that the ceiling is still honoured the new way.
+@testset "the ceiling is met by depth, not by a coarser block" begin
+    img = ones(Bool, 24, 24, 24)
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+
+    # Default block, whatever the image: nothing reads the image to choose it.
+    for shape in ((24, 24, 24), (12, 24, 36))
+        s = SteadyDiffusionProblem(ones(Bool, shape...); axis=:x, gpu=false,
+                                   warn_nonpercolating=false)
+        @test two_level_preconditioner(s).block == DEFAULT_COARSE_BLOCK
     end
+
+    # A coarse space over the ceiling keeps its size and gains levels below it,
+    # each one `COARSE_RATIO` coarser per edge, down to a direct solve that fits.
+    P = two_level_preconditioner(sim; block=2, max_coarse=8)
+    @test P.block == 2
+    @test P.nc > 8                                  # the coarse space itself is not shrunk
+    @test !isempty(P.levels)
+    sizes = [size(L.A, 1) for L in P.levels]
+    @test sizes[1] == P.nc
+    @test issorted(sizes; rev=true) && allunique(sizes)
+    @test size(P.fact, 1) <= 8                      # the direct solve honours the ceiling
+    for (a, b) in zip(sizes, [sizes[2:end]; size(P.fact, 1)])
+        @test b < a                                 # every level actually coarsens
+        @test b >= a ÷ (2 * COARSE_RATIO^3)         # and not by more than the ratio allows
+    end
+
+    # Under the ceiling nothing is interposed at all, which is the two-level
+    # method exactly as it was.
+    @test isempty(two_level_preconditioner(sim; block=2, max_coarse=32_000).levels)
+end
+
+# Each level's operator has to be the Galerkin product of the one above it. A
+# hierarchy built from the wrong matrix still converges — more slowly — so
+# nothing else here would catch it.
+@testset "each coarse level is W'AW of the level above" begin
+    img = Array{Bool}(Imaginator.blobs(; shape=(32, 32, 32), porosity=0.5, blobiness=1, seed=42))
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+    P = two_level_preconditioner(sim; block=2, max_coarse=32)
+    @test length(P.levels) >= 2
+
+    for (l, L) in enumerate(P.levels)
+        parent = L.parent
+        rows = [i for i in eachindex(parent) if parent[i] > 0]
+        nnext = l < length(P.levels) ? size(P.levels[l + 1].A, 1) : size(P.fact, 1)
+        W = sparse(rows, [Int(parent[i]) for i in rows], ones(length(rows)),
+                   length(parent), nnext)
+        Anext = W' * L.A * W
+        if l < length(P.levels)
+            @test Matrix(Anext) ≈ Matrix(P.levels[l + 1].A) rtol = 1e-10
+        else
+            # The coarsest operator is only held as its factorisation, so it is
+            # checked the way `P.fact` is above: solve with it and multiply back.
+            v = collect(range(-1.0, 1.0; length=nnext))
+            @test Anext * (P.fact \ v) ≈ v rtol = 1e-8
+        end
+    end
+end
+
+# A block holding nothing but a cluster enclosed within it has a coarse diagonal
+# that cancels to *exactly* zero, so in floating point it lands on a residue whose
+# sign is whichever way the threads happened to race. Keeping such a block is not
+# a rounding-sized mistake: its coarse row has a ~1e-16 diagonal, and the coarse
+# solve then amplifies along that direction by ~1e16. `> 0` is therefore not a
+# safe test, and this pins the floor that replaced it.
+@testset "a coarse diagonal at round-off is not a coarse unknown" begin
+    bs, maximum_diagonal = 2, 25.0
+    floor = _coarse_diagonal_floor(bs, maximum_diagonal)
+
+    # Well clear of both the residue it must reject and the smallest diagonal a
+    # real coarse unknown can carry, which is one edge weight.
+    @test 1e-13 < floor < 1e-6
+
+    nbx, nby, nbz = 2, 2, 1
+    nc0 = nbx * nby * nbz
+    S = zeros(Float64, _COARSE_SLOTS * nc0)
+    diagonals = [10.0,          # an ordinary block
+                 2.220446e-16,  # the measured residue of a cancelling sum
+                 0.0,           # an empty block
+                 2 * floor]     # small, but genuinely there
+    for (a, d) in enumerate(diagonals)
+        S[(a - 1) * _COARSE_SLOTS + 1] = d
+    end
+
+    Ac, remap = _coarse_operator(S, nc0, nbx, nbx * nby, DEFAULT_COARSE_SHIFT, floor)
+    @test remap == Int32[1, 0, 0, 2]        # blocks 2 and 3 carry no coarse unknown
+    @test size(Ac) == (2, 2)
+    @test diag(Ac) ≈ [10.0, 2 * floor] .* (1 + DEFAULT_COARSE_SHIFT)
+
+    # The residue is rejected on its magnitude, not its sign: the same block with
+    # the sign the other path happened to produce is dropped too.
+    S[_COARSE_SLOTS + 1] = -2.220446e-16
+    @test _coarse_operator(S, nc0, nbx, nbx * nby, DEFAULT_COARSE_SHIFT, floor)[2] ==
+          Int32[1, 0, 0, 2]
+end
+
+# The same property end to end. Which side of zero the residue lands on is not
+# something a fixture can pin down — here it comes out negative, so `> 0` would
+# have dropped this block too — so this guards the invariant rather than
+# reproducing the defect. The discriminating cases are the testset above and the
+# `block=2` parity case in `test_matrixfree_precond.jl`.
+@testset "an enclosed cluster leaves no near-null coarse row" begin
+    img = falses(16, 16, 16)
+    img[:, 1:4, 1:4] .= true            # spans x, so it carries the flux
+    img[10:12, 10:12, 10:12] .= true    # detached, and inside the block 9:16^3
+    # Variable D so the weights differ and the cancelling sum genuinely rounds.
+    D = [0.5 + 0.11i + 0.023j + 0.0031k for i in 1:16, j in 1:16, k in 1:16]
+    D[.!img] .= 0.0
+    sim = SteadyDiffusionProblem(img; axis=:x, D=D, gpu=false, warn_nonpercolating=false)
+    n = size(sim.prob.A, 1)
+    P = two_level_preconditioner(sim; block=8)
+
+    W = prolongation(P, n)
+    Ac = Matrix(W' * sim.prob.A * W)
+    @test minimum(diag(Ac)) > _coarse_diagonal_floor(P.block, maximum(diag(sim.prob.A)))
+
+    # The detached cube is in the null space of A, so every one of its voxels
+    # must have been dropped rather than given a coarse unknown of its own.
+    agg = Array(P.agg)
+    cube = falses(16, 16, 16)
+    cube[10:12, 10:12, 10:12] .= true
+    @test all(iszero, agg[cube[img]])
+
+    x = [sin(3.0i) for i in 1:n]
+    y = ldiv!(zeros(n), P, x)
+    @test norm(y, Inf) < 1e3 * norm(x, Inf)   # was 1e15 times larger when kept
 end
 
 @testset "coarse operator is W'AW — $(label)" for (label, img) in PRECOND_IMAGES
@@ -168,6 +293,55 @@ end
     @test plain_64 > 1.25 * plain_48        # measured 428 -> 574
     @test prec_64 < 1.10 * prec_48          # measured 215 -> 222
     @test prec_64 < plain_64 / 2
+end
+
+# A V-cycle is only a valid CG preconditioner while it stays symmetric positive
+# definite, and it is easy to lose: an unsymmetric cycle, or a smoother weight
+# past the stability bound, both still "work" in the sense of returning a vector.
+# CG then either stalls or rejects the operator outright.
+@testset "a hierarchical coarse solve stays SPD — $(label)" for (label, img) in
+                                                                PRECOND_IMAGES
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+    n = size(sim.prob.A, 1)
+    P = two_level_preconditioner(sim; block=2, max_coarse=8)
+    @test !isempty(P.levels)
+
+    for seed in (1, 2)
+        x = [sin(seed * i) for i in 1:n]
+        z = [cos(seed * i / 3) for i in 1:n]
+        Mx = ldiv!(zeros(n), P, x)
+        Mz = ldiv!(zeros(n), P, z)
+        @test dot(z, Mx) ≈ dot(x, Mz) rtol = 1e-10
+        @test dot(x, Mx) > 0
+    end
+
+    # And it still has to be the same solve: CG with it lands where CG without
+    # it does.
+    plain = solve(sim.prob, KrylovJL_CG(); reltol=1e-12, abstol=1e-14, verbose=false)
+    prec = solve(sim.prob, KrylovJL_CG(); Pl=P, reltol=1e-12, abstol=1e-14, verbose=false)
+    @test tortuosity(reconstruct_field(prec.u, img), img; axis=:x) ≈
+          tortuosity(reconstruct_field(plain.u, img), img; axis=:x) rtol = 1e-8
+end
+
+# The reason the hierarchy exists. The coarse space is held at a fixed ratio to
+# the fine grid, so it grows with the image, and the grids below it are what keep
+# solving it affordable. Growing the block instead — which is what this replaced
+# — costs iterations in proportion to the image edge.
+#
+# `max_coarse` is lowered so that two tractable sizes straddle the ceiling the
+# way 400³ and 800³ straddle the released one.
+@testset "iteration count does not track the image edge" begin
+    counts = map((48, 96)) do n
+        img = Array{Bool}(Imaginator.blobs(; shape=(n, n, n), porosity=0.5, blobiness=1, seed=42))
+        sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+        P = two_level_preconditioner(sim; max_coarse=64)
+        @test P.block == DEFAULT_COARSE_BLOCK       # the block did not grow with n
+        @test !isempty(P.levels)
+        return solve(sim.prob, KrylovJL_CG(); Pl=P, reltol=1e-8, verbose=false).iters
+    end
+    small, large = counts
+    # Doubling the edge used to roughly double this. Measured 217 -> 219.
+    @test large < 1.25 * small
 end
 
 @testset "a shift is required" begin
