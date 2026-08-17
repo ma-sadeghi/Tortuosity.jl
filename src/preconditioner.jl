@@ -41,14 +41,15 @@ voxels. Build one with [`two_level_preconditioner`](@ref).
 
 # Fields
 - `agg`: coarse index of each pore voxel, `0` where the voxel's block was
-  dropped for carrying no coarse unknown.
+  dropped for carrying no coarse unknown. On a device this is an
+  [`Aggregation`](@ref), which carries the same map plus its inverse.
 - `nc`: number of coarse unknowns.
 - `fact`: host Cholesky factorisation of the shifted coarse operator, always in
   `Float64` regardless of the fine precision.
 - `inv_lambda`: reciprocal of a Gershgorin bound on `λmax(A)`.
 - `block`: edge length in voxels of one coarse block.
 """
-struct TwoLevelPreconditioner{T,Vi<:AbstractVector,Vc<:AbstractVector{T},F}
+struct TwoLevelPreconditioner{T,Vi,Vc<:AbstractVector{T},F}
     agg::Vi
     nc::Int
     fact::F
@@ -347,6 +348,93 @@ function _aggregate(idx, n, nc0, bs, nbx, nby)
 end
 
 """
+Coarse-to-fine adjacency: the aggregation read the other way round, in CSR form.
+
+`_restrict!` sums each coarse cell's fine values. Scattering that sum with
+`Atomix.@atomic` leaves its order up to whichever thread blocks arrive first, and
+a float sum is not associative, so the same solve returns a slightly different
+answer on every launch. Gathering over a fixed adjacency needs no atomic and
+fixes the order, and the ordering is paid once here rather than on every CG
+iteration.
+
+The pore nodes of coarse cell `a` are `fine[offsets[a]:(offsets[a + 1] - 1)]`,
+ascending. Only the device path builds one; the host `_restrict!` is a serial
+loop and is already reproducible.
+"""
+struct Aggregation{Vf<:AbstractVector,Vo<:AbstractVector}
+    fwd::Vf                 # fine -> coarse, 0 where the block was dropped
+    offsets::Vo             # nc+1 CSR offsets into `fine`
+    fine::Vo                # pore nodes by coarse cell, ascending within a cell
+end
+
+# The forward map is what a caller means by "the aggregation", so how long it is,
+# what is in it and where it lives all read through to it.
+Base.length(a::Aggregation) = length(a.fwd)
+Base.Array(a::Aggregation) = Array(a.fwd)
+_on_gpu(a::Aggregation) = _on_gpu(a.fwd)
+KernelAbstractions.get_backend(a::Aggregation) = get_backend(a.fwd)
+_free!(a::Aggregation) = (_free!(a.fwd); _free!(a.offsets); _free!(a.fine); nothing)
+
+"""
+Invert `agg` into the adjacency [`_restrict!`](@ref) gathers over.
+
+A counting sort on the host, in chunks: the nodes are split into contiguous
+ranges, each range counts how many nodes it gives every cell, and the counts are
+then run into a position for each range within each cell. Filing is what costs —
+it writes across the whole output — so both passes run one chunk per thread.
+
+Reserving each chunk's positions before anything is written is what keeps the
+result off the thread schedule: a chunk always files into its own slice, in
+ascending node order, and the chunks are laid down in ascending order within each
+cell. So every cell's slice comes out ascending, whichever thread got there
+first, and no sort is needed to make it so.
+"""
+function _invert_aggregates(agg, nc)
+    fwd = Array(agg)
+    n = length(fwd)
+    # One entry per pore node, so the same index wall the fine numbering faces.
+    Tf = n <= typemax(Int32) ? Int32 : Int64
+    bounds = find_chunk_bounds(; nelems=n, ndivs=Threads.nthreads())
+    nchunks = length(bounds)
+
+    # A column per chunk: a thread walks its own column, and two threads' columns
+    # are far enough apart not to share a cache line.
+    counts = zeros(Tf, nc, nchunks)
+    Threads.@threads for c in 1:nchunks
+        lo, hi = bounds[c]
+        @inbounds for i in lo:hi
+            a = fwd[i]
+            a > 0 && (counts[a, c] += 1)
+        end
+    end
+
+    offsets = Vector{Tf}(undef, nc + 1)
+    cursor = Matrix{Tf}(undef, nc, nchunks)
+    pos = one(Tf)
+    @inbounds for a in 1:nc
+        offsets[a] = pos
+        for c in 1:nchunks
+            cursor[a, c] = pos
+            pos += counts[a, c]
+        end
+    end
+    offsets[nc + 1] = pos
+
+    fine = Vector{Tf}(undef, pos - 1)
+    Threads.@threads for c in 1:nchunks
+        lo, hi = bounds[c]
+        @inbounds for i in lo:hi
+            a = fwd[i]
+            if a > 0
+                fine[cursor[a, c]] = i
+                cursor[a, c] += 1
+            end
+        end
+    end
+    return offsets, fine
+end
+
+"""
 Everything the two constructors share once the aggregates exist: the coarse
 operator, its factorisation, the remap that renumbers `agg` over the blocks that
 survived, and the preconditioner itself. `nothing` when no block carries a
@@ -398,6 +486,16 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, verbose)
     _remap_aggregates_kernel!(backend)(agg, remap_dev, n; ndrange=n)
     KernelAbstractions.synchronize(backend)
     on_gpu && _free!(remap_dev)
+
+    # Inverted after the remap, so the adjacency is indexed by the coarse
+    # numbering that survived rather than the one the blocks started with. Only
+    # the device path needs it; see [`Aggregation`](@ref).
+    agg = if on_gpu
+        offsets, fine = _invert_aggregates(agg, nc)
+        Aggregation(agg, _gpu_adapt[](offsets), _gpu_adapt[](fine))
+    else
+        agg
+    end
 
     # Gershgorin: every column of this Laplacian has |offdiagonals| summing to
     # its diagonal, so twice the largest diagonal bounds every eigenvalue.
@@ -527,13 +625,23 @@ end
 
 # --- Application ------------------------------------------------------------
 
-@kernel function _restrict_kernel!(rc, @Const(agg), @Const(x), n)
-    i = @index(Global)
-    if i <= n
-        @inbounds a = agg[i]
-        if a > 0
-            @inbounds Atomix.@atomic rc[a] += x[i]
+# There is one work item per coarse cell, and there are far fewer coarse cells
+# than pore voxels, so the size the backend picks for a grid-sized launch leaves
+# the device idle. Measured on the two spot-check cases: 0.083 ms against
+# 0.028 ms at 200³ and 1.54 ms against 1.33 ms at 400³.
+const _RESTRICT_GROUP = 128
+
+# One thread per coarse cell, gathering the cell's own fine nodes. The sum
+# accumulates in a register in the order the adjacency lists them, so it needs no
+# atomic and does not depend on how the launch happened to be scheduled.
+@kernel function _restrict_kernel!(rc, @Const(offsets), @Const(fine), @Const(x), nc)
+    a = @index(Global)
+    if a <= nc
+        acc = zero(eltype(rc))
+        @inbounds for p in offsets[a]:(offsets[a + 1] - 1)
+            acc += x[fine[p]]
         end
+        @inbounds rc[a] = acc
     end
 end
 
@@ -560,11 +668,14 @@ function _restrict!(rc::Vector, agg::Vector, x::Vector)
     return rc
 end
 
-function _restrict!(rc, agg, x)
+# Every coarse cell is written, so unlike the scatter this replaces there is
+# nothing to zero first.
+function _restrict!(rc, agg::Aggregation, x)
     backend = get_backend(agg)
-    n = length(agg)
-    fill!(rc, zero(eltype(rc)))
-    _restrict_kernel!(backend)(rc, agg, x, n; ndrange=n)
+    nc = length(agg.offsets) - 1
+    _restrict_kernel!(backend, _RESTRICT_GROUP)(
+        rc, agg.offsets, agg.fine, x, nc; ndrange=nc,
+    )
     KernelAbstractions.synchronize(backend)
     return rc
 end
@@ -583,6 +694,12 @@ function _prolong!(y, agg, xc, x, inv_lambda)
     _prolong_kernel!(backend)(y, agg, xc, x, inv_lambda, n; ndrange=n)
     KernelAbstractions.synchronize(backend)
     return y
+end
+
+# Prolongation is already a gather over the forward map, so the adjacency has
+# nothing to add to it.
+function _prolong!(y, agg::Aggregation, xc, x, inv_lambda)
+    return _prolong!(y, agg.fwd, xc, x, inv_lambda)
 end
 
 function LinearAlgebra.ldiv!(
