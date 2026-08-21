@@ -1,6 +1,16 @@
-# Numbers to verify in paper.md
+---
+title: Verifying every numeric claim in the JOSS paper
+created: 2026-08-17
+updated: 2026-08-21
+status: complete
+outcome: Every number in paper.md is now backed by a measurement from the current code. The campaign finished 2026-08-18, the paper was rewritten against it on 2026-08-21, and the three items still listed as open are a post-review step and two deliberate decisions not to measure.
+branch: joss
+supersedes: -
+superseded-by: -
+related: 2026-08-16-coarse-space-mesh-independence.md, 2026-08-19-float32-cg-stagnation.md
+---
 
-Written 2026-08-17, while the Julia re-measurement campaign was still running. `paper.md` is deliberately written as if the campaign confirms what the mechanism predicts. Every numeric claim in it is listed here with what actually backs it, so nothing invented survives to submission by accident.
+> **Status: complete.** A claim-by-claim ledger for the JOSS manuscript: every number in `paper.md`, what measurement backs it, and what became of the ones that no measurement backed. It was opened on 2026-08-17 while the re-measurement campaign was still running and the prose had been written ahead of its results — so the entries below are written in that tense — and closed on 2026-08-21, by which point the campaign had finished and the paper had been rewritten to say what was actually measured. It is kept because it is the only record of three refuted explanations a reviewer may well repeat, of the `Float32` stagnation analysis that the iterative-refinement feature came out of, and of the corrections made in both directions, including the ones that turned out to understate the package.
 
 Status key: **measured-new** came from the current code. **measured-old** came from the pre-rewrite code and is being replaced. **estimate** was written as-if and has no measurement behind it at all. **code** is a fact to check against source, not a benchmark.
 

@@ -135,7 +135,7 @@ julia --project=<scratch> -e 'using Pkg; Pkg.develop(path="C:/Users/sadegmo/.jul
 julia --project=<scratch> -e 'using Test; @testset verbose=true "x" begin include("test/test_assembly.jl") end'
 ```
 
-**Do not create `test/Project.toml`.** The package uses `[extras]`/`[targets]`; a real `test/Project.toml` would override the mechanism `Pkg.test()` relies on. (`test/Project.toml.bak` is a leftover from a previous attempt — leave it.)
+**Do not create `test/Project.toml`.** The package uses `[extras]`/`[targets]`; a real `test/Project.toml` would override the mechanism `Pkg.test()` relies on. (`test/Project.toml.bak` was a leftover from a previous attempt; it was deleted on 2026-08-21.)
 
 ### Test cadence — do not block on the full suite
 
