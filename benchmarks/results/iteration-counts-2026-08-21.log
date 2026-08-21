@@ -1,0 +1,45 @@
+### start 2026-08-20T16:48:12-04:00
+6 MiB
+### taufactor 1000^3 (timings + memory) starting 2026-08-20T16:48:12-04:00
+=== timings_taufactor_cuda  (16:48:12)
+    exit 0 — 19:32:24  → logs/timings_taufactor_cuda.log
+=== memory_taufactor_cuda  (19:32:24)
+    5 case(s) — 19:43:11  → logs/memory_taufactor_cuda.log
+campaign complete — results in results/, logs in logs/
+draw the figures with ./run/figures.sh (no GPU needed)
+TAUFACTOR_EXIT=0
+### iteration counts starting 2026-08-20T19:43:11-04:00
+reltol=1e-06  CPU Float64  matrix-free  blobiness=1.0  unpreconditioned up to 600^3
+case                      nodes    precond       none    ratio
+n200_b100_p020          1369672        136       2721     20.0
+n200_b100_p040          3193802        119       1219     10.2
+n200_b100_p060          4827722         83        989     11.9
+n200_b100_p080          6435598         86        850      9.9
+n200_b100_p095          7598661         58        747     12.9
+n400_b100_p020         11736271        132       4958     37.6
+n400_b100_p040         25242705        123       2465     20.0
+n400_b100_p060         38560157         89       1864     20.9
+n400_b100_p080         51685723         80       1515     18.9
+n400_b100_p095         60863603         62       1377     22.2
+n600_b100_p020         40202032        177       7099     40.1
+n600_b100_p040         86414504        114       3549     31.1
+n600_b100_p060        129848851        108       2708     25.1
+n600_b100_p080        172945908         88       2338     26.6
+n600_b100_p095        205336897         72       1980     27.5
+n800_b100_p020         94937803        191          -        -
+n800_b100_p040        202068918        135          -        -
+n800_b100_p060        306846383        115          -        -
+n800_b100_p080        411032289         98          -        -
+n800_b100_p095        487445980         89          -        -
+n1000_b100_p020       184187030        205          -        -
+n1000_b100_p040       395251340        139          -        -
+n1000_b100_p060       601833672        134          -        -
+n1000_b100_p080       805226521        110          -        -
+n1000_b100_p095       950636264         87          -        -
+[ Info: Imported Revise in 0.3 s
+[ Info: Imported BenchmarkTools in 0.1 s
+[ Info: Imported OhMyREPL in 0.2 s
+[ Info: Imported TestEnv in 0.0 s
+[ Info: Imported Plots in 1.3 s
+ITERS_EXIT=0
+### all finished 2026-08-21T04:22:27-04:00

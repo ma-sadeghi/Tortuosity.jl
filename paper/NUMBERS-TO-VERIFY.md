@@ -544,6 +544,65 @@ b050_p040:  200:1086  400:339   600:607   800:3484
 
 It stops on flux uniformity across slices, a weaker criterion than a residual, and it behaves erratically from one geometry to the next. Our own iteration count is flat over the same range. The $800^3$ dip to $7.52\times$ is this effect, not a regression in our solver.
 
+## Resolved: the preconditioned count is not mesh-independent, it grows slowly (2026-08-21, complete)
+
+The section above claimed the preconditioned iteration count is "flat to within ±7% at every porosity", from two sizes, and recorded the condition that would falsify it: *"The claim is that 136 / 132 continues flat at $600^3$, $800^3$ and $1000^3$; if it instead climbs there, the reading above is wrong and the earlier one was right."*
+
+**It climbs at every porosity. The claim is withdrawn.** All 25 cases, iterations to a fixed relative residual of 1e-6, CPU `Float64`, matrix-free, blobiness 1.0, over the cached campaign images. Deterministic given the image and the code, so this needs no quiet machine and reproduces exactly.
+
+| $\varepsilon$ | | $200^3$ | $400^3$ | $600^3$ | $800^3$ | $1000^3$ |
+|---|---|---|---|---|---|---|
+| 0.20 | preconditioned | 136 | 132 | 177 | 191 | **205** |
+| | unpreconditioned | 2721 | 4958 | 7099 | — | — |
+| 0.40 | preconditioned | 119 | 123 | 114 | 135 | **139** |
+| | unpreconditioned | 1219 | 2465 | 3549 | — | — |
+| 0.60 | preconditioned | 83 | 89 | 108 | 115 | **134** |
+| | unpreconditioned | 989 | 1864 | 2708 | — | — |
+| 0.80 | preconditioned | 86 | 80 | 88 | 98 | **110** |
+| | unpreconditioned | 850 | 1515 | 2338 | — | — |
+| 0.95 | preconditioned | 58 | 62 | 72 | 89 | **87** |
+| | unpreconditioned | 747 | 1377 | 1980 | — | — |
+
+The unpreconditioned solve is capped at $600^3$: it costs thousands of iterations over hundreds of millions of nodes, and the three sizes it does cover already establish its rate beyond doubt.
+
+### The rate, like for like
+
+Over the identical $200^3 \to 600^3$ range, geometric mean across the five porosities:
+
+| | growth over $3\times$ edge | exponent |
+|---|---|---|
+| unpreconditioned | $2.730\times$ | $L^{0.914}$ |
+| preconditioned | $1.156\times$ | $L^{0.132}$ |
+
+Unpreconditioned tracks the edge length almost exactly, which is the textbook rate for CG on this operator and is what the paper describes. Preconditioned grows about seven times more slowly in the exponent. Extending the preconditioned series to $1000^3$ — a $5\times$ edge — gives $1.404\times$, or $L^{0.211}$; the exponent creeps up when the larger sizes are included, and is stable there rather than accelerating ($L^{0.245}$ measured at $800^3$ and $L^{0.255}$ at $1000^3$ for $\varepsilon = 0.2$).
+
+**The growth rate is not ordered by porosity.** The per-porosity exponents over $200^3 \to 1000^3$ run 0.255, 0.097, 0.298, 0.153, 0.252 — no monotonic trend, and the highest porosity is not the flattest. An earlier note in this file suggested low porosity is where the coarse space works least well; the five-porosity data does not support that for the *rate*. What is ordered by porosity is the absolute count (136 > 119 > 86 > 83 > 58 at $200^3$), which is a different and defensible statement.
+
+### The claim worth making instead
+
+The preconditioner's advantage **grows with image size**, and this is measured rather than asserted — geometric mean of the unpreconditioned-to-preconditioned iteration ratio:
+
+| | $200^3$ | $400^3$ | $600^3$ |
+|---|---|---|---|
+| fewer iterations | $12.5\times$ | $23.1\times$ | $29.6\times$ |
+
+That is the honest headline: not a flat count, but a count whose growth is nearly arrested, with the benefit widening from 12x to 30x over the range where both can be measured.
+
+### Both of my earlier readings were wrong, in opposite directions
+
+The first — "Symptom 1: iterations grow with image size", read as the preconditioner losing ground — was right that they grow and wrong about the size of it. The second — "flat, therefore the growth is entirely the residual-to-$\tau$ amplification" — was right that the amplification is real and dominant (5.7x at $\varepsilon = 0.2$ against 1.51x here) and wrong to conclude the count itself is flat. The amplification explains most of the rung-to-target growth; it does not explain all of it.
+
+### What `paper.md` line 55 can now say
+
+Its three defects were: citing $\varepsilon = 0.5$, which the campaign does not contain; quoting counts no file in `results/` can reproduce; and asserting mesh independence. All three are now fixable from the table above. A sourced form:
+
+> At $\varepsilon = 0.2$ the unpreconditioned count grows from 2721 at $200^3$ to 7099 at $600^3$, tracking the edge length, while the preconditioned count goes from 136 to 177 and reaches 205 at $1000^3$ — a growth of $L^{0.91}$ against $L^{0.13}$ over the range where both were measured.
+
+It must not cite a porosity the campaign lacks, and must not claim a flat count.
+
+**The memory note `coarse-space-mesh-independence` is overstated the same way** and has been qualified. Its measured content — the 465 → 150 improvement at $600^3$ — stands, because that is a rung-to-$\tau$-target count on the GPU, a different metric from iterations to a fixed residual. Its framing as mesh independence does not.
+
+
 ## Wrong machine
 
 The core-occupancy claim — "our CPU path occupies about two cores and PuMA about one" — was sampled on a 20-core Windows machine, not on `pmeal-hpc` (Xeon Silver 4110, 8 cores). Either re-sample on the benchmark machine or delete the sentence. Leaving it invites a reviewer to ask which machine produced the rest of the numbers.
