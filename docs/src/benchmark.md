@@ -316,7 +316,7 @@ The two differ because refinement's 20 B/node is charged to *both* operators and
 
 **Against taufactor.** taufactor holds dense arrays over the whole grid, so its device footprint is flat in porosity: at ``1000^3`` all five porosities report the identical 28 056 869 888 bytes, and the per-voxel figure converges from 28.43 B/voxel at ``200^3`` to 28.06 at ``1000^3``. The comparison therefore turns entirely on our side of the ledger. As shipped, `Tortuosity.jl` uses less device memory at the **two lowest porosities and more at the three highest, at every size**. On the solve alone it is four of five at ``200^3`` and three of five from ``400^3`` up. The porosities where refinement costs the comparison are exactly the porosities where it buys nothing: the campaign's worst GPU error at ε ≈ 0.6 is 7.9e-4 and at ε ≈ 0.95 is 5.8e-4, both inside the 0.1% target with no refinement at all.
 
-**The ceiling.** The matrix-free operator completes every ``1000^3`` case on the 48 GB card, but not with much to spare: at ε ≈ 0.95 it peaks at 49.653 GB, which is 46.24 of the 47.268 GiB the runtime reports — 97.9% — and that is the case where the refinement guard fires. The assembled operator runs out above ε ≈ 0.8 at ``800^3`` and above ε ≈ 0.4 at ``1000^3``. Those `oom` rows are results, not gaps.
+**The ceiling.** The matrix-free operator completes every ``1000^3`` case on the 48 GB card, but not with much to spare: at ε ≈ 0.95 it peaks at 49.653 GB, which is 46.24 of the 47.268 GiB the runtime reports — 97.8% — and that is the case where the refinement guard fires. The assembled operator runs out above ε ≈ 0.8 at ``800^3`` and above ε ≈ 0.4 at ``1000^3``. Those `oom` rows are results, not gaps.
 
 ![Peak host memory on the CPU](assets/benchmark_memory_cpu.png)
 
