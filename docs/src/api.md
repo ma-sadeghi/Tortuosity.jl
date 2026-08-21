@@ -52,10 +52,13 @@ form that takes LinearSolve's defaults.
 
 `SteadyDiffusionProblem(img; axis, matrixfree=true)` builds the operator as a
 7-point stencil applied straight from the pore mask instead of an assembled
-sparse matrix. It stores one `Int32` index array over the grid — about 14 bytes
-per grid voxel against the assembled path's 40 — which is what makes images past
-roughly 850³ solvable on a 24 GiB card, and its apply is about twice as fast on
-GPU and six times as fast threaded on CPU.
+sparse matrix. It stores one `Int32` index array over the grid — four bytes per
+grid voxel, against roughly 59 bytes per *pore* voxel for the assembled
+matrix — and its apply is about twice as fast on GPU and six times as fast
+threaded on CPU. Measured end to end, peak device memory is 32.0 bytes per pore
+node plus 4.00 bytes per grid voxel, which is 1.7× to 3.2× leaner than the
+assembled path depending on porosity, and it is what lets a 1000³ image at any
+porosity fit on a 48 GiB card where the assembled path runs out above ε ≈ 0.4.
 
 That is a memory limit rather than a refusal. Both paths run at any size their
 storage fits: the assembled one widens its indices to 64-bit once an image
