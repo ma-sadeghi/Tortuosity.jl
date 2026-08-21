@@ -170,6 +170,36 @@ end
     end
 end
 
+@testset "τ and F are invariant under a rescaling of the diffusivity" begin
+    # D_eff is homogeneous of degree one in D, so τ and F only describe the
+    # geometry if the reference diffusivity divides back out. Without that,
+    # handing the solver a physical D rather than a normalised one rescales τ
+    # and can drive it below 1, which no geometry can do.
+    img = fixture("obstructed 12x8x8")
+    c = solve_steady(img; axis=:x)
+    τ_ref = tortuosity(c, img; axis=:x)
+    F_ref = formation_factor(c, img; axis=:x)
+    for k in (0.25, 2.0, 100.0)
+        @test tortuosity(c, img; axis=:x, D=k) ≈ τ_ref rtol = 1e-8
+        @test formation_factor(c, img; axis=:x, D=k) ≈ F_ref rtol = 1e-8
+    end
+    @test τ_ref >= 1
+
+    # Same invariance for a per-voxel field, where the reference is the largest
+    # pore-phase value rather than the scalar itself.
+    open_box = ones(Bool, 10, 6, 6)
+    D = fill(1.0, size(open_box))
+    D[:, 2:4, :] .= 0.3
+    c1 = solve_steady(open_box; axis=:x, D=D)
+    τ_field = tortuosity(c1, open_box; axis=:x, D=D)
+    k = 7.0
+    c2 = solve_steady(open_box; axis=:x, D=k .* D)
+    @test tortuosity(c2, open_box; axis=:x, D=k .* D) ≈ τ_field rtol = 1e-8
+
+    # An explicit D0 overrides the default reference.
+    @test tortuosity(c, img; axis=:x, D=2.0, D0=1.0) ≈ τ_ref / 2 rtol = 1e-8
+end
+
 @testset "scaling the whole diffusivity field scales D_eff by the same factor" begin
     # Exercises the assembly, not just the post-processing: interpolate_edge_values
     # is homogeneous of degree one, so k·D in ⇒ k·D_eff out.

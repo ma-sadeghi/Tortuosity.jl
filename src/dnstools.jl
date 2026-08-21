@@ -38,10 +38,16 @@ function effective_diffusivity(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=not
 end
 
 """
-    tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
+    tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, D0=nothing, voxel_size=1.0, L=nothing, dc=nothing)
 
-Compute the tortuosity factor `τ = ε / D_eff` from a steady-state concentration
-field. When `ε` is omitted, porosity is computed automatically from `img`.
+Compute the tortuosity factor `τ = D0 * ε / D_eff` from a steady-state
+concentration field. When `ε` is omitted, porosity is computed automatically
+from `img`.
+
+`D_eff` scales linearly with `D`, so the reference diffusivity `D0` must divide
+back out for `τ` to be a property of the geometry alone. Without it, scaling a
+diffusivity field by a constant would change `τ` by that constant and could
+drive it below 1, which is physically impossible.
 
 # Arguments
 - `c`: concentration field (full grid, same shape as `img`).
@@ -51,21 +57,35 @@ field. When `ε` is omitted, porosity is computed automatically from `img`.
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
 - `ind`: voxel index at which flux is measured. Default: `1`.
 - `ε`: porosity. Default: computed as `phase_fraction(img, true)`.
-- `D`: intrinsic diffusivity (scalar). Default: `1.0`.
+- `D`: intrinsic diffusivity, a scalar or a per-voxel field. Default: `1.0`.
+- `D0`: reference diffusivity that `τ` is measured against. Default: `D` when
+  `D` is a scalar, and the largest pore-phase value of `D` when it is a field.
 - `voxel_size`: physical voxel spacing. Default: `1.0`.
 - `L`: domain length. Default: `(N - 1) * voxel_size`.
 - `dc`: imposed concentration drop. Default: computed from `c`.
 """
-function tortuosity(c, img; axis, ind=1, ε=nothing, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
+function tortuosity(
+    c, img; axis, ind=1, ε=nothing, D=1.0, D0=nothing, voxel_size=1.0, L=nothing, dc=nothing
+)
     ε = isnothing(ε) ? Imaginator.phase_fraction(img, true) : ε
+    D0 = isnothing(D0) ? _reference_diffusivity(D, img) : D0
     Deff = effective_diffusivity(c, img; axis, ind, D, voxel_size, L, dc)
-    return ε / Deff
+    return D0 * ε / Deff
 end
 
-"""
-    formation_factor(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
+# The reference against which `τ` and the formation factor are measured. A
+# scalar `D` is itself the intrinsic diffusivity; for a per-voxel field the
+# conventional reference is the fastest conducting phase, taken over the pore
+# space so that whatever value fills the solid voxels cannot set the scale.
+_reference_diffusivity(D::Number, img) = D
+_reference_diffusivity(D, img) = maximum(D[img])
 
-Compute the formation factor `F = 1 / D_eff` from a steady-state concentration field.
+"""
+    formation_factor(c, img; axis, ind=1, D=1.0, D0=nothing, voxel_size=1.0, L=nothing, dc=nothing)
+
+Compute the formation factor `F = D0 / D_eff` from a steady-state concentration
+field. As with [`tortuosity`](@ref), the reference diffusivity divides back out
+so that `F` describes the geometry rather than the units `D` was given in.
 
 # Arguments
 - `c`: concentration field (full grid, same shape as `img`).
@@ -74,12 +94,17 @@ Compute the formation factor `F = 1 / D_eff` from a steady-state concentration f
 # Keyword Arguments
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
 - `ind`: voxel index at which flux is measured. Default: `1`.
-- `D`: intrinsic diffusivity (scalar). Default: `1.0`.
+- `D`: intrinsic diffusivity, a scalar or a per-voxel field. Default: `1.0`.
+- `D0`: reference diffusivity that `F` is measured against. Default: `D` when
+  `D` is a scalar, and the largest pore-phase value of `D` when it is a field.
 - `voxel_size`: physical voxel spacing. Default: `1.0`.
 - `L`: domain length. Default: `(N - 1) * voxel_size`.
 - `dc`: imposed concentration drop. Default: computed from `c`.
 """
-function formation_factor(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
+function formation_factor(
+    c, img; axis, ind=1, D=1.0, D0=nothing, voxel_size=1.0, L=nothing, dc=nothing
+)
+    D0 = isnothing(D0) ? _reference_diffusivity(D, img) : D0
     Deff = effective_diffusivity(c, img; axis, ind, D, voxel_size, L, dc)
-    return 1 / Deff
+    return D0 / Deff
 end
