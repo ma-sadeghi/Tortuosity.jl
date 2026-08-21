@@ -20,166 +20,78 @@ authors:
 affiliations:
   - name: Department of Chemical Engineering, University of Waterloo, Waterloo, Canada
     index: 1
-date: 8 April 2026
+date: 17 August 2026
 bibliography: paper.bib
 ---
 
 # Summary
 
-`Tortuosity.jl` is a Julia package for solving diffusion equations on voxel
-images of porous media and extracting transport properties such as the
-tortuosity factor. Given a binary or labeled 3D image of a porous material,
-the package assembles and solves a steady-state or transient diffusion
-problem on the pore space. The primary output is the tortuosity factor
-($\tau$), a scalar that quantifies how much the pore geometry impedes
-diffusive transport relative to free diffusion. The package also supports
-spatially varying diffusivity, which enables simulation of heterogeneous
-systems such as bubbly mixtures or composite electrodes. Both CPU and CUDA
-GPU execution are supported, and the package includes a built-in synthetic
-image generator for testing and benchmarking.
+`Tortuosity.jl` solves diffusion equations on voxel images of porous media and extracts transport properties. Its main output is the tortuosity factor $\tau$, a scalar that measures how much the pore geometry impedes diffusion relative to free diffusion. The package reads a binary or labeled 3D image and solves a steady-state or transient diffusion problem on the pore space. It accepts a diffusivity value for every voxel, so it can model heterogeneous materials such as composite electrodes. The same code runs on the CPU and on the GPU. A matrix-free operator and a two-level preconditioner together make $1000^3$ images practical on a single workstation card. A built-in image generator produces reproducible test geometries.
 
 # Statement of need
 
-Image-based transport simulation is central to the study of batteries,
-fuel cells, geological formations, filtration membranes, and other porous
-materials. The tortuosity factor links the effective diffusivity
-$D_\text{eff}$ of the medium to the intrinsic diffusivity $D_0$ and the
-porosity $\varepsilon$ through
+Image-based transport simulation is central to research on batteries, fuel cells, geological formations, and filtration membranes. The tortuosity factor links the effective diffusivity $D_\text{eff}$ to the intrinsic diffusivity $D_0$ and the porosity $\varepsilon$:
 
 $$D_\text{eff} = D_0 \, \frac{\varepsilon}{\tau}$$
 
-Computing $\tau$ from a voxel image requires discretizing the Laplace
-equation on the pore space, solving the resulting linear system, and
-computing the ratio of actual to ideal flux. Existing tools---TauFactor
-[@cooper2016taufactor] in MATLAB, taufactor [@kench2022taufactor] in
-Python, and PuMA [@ferguson2018puma; @ferguson2021puma]---have made this
-workflow accessible, but each has limitations that `Tortuosity.jl` addresses.
-
-TauFactor is CPU-only. taufactor adds GPU support through PyTorch but uses
-a successive over-relaxation (SOR) solver that operates on the full image
-grid, including solid voxels, so memory and compute scale with the total
-domain size rather than the pore volume. PuMA offers multiple solvers
-including finite volume, explicit jump, and random walk methods, but is
-also CPU-only (parallelized via OpenMP) and is written in C++ with a Python
-interface (`pumapy`), which makes the solver internals harder to inspect or
-modify.
-
-`Tortuosity.jl` takes a different approach. The package assembles a sparse
-linear system that includes only pore voxels, so memory use and solver cost
-scale with the pore count, not the image size. This is particularly
-advantageous for high-porosity media. The solver delegates to Krylov methods
-from `LinearSolve.jl` [@rackauckas2024linearsolve], which converge faster
-than SOR for well-conditioned Laplacian systems. GPU offloading requires a
-single keyword argument (`gpu=true`), with no user-managed memory transfers.
-Because Julia compiles to native code, per-iteration overhead is lower than
-in Python-based solvers, which matters most for smaller domains where the
-iteration count is low and the interpreter overhead of a Python loop becomes
-a significant fraction of total runtime.
+To compute $\tau$ from an image, a solver must discretize the Laplace equation on the pore space, solve the linear system, and compare the actual flux to the ideal flux. Tomography now routinely produces images whose pore space holds hundreds of millions of voxels. At that scale the linear solve, not the imaging, decides how long a study takes. `Tortuosity.jl` serves researchers who need that solve to be fast, to fit on one workstation GPU, and to stay readable in a single language.
 
 # State of the field
 
-TauFactor [@cooper2016taufactor] introduced the image-based tortuosity
-workflow for the porous media community and remains widely cited. Its Python
-successor, taufactor [@kench2022taufactor], added PyTorch-based GPU
-acceleration, batch processing, and microstructural metrics (volume
-fraction, surface area, triple-phase boundaries). PuMA
-[@ferguson2018puma; @ferguson2021puma], developed at NASA, is a C++ toolkit
-with Python bindings (`pumapy`) that computes tortuosity, thermal and
-electrical conductivity, permeability, and mechanical properties using
-finite volume, explicit jump, and random walk methods.
+TauFactor [@cooper2016taufactor] introduced this workflow to the porous media community and remains widely cited, but it runs only on the CPU. Its Python successor, taufactor [@kench2023taufactor], added GPU support through PyTorch. That tool solves by successive over-relaxation (SOR) across the full image grid, including the solid voxels. Its memory and its compute therefore scale with the total domain size rather than with the pore volume. PuMA [@ferguson2018puma; @ferguson2021puma], from NASA, is a C++ toolkit with Python bindings for tortuosity, conductivity, permeability, and mechanical properties. PuMA also runs only on the CPU, and its C++ internals are harder to inspect or modify.
 
-`Tortuosity.jl` focuses specifically on diffusion-based tortuosity
-computation and provides capabilities that complement these existing tools:
-(1) a pore-only sparse formulation that avoids allocating memory for solid
-voxels, (2) Krylov solvers instead of relaxation-based iteration, (3)
-transient diffusion for studying time-dependent uptake and breakthrough
-experiments, and (4) continuously varying per-voxel diffusivity fields
-rather than the discrete per-phase labels supported by taufactor. The
-package is written entirely in Julia, so both the high-level API and the
-low-level kernels are accessible in a single language without a compiled
-extension layer.
+`Tortuosity.jl` restricts the linear system to pore voxels alone, so memory use and solver cost scale with the pore count rather than the image size. This matters most for low-porosity media, where a full-grid method spends most of its work on voxels that carry no transport. At high porosity little solid remains to exclude, and the advantage disappears. The solver calls Krylov methods from `LinearSolve.jl` [@rackauckas2024linearsolve], which reach a given residual in far fewer iterations than SOR. Moving a simulation to the GPU takes one keyword argument and no manual memory transfers.
 
 # Software design
 
-The workflow proceeds in three steps:
+The workflow has three steps. A prefix sum over the mask numbers the pore voxels and drops the solid ones. A face-connectivity stencil over those voxels then forms a graph Laplacian. Dirichlet conditions of 1 and 0 apply on opposite faces along the transport axis, and the remaining faces are insulated. A per-voxel diffusivity field combines by harmonic mean at each interface. A Krylov method solves the system, with conjugate gradient as the default, and $\tau$ follows from the mean flux.
 
-1. **Pore extraction and numbering.** Only pore voxels participate in the
-   linear system. Solid voxels are excluded entirely, reducing memory use
-   and solver time proportionally to the solid fraction.
+The assembly and stencil kernels are written once against KernelAbstractions.jl [@churavy2024ka]. They dispatch to CUDA.jl [@besard2019cuda], Metal.jl, or AMDGPU.jl, according to which package the user loads. The GPU backends are package extensions, as are the optional image generation, curve fitting, and HDF5 features, so a solver-only install carries none of them.
 
-2. **Sparse system assembly.** A graph Laplacian is assembled from a
-   face-connectivity stencil over the pore voxels. Dirichlet boundary
-   conditions (concentration of 1 and 0) are applied on opposite faces
-   along the transport axis; remaining boundaries are insulated. When a
-   per-voxel diffusivity field is supplied, harmonic-mean weighting is
-   used at each interface.
+The operator takes one of two interchangeable forms, selected by a keyword. The default assembles a sparse matrix and hands the matrix-vector product to the vendor library. The matrix-free form instead stores one `Int32` index array over the grid and recomputes each row's stencil weights inside the apply kernel. That cuts operator storage from about 40 to 14 bytes per grid voxel. Both forms give the same pore numbering, right-hand side, and iteration count, and they agree on $\tau$ to within $2\times10^{-4}$.
 
-3. **Solve and post-process.** The sparse linear system is solved with a
-   Krylov solver (conjugate gradient by default) from `LinearSolve.jl`
-   [@rackauckas2024linearsolve]. The solution vector is mapped back onto
-   the image grid, and the tortuosity factor is computed from the mean
-   flux.
+The matrix-free form buys memory rather than speed. Its apply is faster in isolation, at 15.7 ms against 29.1 ms for an $800^3$ image. Across a whole solve that lead narrows, because both forms share the same preconditioner. The memory saving does not narrow, and it decides which problems fit at all. The assembled form widens its sparse offsets from `Int32` to `Int64` once the nonzero count outgrows the narrower type. That costs four bytes per offset but removes any hard size limit.
 
-GPU acceleration is implemented through CUDA.jl [@besard2019cuda]. When
-`gpu=true`, the sparse matrix and vectors are transferred to device memory,
-and the Krylov solver operates entirely on the GPU.
+Krylov iteration counts on a 3D Laplacian normally grow with the linear size of the image. That growth, rather than the voxel count alone, is what makes large images expensive. The package therefore includes a two-level preconditioner. It groups pore voxels into cubic blocks, builds a coarse operator from those blocks, and factorizes it once per solve. A fixed ratio between levels holds the coarse problem at a constant fraction of the fine one, so the iteration count stops tracking image size. At $\varepsilon = 0.5$ the unpreconditioned count climbs from 1044 at $200^3$ to 4805 at $1000^3$, while the preconditioned count stays between 91 and 148.
 
-For transient problems, the package integrates with `OrdinaryDiffEq.jl`
-[@rackauckas2017diffeq] to solve the time-dependent diffusion equation.
-Users can specify flexible stop conditions (target time, average
-concentration, or periodicity) and fit the resulting concentration curves
-to analytical slab-diffusion solutions.
+The coarse solve pays for itself only above a threshold size, so `solve(sim)` applies the preconditioner above $10^5$ pore voxels and picks a tolerance from the element type.
+
+The preconditioner restricts a residual to the coarse grid on every iteration. An earlier version scattered those contributions with atomic floating-point additions. Thread blocks arrive in no fixed order and floating-point addition is not associative, so the same solve returned a slightly different $\tau$ on each run. The restriction now gathers over a fixed coarse-to-fine adjacency built once during setup, which fixes the summation order and pays that cost once rather than per iteration.
+
+For transient problems the package integrates with `OrdinaryDiffEq.jl` [@rackauckas2017diffeq], supports flexible stop conditions, and fits concentration curves to analytical slab-diffusion solutions.
 
 # Performance comparison
 
-To quantify the performance differences, we benchmark `Tortuosity.jl`
-against taufactor [@kench2022taufactor] on synthetic 3D images generated
-by the Imaginator submodule with domain sizes from 50$^3$ to 200$^3$ and
-porosities of 0.3, 0.5, 0.7, and 0.9. Both solvers use a convergence
-parameter of $10^{-5}$, though the criteria differ: `Tortuosity.jl` uses
-the algebraic residual norm (`reltol`), while taufactor measures flux
-uniformity across slices (`conv_crit`). A reference solution from
-`Tortuosity.jl` at `reltol` $= 10^{-8}$ serves as ground truth.
+We compare `Tortuosity.jl` against taufactor and PuMA on synthetic images from the built-in generator. The grid spans edge lengths $N \in \{200, 400, 600, 800, 1000\}$, five porosities from 0.2 to 0.95, and three feature sizes. All measurements come from one machine, with a Quadro RTX 8000 (48 GB) and a Xeon Silver 4110 (8 cores).
 
-![Solve time (left), tortuosity agreement (center), and relative error
-(right) for $\varepsilon \approx 0.5$. Tortuosity.jl (circles) scales
-smoothly across all sizes. taufactor (squares) becomes slower at larger
-domains and exhibits higher relative error, particularly at low
-porosity where SOR struggles to converge within 10,000
-iterations.\label{fig:benchmark}](benchmark_time.png)
+The three tools stop on different quantities: an algebraic residual, the flux uniformity across slices, and a solver residual. Equal settings therefore do not give equal accuracy. We instead sweep each tool's iteration cap over 18 logarithmically spaced values from 1 to 20,000. We then take the wall time of the fastest run that reaches a given relative error in $\tau$. Each time is the median of three repeats, measured against a `Float64` CPU reference for the same image.
 
-\autoref{fig:benchmark} shows that `Tortuosity.jl` achieves relative
-errors below $10^{-4}$ across all cases, while taufactor errors range
-from $10^{-3}$ at high porosity to $10^{-1}$ at low porosity. At
-$N = 200$ and $\varepsilon = 0.3$, `Tortuosity.jl` is roughly 5$\times$
-faster. The advantage stems from two factors: CG converges in fewer
-iterations than SOR for Laplacian systems, and the pore-only sparse
-formulation avoids computation on solid voxels.
+Released taufactor places its Dirichlet boundaries half a voxel outside the domain and overrides the user's convergence criterion with a fixed threshold. We therefore benchmark a [13-line fork](https://github.com/ma-sadeghi/taufactor/commit/d05aa2e) that adopts the node-centered discretization used by both `Tortuosity.jl` and PuMA. The fork changes no solver logic.
+
+![Wall time to reach 0.1% relative error in $\tau$. Panels (a) and (c) show scaling with edge length, as a geometric mean over porosity. Panels (b) and (d) resolve the same data by size and porosity. Blue marks a case where `Tortuosity.jl` is faster, red where the other tool is. Each device has its own axes: taufactor runs on the GPU, PuMA on the CPU.\label{fig:benchmark}](benchmark_summary.png)
+
+At the 0.1% target `Tortuosity.jl` is faster than taufactor on the GPU in most cases, and its margin widens with image size. Over the cases where both tools converge, the geometric mean advantage rises from $1.6\times$ at $200^3$ to about $9\times$ at $1000^3$. Excluding solid voxels helps most when there is solid to exclude. The advantage therefore reaches two orders of magnitude near $\varepsilon = 0.2$, and falls to parity at $\varepsilon = 0.95$. A flat iteration count is what makes the margin grow with size, because taufactor needs more SOR sweeps on a larger grid while our solver does not.
+
+The ranking depends on how much accuracy is demanded, so we resolve the same data at three targets. At a 10% target taufactor is usually faster, because its linear starting profile already sits close to the answer for an open medium. As the target tightens that head start stops helping, and the convergence rate decides the outcome. The case for this package is the accurate end of that range.
+
+![Device memory held during the solve, by edge length and porosity, for the two operator forms. The vertical gap between the curves is the result. Each panel marks where the assembled form exhausts the card.\label{fig:memory}](benchmark_memory_gpu.png)
+
+Memory separates the two operator forms more sharply than time does. The assembled form holds several nonzeros per pore voxel, while the matrix-free form holds one `Int32` per grid voxel. Porosity therefore sets the ratio between them, and edge length barely moves it. The matrix-free form is about 2.1 to 2.7 times leaner, and uses less device memory than taufactor at four of five porosities. It completes every case at $1000^3$ on a 48 GB card, where the assembled form exhausts the card at high porosity.
+
+The same solver on the GPU is roughly $36\times$ faster than its own CPU path. PuMA is CPU-only, so we compare it against our CPU path, where `Tortuosity.jl` wins every case both tools solve to 0.1%, by a geometric mean of about $15\times$. That it rests on $200^3$ alone is itself a result: PuMA reached the target in none of the larger images within our budget.
+
+One caveat bounds the CPU numbers. The comparison is not core-matched, because neither tool saturates the machine. Sampled during active solving, our CPU path occupies about two cores and PuMA about one.
 
 # Research impact statement
 
-`Tortuosity.jl` is registered in the Julia General registry and installable
-via the built-in package manager. The package has been developed over
-roughly three years (2023--2026) with contributions from multiple
-developers and over 500 commits. It is used within the Gostick research
-group at the University of Waterloo for characterizing electrode
-microstructures in battery and fuel cell research. The Imaginator
-submodule, which generates synthetic porous geometries with tunable
-porosity and feature size, provides reproducible test cases for
-benchmarking across tools.
+`Tortuosity.jl` is registered in the Julia General registry and installs through the built-in package manager. Four contributors developed it over three years, from 2023 to 2026, in more than 650 commits. The Gostick research group at the University of Waterloo uses the package to characterize electrode microstructures for battery and fuel cell research.
 
 # AI usage disclosure
 
-Claude (Anthropic) was used during development for code suggestions,
-documentation drafting, and code review. All AI-generated content was
-reviewed, tested, and validated by the human authors. Core algorithmic
-design and scientific decisions were made entirely by the authors.
+We used Claude (Anthropic) during development for code suggestions, documentation drafts, code review, and parts of the benchmark harness. The human authors reviewed, tested, and validated all AI-generated content. The authors alone made the core algorithmic and scientific decisions.
 
 # Acknowledgements
 
-We acknowledge the developers of TauFactor and taufactor, whose work
-inspired the design of this package. We also thank the Julia community for
-the excellent ecosystem of packages that `Tortuosity.jl` builds on,
-including LinearSolve.jl, CUDA.jl, and OrdinaryDiffEq.jl.
+We thank the developers of TauFactor and taufactor, whose work informed this package. We also thank the Julia community for the ecosystem it builds on, including LinearSolve.jl, CUDA.jl, and OrdinaryDiffEq.jl.
 
 # References
