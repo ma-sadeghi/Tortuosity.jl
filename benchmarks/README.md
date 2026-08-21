@@ -53,6 +53,8 @@ Two things about the environments are deliberate and easy to undo by accident:
 
 Every stage resumes from its own results file and runs cases cheapest first, so the campaign can be interrupted and re-run with the same command. `run/README.md` covers the rented-machine flow, what has to be copied where, and what each stage costs; `run/ORCHESTRATION.md` is the step-by-step runbook for actually driving one, with a check after every step.
 
+A stage can run for hours, so every one of them logs as it goes — through `loguru` in Python and Julia's own logger — and `run/campaign.sh` appends each stage's output to `logs/<stage>.log`, one line per case. A long run nobody can follow is a long run nobody can diagnose afterwards.
+
 ### Stages, individually
 
 ```bash
@@ -111,6 +113,12 @@ Each tool is swept over the knob that best traces *its own* accuracy–time fron
 
 Iteration count rather than tolerance, for all three. Tolerance samples the frontier badly at both ends — the loosest settings return τ ≈ 0 and the tightest can step straight past the target in one rung — and taufactor evaluates its own `conv_crit` only every 100 iterations, which puts the entire coarse-accuracy regime out of reach through that knob. PuMA needs two workarounds to reach the same axis, both in `bench_puma.py`: its `PropertySolver.solve` raises rather than returning a partial result when SciPy stops on `maxiter`, and it passes only `atol` to SciPy and never `tol`, leaving that at its 1e-5 default so that every tolerance rung below `1e-5·‖b‖` was a duplicate of the one above it. Driving SciPy's conjugate gradient directly, over PuMA's own operator and preconditioner, fixes both. Nothing about PuMA's algorithm changes; only the stopping rule, which is the thing being swept.
 
+### Warm-up
+
+Every stage solves a throwaway image before it measures anything, on a case that is not in the grid. No reported number may include a first-call cost: Julia compiles on first execution, PyTorch pays CUDA context creation on its first kernel launch, and SciPy and PuMA's compiled `compute_flux` each pay one of their own. Warming on a measured case instead would double that case's cost for nothing.
+
+The warm-up has to exercise the same code as the measurement, not merely the same package. Julia specialises on types rather than array sizes, so a 64³ image compiles what a 1000³ one runs — but a timing run traces its ladder through a different path than a plain solve, and warming only the latter leaves the first measured case carrying the trace path's compilation. Both paths are warmed in all three harnesses, for the same reason in each: in taufactor a run shorter than 100 iterations never reaches a convergence check and so never calls `compute_metrics`, which is the one thing every checkpoint calls. 64³ is also the smallest size that clears the pore count below which `precond=:auto` declines to build a coarse space, so the preconditioner is warmed too.
+
 ### One solve per case, not one per rung
 
 Each tool's whole ladder is traced from a **single** solve. A Krylov or SOR iterate is deterministic — iterate *k* is the same vector whether the run stopped there or carried on — so reading tortuosity off at each rung reports exactly what one solve per rung reported, for a fraction of the cost. The time recorded against a rung has the cost of the readings taken so far subtracted back out, so it stays comparable with a plain run that stopped at that iteration.
@@ -119,7 +127,7 @@ Verified rather than assumed, on both devices and all three tools: τ comes back
 
 Two things this required. `abstol = 0` for Tortuosity.jl, because LinearSolve otherwise defaults it to `sqrt(eps(T))` — 3.4e-4 in `Float32` — which ends the solve long before the iteration cap and leaves most of the ladder unreachable. And a `checkpoints` argument on the vendored taufactor fork, listed with its other patches below.
 
-Each rung is run three times and the **median** reported, with the spread recorded alongside. The median rather than one sample because the two-level preconditioner accumulates its coarse operator with atomic float adds whose order is not fixed across launches, so a GPU solve is not bit-reproducible and τ moves by roughly the size of the accuracy target between runs; reporting one sample would make whether a case "reached" the target partly luck. A first repeat slower than `repeat_threshold_s` abandons the remaining repeats, and those rows carry `repeats = 1` and a NaN spread — a spread of zero is the claim that three runs agreed exactly, which is not the same thing.
+Each rung is run three times and the **median** reported, with the spread recorded alongside. The median rather than one sample because wall time varies between launches, and because the preconditioner's restriction once scattered with atomic float adds whose order is not fixed, which moved τ between runs by roughly the size of the accuracy target and made whether a case "reached" the target partly luck. That scatter is now a gather over a fixed coarse-to-fine adjacency, and every three-repeat GPU row in the current results reports a τ spread of exactly zero; the coarse operator's own assembly still uses atomics, so bit-for-bit equality across runs is not guaranteed even though it is what we now measure. A first repeat slower than `repeat_threshold_s` abandons the remaining repeats, and those rows carry `repeats = 1` and a NaN spread — a spread of zero is the claim that three runs agreed exactly, which is not the same thing.
 
 **Every tool is clocked from the moment it receives the image to the moment tortuosity can be read.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all three. Only the image itself, and the tortuosity read-off at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work a user does.
 
@@ -165,7 +173,9 @@ A sweep is complete only once one of its rows carries a `stop_reason` (`target_r
 
 ## The taufactor fork
 
-taufactor is vendored as a git submodule from [`ma-sadeghi/taufactor@d05aa2e`](https://github.com/ma-sadeghi/taufactor/commit/d05aa2e). The fork is a small change to `taufactor.py` whose purpose is to make all three tools solve the *same discrete problem* and be measurable in the same way, so that a difference in the reported τ reflects the solver rather than the discretisation or the harness. No solver logic is changed.
+taufactor is vendored as a git submodule from [`ma-sadeghi/taufactor@a4bc5f9`](https://github.com/ma-sadeghi/taufactor/commit/a4bc5f9), which carries the node-centered boundary patch of [`d05aa2e`](https://github.com/ma-sadeghi/taufactor/commit/d05aa2e) plus the checkpoint patch on top. The fork is a small change to `taufactor.py` whose purpose is to make all three tools solve the *same discrete problem* and be measurable in the same way, so that a difference in the reported τ reflects the solver rather than the discretisation or the harness. No solver logic is changed.
+
+Third-party source is modified as little as the comparison allows, and where modification is unavoidable the result is vendored as a pinned submodule rather than patched in place, so the exact source behind every number is recoverable from this repository.
 
 - **Node-centered Dirichlet BCs.** Upstream places the boundary half a voxel outside the domain (`top_bc, bot_bc = -0.5, 0.5` with a `1/(2·Nx)` shift in `init_field`), a cell-centered ghost-cell convention. Tortuosity.jl and PuMA both pin concentrations at the boundary voxels themselves. The fork switches to `(0.0, 1.0)` pinned at voxels 1 and `Nx`, and zeroes the SOR checkerboard on those two slices so they are never relaxed.
 - **Domain length spans `Nx-1` intervals, not `Nx`.** Follows directly: with the boundaries *at* voxels 1 and `Nx`, the distance between them is `(Nx-1)·dx`. Upstream's `D_rel = mean_fl * Nx / ΔC` becomes `mean_fl * (Nx - 1) / ΔC`. This is an O(1/N) bias — 1% at N=100 — that would otherwise be attributed to the solver.
