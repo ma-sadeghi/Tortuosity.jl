@@ -1,0 +1,26 @@
+{
+  "case": "n200_b100_p040",
+  "host_physical_cores": 8,
+  "host_logical_cores": 16,
+  "tools": {
+    "tortuosity-cpu-matrixfree": {
+      "exit": -11,
+      "elapsed_s": 5.2,
+      "n_samples": 10,
+      "n_used": 6,
+      "median_cores": 1.39,
+      "mean_cores": 1.59,
+      "peak_cores": 2.8
+    },
+    "puma-cpu": {
+      "exit": 0,
+      "elapsed_s": 373.7,
+      "n_samples": 716,
+      "n_used": 429,
+      "median_cores": 6.39,
+      "mean_cores": 5.82,
+      "peak_cores": 6.86
+    }
+  },
+  "published_results_unchanged": true
+}

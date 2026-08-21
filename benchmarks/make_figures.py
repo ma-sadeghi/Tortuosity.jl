@@ -316,14 +316,55 @@ def figure_speedups(campaign):
 
 # ── Memory ───────────────────────────────────────────────────────────
 
-def figure_memory(campaign):
-    """Peak memory against domain size, one panel per porosity, every tool.
+# A series whose per-voxel footprint is this consistent across the sizes it was
+# measured at is holding dense arrays over the whole grid, and projecting it to a
+# size it never reached is arithmetic rather than speculation. Looser than this
+# and the projection is a guess, so it is not drawn at all.
+PROJECTION_TOLERANCE = 0.05
 
-    The comparison the paper rests on is here twice: between the two operator
-    forms inside Tortuosity.jl, and between Tortuosity.jl and the other two
-    packages. Both are drawn on each device, because holding a full voxel grid
-    costs the same whether the grid is on a card or in host memory — while
-    holding only the pore space does not.
+
+def project_per_voxel(values, target):
+    """Project `values` -- {size: GiB} -- to `target`, if the footprint is flat.
+
+    Returns `(gib, per_voxel_spread)` or `(None, spread)` when the series does not
+    scale cleanly with voxel count. Extrapolating anything else would put a number
+    on the page that no measurement supports.
+    """
+    if len(values) < 3 or target in values:
+        return None, None
+    per_voxel = {n: gib / n ** 3 for n, gib in values.items()}
+    lo, hi = min(per_voxel.values()), max(per_voxel.values())
+    spread = (hi - lo) / lo if lo else float("inf")
+    if spread > PROJECTION_TOLERANCE:
+        return None, spread
+    # Weight the largest measured sizes: the small ones carry a fixed overhead
+    # that is a real part of their footprint and a vanishing part of the target.
+    largest = sorted(per_voxel)[-2:]
+    rate = sum(per_voxel[n] for n in largest) / len(largest)
+    return rate * target ** 3, spread
+
+
+def exhausted_memory(memory, *, device, series, size, porosity, blobiness):
+    """Whether this case was run and ran out of memory, rather than not run."""
+    sub = memory[(memory["device"] == device) & (memory["series"] == series)
+                 & (memory["size"] == size)
+                 & np.isclose(memory["porosity_target"], porosity)
+                 & np.isclose(memory["blobiness"], blobiness)]
+    return not sub.empty and (sub["status"] == "oom").any()
+
+
+def figure_memory(campaign):
+    """Peak memory by domain size, one panel per porosity, every tool.
+
+    Grouped bars rather than lines. The comparison the paper rests on is between
+    heights at one size -- the two operator forms against each other, and against
+    the other packages -- and a bar chart puts those heights side by side instead
+    of asking the reader to follow five markers across a log-log plot.
+
+    A tool that was never run at a size gets a hatched bar carrying the projection
+    of its own per-voxel footprint, and only when that footprint is flat enough
+    across the sizes it *was* measured at for the projection to be arithmetic. The
+    hatch and the legend say plainly that the bar is not a measurement.
     """
     for device in campaign.devices(campaign.memory):
         column = MEMORY_COLUMN[device]
@@ -331,66 +372,98 @@ def figure_memory(campaign):
         sizes = campaign.sizes(campaign.memory, device, campaign.reference_blobiness)
         if not series or not sizes:
             continue
-        figure, axes = plt.subplots(1, len(campaign.porosities), sharey=True,
-                                    figsize=(2.5 * len(campaign.porosities), 3.3))
-        axes = np.atleast_1d(axes)
-        for ax, por in zip(axes, campaign.porosities):
-            reach = {}
+        # Every series is drawn over the union of sizes, so a projected bar has a
+        # slot to stand in rather than leaving a gap the eye reads as zero.
+        all_sizes = sorted(set(sizes) | set(campaign.sizes(campaign.memory, device, None) or sizes))
+        # Gather every panel before drawing any: the bars sit on a log axis, and a
+        # log axis has no zero to start them from, so the base has to be chosen
+        # from the smallest value in the whole figure.
+        panels = {}
+        for por in campaign.porosities:
+            measured = {}
             for name in series:
                 values = {}
-                for size in sizes:
+                for size in all_sizes:
                     gib = fig.memory_gib(campaign.memory, device=device, series=name, size=size,
                                          porosity=por, blobiness=campaign.reference_blobiness,
                                          column=column)
                     if np.isfinite(gib):
                         values[size] = gib
-                if not values:
-                    continue
-                reach[name] = values
-                marker, color = fig.style_for(name)
-                ax.plot(list(values), list(values.values()), marker=marker, color=color,
-                        label=name, markeredgewidth=0.5, markeredgecolor="white")
+                if values:
+                    measured[name] = values
+            panels[por] = measured
+        every = [v for m in panels.values() for vals in m.values() for v in vals.values()]
+        if not every:
+            continue
+        base = min(every) / 4
 
-            notes = []
-            ours = fig.series_label(*fig.REFERENCE_SERIES)
-            for other, values in reach.items():
-                if other == ours or ours not in reach:
-                    continue
-                shared = sorted(set(values) & set(reach[ours]))
-                if shared:
-                    n = shared[-1]
-                    ratio = values[n] / reach[ours][n]
-                    # Named by the part that distinguishes it, so the assembled
-                    # Tortuosity.jl series does not read as "Tortuosity.jl" and
-                    # become indistinguishable from the matrix-free baseline it
-                    # is being compared against.
-                    who = other.split(" (")[1].rstrip(")") if " (" in other else other
-                    if 0.95 <= ratio <= 1.05:
-                        notes.append(f"$N={n}$: {who} about the same")
-                    else:
-                        sense = "more" if ratio > 1 else "less"
-                        factor = ratio if ratio > 1 else 1 / ratio
-                        notes.append(f"$N={n}$: {who} holds {factor:.1f}$\\times$ {sense}")
-            # A series that stops short did not merely go unmeasured: the tools
-            # holding a full grid are the ones that run out of memory first, and
-            # that ceiling is the result. Say where it fell rather than let the
-            # line simply end.
-            if reach:
-                furthest = max(max(v) for v in reach.values())
-                notes += [f"{name.split(' (')[0]}: no data beyond $N={max(v)}$"
-                          for name, v in sorted(reach.items()) if max(v) < furthest]
-            if notes:
-                ax.text(0.97, 0.03, "\n".join(notes), transform=ax.transAxes, fontsize=6,
-                        color="0.35", va="bottom", ha="right")
+        figure, axes = plt.subplots(1, len(campaign.porosities), sharey=True,
+                                    figsize=(3.0 * len(campaign.porosities), 3.6))
+        axes = np.atleast_1d(axes)
+        projected_any = False
+        exhausted_any = False
+        for ax, por in zip(axes, campaign.porosities):
+            measured = panels[por]
+
+            width = 0.8 / max(len(measured), 1)
+            index = np.arange(len(all_sizes), dtype=float)
+            oom_slots = []
+            for i, (name, values) in enumerate(sorted(measured.items())):
+                _, color = fig.style_for(name)
+                offset = (i - (len(measured) - 1) / 2) * width
+                solid_x, solid_h, proj_x, proj_h = [], [], [], []
+                for j, size in enumerate(all_sizes):
+                    if size in values:
+                        solid_x.append(index[j] + offset)
+                        solid_h.append(values[size])
+                        continue
+                    if exhausted_memory(campaign.memory, device=device, series=name,
+                                        size=size, porosity=por,
+                                        blobiness=campaign.reference_blobiness):
+                        # Ran, and did not fit. That is the measurement.
+                        oom_slots.append((index[j] + offset, color))
+                        continue
+                    gib, _ = project_per_voxel(values, size)
+                    if gib is not None:
+                        proj_x.append(index[j] + offset)
+                        proj_h.append(gib)
+                if solid_h:
+                    ax.bar(solid_x, [h - base for h in solid_h], width, bottom=base,
+                           color=color, label=name, edgecolor="white", linewidth=0.4)
+                if proj_h:
+                    projected_any = True
+                    ax.bar(proj_x, [h - base for h in proj_h], width, bottom=base,
+                           color=color, alpha=0.55, hatch="////", edgecolor="white",
+                           linewidth=0.4)
+
             ax.set_title(f"$\\varepsilon = {por:.2f}$")
-            fig.log_size_axis(ax, sizes)
+            ax.set_xticks(index)
+            ax.set_xticklabels([str(n) for n in all_sizes], fontsize=7)
             ax.set_yscale("log")
+            ax.set_ylim(bottom=base)
+            # Drawn after the limits settle so the bar reaches the top of the
+            # panel: the point is that the case has no height on this scale.
+            if oom_slots:
+                exhausted_any = True
+                top = ax.get_ylim()[1]
+                for x, color in oom_slots:
+                    ax.bar([x], [top - base], width, bottom=base, color=color,
+                           alpha=0.30, hatch="xxx", edgecolor="white", linewidth=0.4)
             ax.set_xlabel("Domain size $N$ (voxels per side)")
-            ax.grid(True)
+            ax.grid(True, axis="y", alpha=0.4)
+            ax.set_axisbelow(True)
+
         axes[0].set_ylabel(MEMORY_LABEL[device])
         handles, labels = axes[0].get_legend_handles_labels()
+        if exhausted_any:
+            handles = list(handles) + [Patch(facecolor="0.6", alpha=0.30, hatch="xxx",
+                                             edgecolor="white")]
+            labels = list(labels) + ["exhausted the device"]
+        if projected_any:
+            handles = list(handles) + [Patch(facecolor="0.6", alpha=0.55, hatch="////",
+                                             edgecolor="white")]
+            labels = list(labels) + ["projected, not measured"]
         if handles:
-            # Memory rises with N, so the upper-left corner of every panel is free.
             axes[0].legend(handles, labels, loc="upper left", framealpha=0.9, fontsize=7)
         figure.suptitle(f"Memory held during the solve on the {device.upper()} "
                         f"(blobiness {campaign.reference_blobiness:g})", y=1.02)

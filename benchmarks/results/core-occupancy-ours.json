@@ -1,0 +1,30 @@
+{
+  "tool": "tortuosity-cpu-matrixfree",
+  "host_physical_cores": 8,
+  "host_logical_cores": 16,
+  "cases": {
+    "n200_b100_p040": {
+      "exit": 0,
+      "elapsed_s": 55.3,
+      "interval_s": 0.1,
+      "child_log": "results/occupancy-ours-n200_b100_p040.log",
+      "n_samples": 464,
+      "n_used": 279,
+      "median_cores": 1.0,
+      "mean_cores": 2.64,
+      "peak_cores": 15.97
+    },
+    "n600_b100_p040": {
+      "exit": 0,
+      "elapsed_s": 145.1,
+      "interval_s": 0.5,
+      "child_log": "results/occupancy-ours-n600_b100_p040.log",
+      "n_samples": 279,
+      "n_used": 168,
+      "median_cores": 5.48,
+      "mean_cores": 6.79,
+      "peak_cores": 15.78
+    }
+  },
+  "published_results_unchanged": true
+}
