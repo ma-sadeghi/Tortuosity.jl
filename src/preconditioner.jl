@@ -660,12 +660,25 @@ ascending node order, and the chunks are laid down in ascending order within eac
 cell. So every cell's slice comes out ascending, whichever thread got there
 first, and no sort is needed to make it so.
 """
-function _invert_aggregates(agg, nc)
+function _invert_aggregates(agg, nc; max_scratch_bytes=256 * 1024 * 1024)
     fwd = Array(agg)
     n = length(fwd)
     # One entry per pore node, so the same index wall the fine numbering faces.
     Tf = n <= typemax(Int32) ? Int32 : Int64
-    bounds = find_chunk_bounds(; nelems=n, ndivs=Threads.nthreads())
+    # `counts` and `cursor` are both `nc x nchunks`, so this scratch grows with the
+    # image and the thread count at once. A 1000^3 image has ~1.95M coarse cells,
+    # which on a 64-thread host is a gigabyte of host memory holding a table used
+    # only to reserve positions — and it is invisible to the device-side memory
+    # model the solver is sized against. Cap the chunk count to keep the two
+    # matrices inside a fixed budget.
+    #
+    # This costs parallelism here and nothing else: the layout below files each
+    # chunk into its own reserved slice in ascending node order, so a cell's slice
+    # comes out ascending for any number of chunks. The result is identical
+    # whether this runs on one chunk or sixty-four, which is what the two-pass
+    # reservation exists to guarantee.
+    ndivs = clamp(max_scratch_bytes ÷ (2 * max(nc, 1) * sizeof(Tf)), 1, Threads.nthreads())
+    bounds = find_chunk_bounds(; nelems=n, ndivs=ndivs)
     nchunks = length(bounds)
 
     # A column per chunk: a thread walks its own column, and two threads' columns

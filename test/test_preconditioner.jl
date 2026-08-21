@@ -7,6 +7,7 @@
 
 using Test
 using LinearAlgebra
+using Random
 using SparseArrays
 using Tortuosity
 using Tortuosity:
@@ -391,4 +392,28 @@ end
     @test occursin("nc=$(P.nc)", sprint(show, P))
     @test size(P) == (size(sim.prob.A, 1), size(sim.prob.A, 1))
     @test eltype(P) === Float64
+end
+
+# The aggregate inversion reserves each thread-chunk's output positions before
+# writing, so that a cell's member nodes land in ascending order no matter which
+# thread files them. That property is what lets the chunk count be capped for
+# memory without changing a single number, so it is pinned here rather than
+# trusted: the scratch tables are `nc x nchunks`, which on a large image and a
+# many-threaded host would otherwise reach a gigabyte of host memory.
+@testset "aggregate inversion does not depend on the chunk count" begin
+    rng = MersenneTwister(20260821)
+    nc = 37
+    agg = rand(rng, 0:nc, 5000)          # 0 marks a node in no aggregate
+
+    # Reference: group node indices by cell, ascending, with no chunking at all.
+    want = [sort([i for i in eachindex(agg) if agg[i] == a]) for a in 1:nc]
+
+    for budget in (1, 64, 1024, 256 * 1024 * 1024)   # 1 forces a single chunk
+        offsets, fine = Tortuosity._invert_aggregates(agg, nc; max_scratch_bytes=budget)
+        @test length(offsets) == nc + 1
+        @test offsets[1] == 1
+        @test Int(offsets[end]) - 1 == count(>(0), agg)
+        got = [Int.(fine[offsets[a]:(offsets[a + 1] - 1)]) for a in 1:nc]
+        @test got == want
+    end
 end
