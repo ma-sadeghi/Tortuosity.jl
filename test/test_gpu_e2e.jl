@@ -11,6 +11,7 @@
 
 using Test
 using Random
+using LinearAlgebra
 using Tortuosity
 using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruct_slice
 
@@ -222,4 +223,65 @@ end
 
     # Different integrator tolerances + Float32/Float64 → loose check
     @test isapprox(c_mean_cpu, c_mean_gpu; atol=1e-2)
+end
+
+# ---------------------------------------------------------------------------
+# Iterative refinement of the Float32 path
+# ---------------------------------------------------------------------------
+
+# `Float32` CG stops on a recursively-updated residual that drifts away from
+# `b - A*x`, so it reports success while the answer is still wrong. The package
+# refines against a `Float64` residual before returning. The oracle here is the
+# CPU operator, which is `Float64` and uses the same pore ordering, so it checks
+# the device path against something that shares none of its arithmetic.
+@testset "Float32 solves are refined against a true residual (seed=$(seed))" for seed in (1, 42)
+    img = Array{Bool}(
+        Imaginator.blobs(; shape=(48, 48, 48), porosity=0.4f0, blobiness=1, seed=seed)
+    )
+    (any(img[1, :, :]) && any(img[end, :, :])) || return
+
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=true)
+    ref = SteadyDiffusionProblem(img; axis=:x, gpu=false)
+    A, b = ref.prob.A, ref.prob.b
+    true_resid(u) = norm(b .- A * Float64.(Array(u))) / norm(b)
+
+    plain = solve(sim, KrylovJL_CG(); refine=false)
+    refined = solve(sim, KrylovJL_CG())
+
+    # The whole point: the residual the solve reports is the true one, not the
+    # recurrence it stopped on. Reporting the recurrence is what hid the defect.
+    @test refined.resid[] ≈ true_resid(refined.u) rtol = 1e-5
+    # And it is reported the same way an unrefined solve reports it, so a caller
+    # never has to branch on the working precision to read the field.
+    @test refined.resid isa Base.RefValue
+
+    # Refinement must never hand back a worse answer than the solve it repairs.
+    @test true_resid(refined.u) <= true_resid(plain.u)
+
+    # It costs iterations, and they are counted rather than hidden.
+    @test refined.iters > plain.iters
+
+    # `stats` must not be the workspace Krylov mutates in place: that object holds
+    # the last correction round by the time refinement returns, so a caller
+    # reading `stats.niter` would see a handful of iterations for a solve that
+    # took hundreds. It is a copy describing the base solve, and it says so.
+    @test refined.stats !== refined.cache.cacheval.stats
+    @test refined.stats.niter == plain.iters
+    @test occursin("refined", refined.stats.status)
+    # A refined solve that reaches the requested tolerance reports success, and
+    # the two places that say so must agree.
+    @test Symbol(refined.retcode) === :Success
+    @test refined.stats.solved
+
+    # Both still solve the physics.
+    @test tortuosity(reconstruct_field(refined.u, sim.img), sim.img; axis=:x) ≈
+          tortuosity(reconstruct_field(plain.u, sim.img), sim.img; axis=:x) rtol = 1e-2
+end
+
+# Refinement is keyed on the working precision, not on the residual: `Float64`
+# CG overshoots its own `reltol` by the same factor `Float32` does, so no ratio
+# test could separate them, and refining a `Float64` solve buys nothing.
+@testset "refinement is Float32-only" begin
+    @test Tortuosity._refines_by_default(Float32)
+    @test !Tortuosity._refines_by_default(Float64)
 end

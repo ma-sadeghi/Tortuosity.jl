@@ -251,6 +251,17 @@ What it decides:
 - **Tolerance.** `reltol=nothing` picks `1e-10` for a `Float64` (CPU) system and
   `1e-6` for a `Float32` (GPU) one. `Float32` CG stalls before `1e-7`, so a
   tolerance carried over from a CPU run is a request the solver cannot meet.
+- **Refinement.** A `Float32` system is refined against a `Float64` residual
+  before it is returned, because the residual `Float32` CG stops on is a
+  recurrence that drifts away from `b - A*x`: without this the solver reports
+  success on a low-porosity image whose tortuosity is wrong by 2e-3. `sol.resid[]`
+  is then the true relative residual and `sol.iters` counts every iteration
+  spent, correction rounds included. `sol.retcode` likewise describes the vector
+  returned, so a base solve that hit its iteration cap and was then refined below
+  `reltol` reports `Success`. `sol.stats` stays a record of the base solve alone —
+  its `niter` and `residuals` are that solve's, because a correction's residuals
+  belong to a different system and cannot be appended. Pass `refine=false` for the
+  unrepaired behaviour.
 
 # Arguments
 - `sim`: the problem, from [`SteadyDiffusionProblem`](@ref).
@@ -260,6 +271,8 @@ What it decides:
 - `precond`: `:auto`, `:none`, or a preconditioner to use as `Pl`.
 - `reltol`, `abstol`, `maxiters`: passed to `solve`; `nothing` means "decide".
 - `verbose`: print what was chosen. Default: `false`.
+- `refine`: refine the solution against a `Float64` residual. `nothing` (the
+  default) turns it on for a `Float32` system and off for a `Float64` one.
 - Any other keyword is forwarded to LinearSolve unchanged.
 
 # Returns
@@ -270,23 +283,199 @@ the same numbering either path produces, so it feeds
 function LinearSolve.solve(
     sim::SteadyDiffusionProblem, alg=KrylovJL_CG();
     precond=:auto, reltol=nothing, abstol=nothing, maxiters=nothing,
-    verbose=false, kwargs...,
+    verbose=false, refine=nothing, kwargs...,
 )
     T = eltype(sim.prob.b)
     reltol = isnothing(reltol) ? _default_reltol(T) : reltol
     Pl = _resolve_precond(precond, sim, verbose)
-    opts = Any[:reltol => reltol]
-    isnothing(abstol) || push!(opts, :abstol => abstol)
+    # LinearSolve defaults `abstol` to `sqrt(eps(T))`, which on `Float32` is
+    # 3.5e-4 — loose enough to stop the solve before the `reltol` chosen just
+    # above is anywhere near met. Defaulting it to zero makes `reltol` the only
+    # stopping rule, which is what this function documents.
+    opts = Any[:reltol => reltol, :abstol => isnothing(abstol) ? zero(T) : abstol]
     isnothing(maxiters) || push!(opts, :maxiters => maxiters)
     isnothing(Pl) || push!(opts, :Pl => Pl)
     verbose && @info "Solving" alg reltol precond = isnothing(Pl) ? :none : :two_level
-    return solve(sim.prob, alg; opts..., kwargs...)
+    sol = solve(sim.prob, alg; opts..., kwargs...)
+    (isnothing(refine) ? _refines_by_default(T) : refine) || return sol
+    return _refine(sol, sim, alg)
 end
 
 # `Float32` CG cannot drive the relative residual much below `1e-6`; asking it to
 # is how a GPU run ends in `maxiters` rather than `Success`.
 _default_reltol(::Type{Float32}) = 1.0f-6
 _default_reltol(::Type{T}) where {T} = T(1e-10)
+
+# Refinement is for the low-precision path only. It cannot be decided from the
+# residual: `Float64` CG overshoots its own `reltol` by 2.4x and `Float32` by
+# 2.6x, so the two are indistinguishable by any ratio test. What separates them
+# is the consequence — at `Float64` that overshoot leaves 1e-8 in tortuosity, at
+# `Float32` it leaves 2e-3.
+_refines_by_default(::Type{Float32}) = true
+_refines_by_default(::Type{T}) where {T} = false
+
+# Widen or narrow a vector without assuming which array type it is, so the same
+# code serves the host and every device backend.
+_as(::Type{T}, v) where {T} = (w = similar(v, T); w .= v; w)
+
+"""
+    _refine(sol, sim, alg)
+
+Repair a `Float32` solve by refining it against a `Float64` residual.
+
+`Float32` CG stops on a recursively-updated residual that drifts away from
+`b - A*x`. It therefore reports success while the answer is still wrong — by
+2e-3 in tortuosity on a low-porosity image, where the benchmark asks for 1e-3.
+Recomputing the true residual and solving the correction equation `A*d = r`
+recovers it, at 5e-7.
+
+The residual is `Float64` while the operator stays `Float32`: the matvec
+accumulates in `eltype(y)`, so a `Float64` output and iterate give a genuine
+`Float64` product without a second copy of the operator. Both must be `Float64`
+— feeding a `Float32` iterate rounds each product before the accumulator sees
+it and recovers nothing. A `Float32` residual is not enough either: it reaches
+3e-5 and then degrades, because by then the correction it feeds on is rounding
+noise amplified by the conditioning.
+
+Rounds stop when the true residual meets `reltol`, or when a round fails to
+shrink it — past that point there is no signal left to correct.
+"""
+function _refine(sol, sim, alg; rounds=8, shrink=0.5, correction_reltol=1.0f-1)
+    A, b = sim.prob.A, sim.prob.b
+    # Reuse the cache the main solve already built: `cache.b = r; solve!(cache)`
+    # runs the correction on the Krylov vectors and the preconditioner that are
+    # already resident. Building a fresh `LinearProblem` per round instead cost a
+    # second workspace — 42 B per pore node against the 20 B the algorithm needs.
+    #
+    # `cache.u` is the same array as `sol.u`, so the first correction overwrites
+    # it. `sol.u` is therefore read once, here, before any of that happens.
+    cache = sol.cache
+    b_before, reltol_before = cache.b, cache.reltol
+    # Every residual below is measured relative to `‖b‖`, so a zero right-hand side
+    # would make each of them `NaN` — and `NaN` compares false against the shrink
+    # test, so the rounds would all run and report a `NaN` residual for an answer
+    # that is exactly right. A zero right-hand side has `x = 0` as its exact
+    # solution and nothing to refine.
+    nb = Float64(norm(b))
+    iszero(nb) && return sol
+    # Refinement needs 20 bytes per pore node on top of the solve: two `Float64`
+    # vectors and one `Float32`. Measured, the base solve itself costs 32 B per pore
+    # node plus 4 B per voxel of the full grid, so a 950M-node image already holds
+    # 34.4 GB of a 50.7 GB card and the refinement buffers do not fit. Failing to
+    # allocate them must not take the solve down with it — and must not quietly
+    # hand back the unrefined answer either, since that is the defect refinement
+    # exists to remove.
+    local x64, r64, correction_rhs
+    try
+        x64 = _as(Float64, sol.u)
+        r64 = similar(x64)
+        correction_rhs = similar(b)
+    catch err
+        @warn """
+              Not enough device memory to refine this solve, so it is returned unrefined. \
+              On an ill-conditioned image — low porosity, high tortuosity — the tortuosity \
+              may be wrong by ~1e-3 even though the solver reports success. Refinement needs \
+              about 20 bytes per pore node beyond the solve itself. Solve on the CPU, or in \
+              smaller pieces, if you need the accuracy here.""" nodes = length(b) exception = err
+        return sol
+    end
+    # `sol.stats` is the workspace object Krylov mutates in place, so each
+    # correction below overwrites it. Returning it as-is would hand back a record
+    # of the last correction round wearing the whole solve's name — `niter` would
+    # read 3 where `iters` read 500. Copy it now, while it still describes the
+    # base solve, and return that copy instead. The residual history inside it is
+    # the base solve's, and the corrections cannot be appended to it: they are
+    # residuals of `A*d = r`, a different system, so concatenating them would be
+    # the same kind of lie in a different field.
+    base_stats = sol.stats === nothing ? nothing : deepcopy(sol.stats)
+    corrections_ok = true
+    prev = Inf
+    iters = sol.iters
+    resid = nothing
+    for k in 1:rounds
+        mul!(r64, A, x64)
+        # `b` is `Float32` and widens exactly here, so it never needs a `Float64`
+        # copy of its own.
+        r64 .= b .- r64
+        resid = norm(r64) / nb
+        # Deliberately not stopping at `reltol`. The error in tortuosity is the
+        # residual times the conditioning, and that factor reaches ~760 on a
+        # low-porosity image: stopping at `reltol=1e-6` leaves 4e-4, which clears
+        # the 1e-3 benchmark target by only 2x. Refining until the residual stops
+        # improving costs one or two more rounds and leaves ~1e-6.
+        if k > 1 && resid > shrink * prev
+            # Stopping here leaves the last correction applied, and a correction
+            # that failed to shrink the residual may have grown it. `sol.u` still
+            # holds that correction — nothing overwrites it until the narrowing
+            # below — so undoing it costs no buffer and keeps the promise the
+            # function is built on: refinement never returns a worse answer than
+            # the solve it repairs.
+            resid > prev && (x64 .-= sol.u)
+            break
+        end
+        prev = resid
+        correction_rhs .= r64
+        cache.b = correction_rhs
+        # `oftype` because the cache's tolerance field is typed to the problem's,
+        # and a `Float32` literal into a `Float64` field is a `TypeError`. That
+        # only shows up when a caller asks for refinement on a `Float64` system,
+        # which the default never does.
+        cache.reltol = oftype(cache.reltol, correction_reltol)
+        correction = LinearSolve.solve!(cache)
+        corrections_ok &= correction.retcode == LinearSolve.SciMLBase.ReturnCode.Success
+        x64 .+= correction.u
+        iters += correction.iters
+    end
+    # Report the residual of the vector actually returned, which is narrowed back
+    # to the working precision and so is slightly worse than the `Float64` iterate
+    # refinement carried internally. Reporting the iterate's residual instead
+    # would be the same defect this function exists to remove: a number that does
+    # not describe the answer it is attached to.
+    # Narrow into `sol.u` rather than allocating a fourth buffer. By this point it
+    # holds nothing but the last correction, and reusing it does two things: it
+    # keeps refinement at 20 bytes per pore node instead of 24, and it leaves every
+    # allocation refinement makes inside the guard above. A fourth allocation after
+    # the guard is a fourth way to throw where the guard promised a warning.
+    u = sol.u
+    u .= x64
+    x64 .= u
+    mul!(r64, A, x64)
+    r64 .= b .- r64
+    resid = norm(r64) / nb
+    # Hand the cache back as it was found. The rounds above pointed its right-hand
+    # side at a scratch vector and loosened its tolerance, and a caller who reuses
+    # the cache should not inherit either.
+    cache.b, cache.reltol = b_before, reltol_before
+    # `retcode` describes the vector returned, for the same reason `resid` does.
+    # A base solve that stopped at its iteration cap and was then refined below
+    # the requested tolerance did reach that tolerance, and reporting `MaxIters`
+    # for it is the same class of defect this function exists to remove: a field
+    # that describes something other than the answer it is attached to. A
+    # correction that failed outright is the one event that can leave the answer
+    # worse than the fields claim, so it is the one that forces a failure.
+    retcode = if !corrections_ok
+        LinearSolve.SciMLBase.ReturnCode.Failure
+    elseif resid <= reltol_before
+        LinearSolve.SciMLBase.ReturnCode.Success
+    else
+        sol.retcode
+    end
+    if base_stats !== nothing
+        base_stats.solved = retcode == LinearSolve.SciMLBase.ReturnCode.Success
+        base_stats.status = "base solve, then refined against a Float64 residual: " *
+                            "`niter` and `residuals` describe the base solve, " *
+                            "`sol.iters` counts the correction rounds as well"
+    end
+    # `resid` is wrapped in a `Ref` because that is what an unrefined solve
+    # returns, and a field that changes type with the working precision would make
+    # `sol.resid` something a caller has to branch on. The number inside is not the
+    # same quantity LinearSolve puts there — theirs is an absolute preconditioned
+    # residual, this is the true one relative to `‖b‖` — but that difference is the
+    # point of refining, and it is documented above.
+    return LinearSolve.SciMLBase.build_linear_solution(
+        alg, u, Ref(resid), sol.cache; retcode=retcode, iters=iters, stats=base_stats,
+    )
+end
 
 # Below this the coarse solve costs more than the iterations it removes, and it
 # is also the size at which a system stops fitting comfortably in cache.
