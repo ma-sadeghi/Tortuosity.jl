@@ -32,6 +32,7 @@ makedocs(;
             "Advanced Transient" => "tutorials/advanced_transient.md",
         ],
         "Imaginator" => "imaginator.md",
+        "Benchmarks" => "benchmark.md",
         "API Reference" => "api.md",
     ],
 )
