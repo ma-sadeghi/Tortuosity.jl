@@ -1,0 +1,29 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# The image store is regenerable and large — tens of gigabytes at the full grid.
+# The manifest is not: it records the SHA-256 of every image, which is what lets
+# a store rebuilt on another machine be checked identical rather than assumed so.
+# Excluded as `data/*` rather than `data/`, because git cannot re-include a file
+# whose parent directory is itself excluded.
+data/*
+!data/images/
+data/images/*
+!data/images/manifest.csv
+
+# The root .gitignore excludes every Manifest.toml, which is right for a package
+# and wrong here: this directory is an application, and pinning its exact
+# dependency versions is what lets a rented machine reproduce a measurement.
+!Manifest.toml
+
+# Regenerated from results/ by make_figures.py, which needs no GPU
+figures/
+logs/
+
+__pycache__/
+pumapy_log_*.txt
+
+# Working backups kept while re-measuring; not part of the published dataset
+results/**/*.bak-*
+results/**/*.april-oldmachine

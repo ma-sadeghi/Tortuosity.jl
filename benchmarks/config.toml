@@ -1,0 +1,124 @@
+# Single source of truth for the benchmark campaign.
+#
+# Read by both harnesses — Julia through the `TOML` stdlib, Python through
+# `tomllib` — so no grid, ladder or target is ever defined twice. Changing a
+# value here changes every stage at once; nothing below is duplicated in code.
+
+[campaign]
+# Which size grid the stages use when `--grid=` is not passed. `smoke` is the
+# validation grid: the same shapes as `full` divided by ten, so a complete
+# end-to-end run costs minutes instead of days and exercises every code path
+# before anything is deployed to a rented machine.
+grid = "full"
+# Transport direction. Images are trimmed of non-percolating pore clusters
+# along this axis, and every solve applies its Dirichlet faces across it.
+axis = "x"
+# Seeds the noise field every image is thresholded from. Fixed so that an image
+# regenerated on another machine is byte-identical; `data/images/manifest.csv`
+# records a SHA-256 per image so that identity is checked rather than assumed.
+seed = 42
+
+[grid]
+smoke = [20, 40, 60, 80, 100]
+full = [200, 400, 600, 800, 1000]
+
+[image]
+# Target pore fraction before non-percolating clusters are trimmed. The realised
+# porosity lands near but not on the target and is recorded per image; every
+# stage keys on the target so a case is identifiable without float matching.
+porosities = [0.2, 0.4, 0.6, 0.8, 0.95]
+# Feature size: `Imaginator.blobs` blurs with sigma = mean(shape)/40/blobiness,
+# so higher blobiness means finer features and longer transport paths. Sigma
+# scales with the domain, which keeps structures self-similar across the size
+# sweep — a 200³ and a 1000³ image at the same blobiness hold the same number of
+# blobs, so size sweeps measure scaling rather than a changing geometry.
+# 1.0 is the value every result before this campaign was measured at.
+blobinesses = [0.5, 1.0, 2.0]
+
+[reference]
+# Ground truth: a Float64 CPU solve, deliberately not on the GPU. GPU solves run
+# in Float32, whose epsilon (~1.2e-7) falls inside the error range being
+# measured, so a GPU reference could not resolve the errors it certifies.
+#
+# Do not loosen this. `reltol` bounds the residual and the error in the solution
+# is bounded by κ(A)·reltol with κ ~ N², so at N=400 a 1e-8 reference would admit
+# ~1.6e-3 error — larger than the 0.1% target it exists to certify.
+reltol = 1e-10
+# A reference is a value, not a timing, so its thread count cannot change the
+# answer and there is no fairness argument against using the whole machine.
+# Verified: threaded and unthreaded reference solves return identical τ.
+threads = "auto"
+
+[sweep]
+# A case stops climbing its ladder once the tortuosity is this close to ground
+# truth. Every rung is still written, so a looser target is answerable from the
+# same data without re-measuring.
+target_error = 1e-3
+repeats = 3
+# A first repeat slower than this abandons the remaining repeats: at the largest
+# sizes three passes buy less than they cost, and the median of one is the value
+# anyway. Rows measured this way carry `repeats = 1` and a NaN spread.
+repeat_threshold_s = 60
+# A rung slower than this abandons the rest of that case's ladder. Generous
+# because the alternative failure is silent: a case cut short records "never
+# reached the target" for what was really "ran out of patience", and that is
+# indistinguishable from a genuine failure to converge once it is in the CSV.
+timeout_s = 1800
+
+[sweep.ladder]
+# Both Krylov and SOR solvers are swept on iteration count rather than on a
+# tolerance. Tolerance samples an accuracy/time frontier badly at both ends —
+# the loosest settings all return τ ≈ 0 and the tightest can step straight past
+# the target in one rung — and taufactor only evaluates its own `conv_crit`
+# every 100 iterations, which puts the entire coarse-accuracy regime out of
+# reach. Capping iterations traces the frontier evenly and identically for every
+# tool that allows it.
+iters = { min = 1, max = 20000, count = 18 }
+# PuMA is the exception: its solver raises rather than returning a partial
+# result when it hits `maxiter`, so its frontier can only be traced through the
+# tolerance it was given.
+tolerance = { min = 0.5, max = 1e-7, count = 15 }
+puma_maxiter = 100000
+# Pinned small enough that the Krylov solver never exits on the residual, which
+# leaves the iteration cap as the only stopping rule. This alone does not achieve
+# that: LinearSolve defaults `abstol` to `sqrt(eps(T))` — 3.4e-4 in Float32 — and
+# that absolute floor ends the solve long before any relative tolerance matters,
+# whatever this is set to. `bench_tortuosity.jl` passes `abstol = 0` for exactly
+# that reason.
+iters_mode_reltol = 1e-12
+
+[memory]
+# Memory is measured by its own stage, never read off the timing sweeps. The two
+# questions want opposite things from a run: a timing must not be perturbed, so
+# it cannot afford a sampler; a memory reading needs one and does not care what
+# the sampling costs. Separating them is what lets each be measured properly.
+#
+# A fixed iteration count rather than a ladder — the footprint of a Krylov solve
+# is set when its workspace is allocated, not by how long it iterates, so one
+# short solve per case answers the question.
+iters = 100
+# Which structures to measure memory on, when no `--blobiness` is passed. Memory
+# tracks pore count, which at a fixed porosity barely moves with blobiness, so
+# the other structures would cost processes to re-measure the same curve. Every
+# memory figure is drawn at one structure for the same reason. Set this to the
+# full list in `[image]` to cover the whole grid.
+blobinesses = [1.0]
+# Host memory is the process resident set, sampled by a background thread, in
+# both languages. Sampling the same operating-system quantity on both sides is
+# what makes the Julia and Python figures comparable at all.
+sample_interval_ms = 10
+
+[cpu]
+# CPU measurements are not pinned. Every tool takes the machine the way a user
+# running it would, and every row records the thread count that run actually got.
+#
+# The earlier policy pinned all three to a single thread, and it was wrong in
+# both directions: it forced taufactor and PuMA down to one thread while Julia's
+# OpenBLAS quietly kept eight, and then recorded `cpu_threads = 1` for runs that
+# were nothing of the sort. What this campaign claims is a speedup, not an
+# algorithmic advantage, so a tool that parallelises better is entitled to the
+# result that follows from it — and one that does not is not protected from it.
+#
+# "auto" means each tool's own default: `-t auto` for Julia, torch's own pool for
+# taufactor, and whatever NumPy and SciPy size their BLAS to for PuMA.
+threads = "auto"

@@ -1,0 +1,57 @@
+[project]
+authors = [{name = "Amin Sadeghi", email = "amin.sadeghi@live.com"}]
+dependencies = []
+name = "benchmarks"
+requires-python = ">= 3.11"
+version = "0.1.0"
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64"]
+
+[tool.pixi.dependencies]
+python = "3.11.*"
+puma = ">=3.2"
+h5py = "*"
+numpy = "<2"
+
+[tool.pixi.pypi-dependencies]
+# Editable, because the campaign depends on patches to this fork and a
+# non-editable install fails silently: `pixi install` resolves a path dependency
+# by version rather than by source content, so it leaves the previously built
+# copy in site-packages and the benchmark reports numbers for code nobody edited.
+#
+# This is why the submodule is checked out under `vendor/` rather than beside the
+# scripts. `benchmarks/` is `sys.path[0]` when they run, so a checkout at
+# `benchmarks/taufactor/` is found there first — and although it has no
+# `__init__.py`, `PathFinder` still returns it as a PEP 420 namespace package,
+# which counts as a successful import. `import taufactor` then yields a module
+# with no `Solver`, and the editable install's finder, appended to
+# `sys.meta_path` behind `PathFinder`, is never consulted. Under `vendor/` there
+# is nothing on the import path to collide with.
+taufactor = { path = "./vendor/taufactor", editable = true }
+torch = { version = "*", index = "https://download.pytorch.org/whl/cu128" }
+loguru = "*"
+scipy = "*"
+pandas = "*"
+matplotlib = "*"
+# Resident-set sampling for the memory stage. Declared rather than relied on as
+# a transitive dependency: it is the only way the Python side measures host
+# memory, and PuMA's solver allocates in C where a Python-level tracer sees
+# nothing.
+psutil = "*"
+
+[tool.pixi.tasks]
+
+# torch is installed from the PyTorch wheel index rather than from conda-forge,
+# and it links the *system* libstdc++. Importing it first pins that library into
+# the process, so anything the conda environment loads afterwards that needs a
+# newer CXXABI fails to resolve — on Ubuntu 22.04 the system library stops at
+# CXXABI_1.3.13 while the environment's `libicui18n` requires 1.3.15. taufactor
+# reaches that path through IPython and sqlite3, which is why importing torch and
+# taufactor together used to abort.
+#
+# Putting the environment's own lib directory ahead of the system one makes the
+# newer libstdc++ win. Linux only: the variable means nothing on Windows.
+[tool.pixi.target.linux-64.activation.env]
+LD_LIBRARY_PATH = "$CONDA_PREFIX/lib"

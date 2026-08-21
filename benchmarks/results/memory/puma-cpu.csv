@@ -1,0 +1,6 @@
+tool,device,variant,cpu_threads,case_id,size,blobiness,porosity_target,porosity,nnodes,iters,time_s,peak_rss_bytes,baseline_rss_bytes,peak_device_bytes,pool_device_bytes,status,host,measured_at,note
+puma,cpu,fv-cg,16,n200_b100_p020,200,1,0.2,0.171209,1369672,0,13.9662007,1601654784,265031680,0,0,ok,pmeal-hpc,2026-08-11T13:50:03,
+puma,cpu,fv-cg,16,n200_b100_p040,200,1,0.4,0.399225,3193802,0,18.91117834,1601728512,265236480,0,0,ok,pmeal-hpc,2026-08-11T13:50:24,
+puma,cpu,fv-cg,16,n200_b100_p060,200,1,0.6,0.603465,4827722,0,17.47158803,1601654784,265097216,0,0,ok,pmeal-hpc,2026-08-11T13:50:43,
+puma,cpu,fv-cg,16,n200_b100_p080,200,1,0.8,0.80445,6435598,0,14.27857545,1601269760,264777728,0,0,ok,pmeal-hpc,2026-08-11T13:51:00,
+puma,cpu,fv-cg,16,n200_b100_p095,200,1,0.95,0.949833,7598661,0,6.982219296,1601658880,265101312,0,0,ok,pmeal-hpc,2026-08-11T13:51:08,

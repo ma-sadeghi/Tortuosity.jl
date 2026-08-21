@@ -1,0 +1,4 @@
+[submodule "benchmarks/taufactor"]
+	path = benchmarks/vendor/taufactor
+	url = https://github.com/ma-sadeghi/taufactor.git
+	branch = node-centered-bc
