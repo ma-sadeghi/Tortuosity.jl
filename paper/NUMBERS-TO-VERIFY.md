@@ -615,10 +615,25 @@ The core-occupancy claim — "our CPU path occupies about two cores and PuMA abo
 - The assembled path widens `Int32`→`Int64` rather than refusing (`src/assembly.jl:191`, commit `ab63e7f`). The paper previously claimed the opposite in four places.
 - The restriction is now a fixed-order gather (`src/preconditioner.jl`, `Aggregation`). Atomics remain in the once-per-solve coarse-operator assembly, which is why the paper does not claim bit-reproducibility.
 
-## Still open, needs Amin
+## Closed 2026-08-21
 
-- **How to report memory now that the GPU path refines.** Refinement adds a flat 20 B per pore node, which flips the taufactor memory comparison from three of five porosities to two of five, at every size. It is unnecessary at exactly the porosities where it costs the comparison. See "The refinement fix dents a memory claim" above for the measured table and a recommendation.
-- **The "four of five porosities" sentence is wrong today**, independently of any of this: it holds at $200^3$ only, and is three of five at $400^3$, $600^3$ and $800^3$.
-- **Submission date** in the YAML header currently reads 17 August 2026.
+Every item below was open at the start of the day and is now settled in `paper.md`.
+
+- **Memory reporting.** Decided: the figure reports the solve, and refinement's cost is stated as the constant it is -- 20 bytes per pore node. Refinement is needed on ill-conditioned low-porosity images and unnecessary at $\varepsilon \ge 0.6$, which is exactly where it would have cost the comparison, so reporting it separately describes the tool rather than flattering it.
+- **The "four of five porosities" sentence.** Now scoped: four of five at $200^3$, three of five from $400^3$ up, with taufactor's flat 28.06 bytes per voxel given as the reason.
+- **The margin does not widen without bound.** Replaced with the measured curve on a fixed case set -- $1.1\times$, $4.6\times$, $8.2\times$, $8.4\times$ -- and the mechanism restated as the iteration-count difference being largely spent by $600^3$.
+- **Iteration counts.** Replaced with $L^{0.91}$ against $L^{0.13}$ and counts from `results/`, at a porosity the campaign contains.
+- **Operator agreement.** Was "within $2\times10^{-4}$", measured at $5\times10^{-5}$ typical and $1\times10^{-3}$ worst over 59 paired cases.
+- **Three restated numbers were also wrong** and are corrected: GPU against our own CPU path was $36\times$ and is $21\times$; the PuMA comparison was $15\times$ and is $31\times$; the matrix-free memory saving was "2.1 to 2.7" and is $1.8\times$, ranging 1.5 to 2.4.
+- **Core occupancy, re-sampled on the benchmark host.** The old claim -- ours about two cores, PuMA about one -- was wrong in both directions and in the direction that understated us. Measured: PuMA 6.4 of 8 cores, ours 5.5. The comparison is close to core-matched, so the caveat becomes a statement that removes a doubt rather than raising one. Raw data in `results/core-occupancy*.json`.
+- **PuMA above $200^3$.** Not run, by decision: a single $200^3$ case takes nineteen minutes and the larger sizes were prohibitive. The paper now says so plainly instead of implying the larger images were attempted and missed.
+- **Figures.** All regenerated from the current results. The two memory figures are now grouped bar charts rather than five overlapping log-log lines, a value a tool never measured is drawn hatched and labelled "projected, not measured", and a case that ran and exhausted the card is drawn differently again and labelled "exhausted the device" -- projecting over an out-of-memory case would replace the result with a guess at the number the result makes impossible.
+- **Submission date** set to 21 August 2026.
+- **taufactor fork disclosure** rewritten: two patches, 13 lines and 46, described by what each does, with the submodule pin named as the way to recover the exact code measured.
+
+## Still open
+
 - **Zenodo DOI** is a post-review step, not a submission prerequisite. Confirmed against the JOSS review process: "Upon successful completion of the review, authors will make a tagged release ... get a DOI for the archive". Nothing to do now.
-- **Figures** `benchmark_summary.png` and `benchmark_memory_gpu.png` are the old ones and must be regenerated from the new results.
+- **taufactor has no CPU data at $1000^3$, and none at $800^3$ for $\varepsilon = 0.2$.** The three $800^3$ cases were excluded from the sweep that ran and the dedicated follow-up run that covered them at $600^3$ never happened -- a sequencing gap, not a decision. Filling it is not worth it: the worst $600^3$ CPU case took 6.02 h, projecting to roughly 19 h per case at $800^3$, and one of the three $600^3$ equivalents exhausted the ladder without reaching the target at all. Roughly fifty hours to produce three non-results. The memory figure projects taufactor's $1000^3$ CPU footprint instead, which its flat 60.0 bytes per voxel across four sizes makes arithmetic rather than speculation.
+- **A time projection for taufactor CPU at $1000^3$ is not defensible** the way the memory one is. taufactor's sweep count to target is not monotonic in size -- `b050_p095` runs 106, 59, 339, 339, 607 across the five sizes -- so a per-case time extrapolation carries an error bar wide enough to be worthless. The memory projection rests on a quantity that varies by 1% across four sizes; the time does not have an equivalent.
+
