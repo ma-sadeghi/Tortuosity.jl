@@ -13,6 +13,7 @@ using Tortuosity
 using Tortuosity:
     PortableSparseCSC,
     _build_connectivity_list_ka,
+    _warn_nonpercolating,
     fit_voxel_diffusivity,
     flux,
     reconstruct_field,
@@ -96,6 +97,45 @@ end
         )
     end
 
+    @testset "above ~50M voxels the check is skipped rather than run" begin
+        # The automatic choice is by size, because the check labels connected
+        # components over the full grid and that allocates an `Int` array the
+        # shape of the image — 512 MB at 400³, several GB at 800³, at the moment
+        # the solve is about to need all of it. Only the "check" side of that
+        # branch is reachable through `SteadyDiffusionProblem`; assembling a
+        # 64M-voxel system to reach the other side is not, so this drives
+        # `_warn_nonpercolating` directly.
+        #
+        # Not skipped, and it does not need to be: a `BitArray` of 64M voxels is
+        # 7.6 MiB, and the guard returns before touching it. Measured on this
+        # machine: 0 bytes allocated, 3.6 µs.
+        big = falses(400, 400, 400)
+        big[:, 100:102, 100:102] .= true      # a duct spanning :x
+        big[200:205, 300, 300] .= true        # …and stranded volume beside it
+        @test length(big) > 50_000_000
+
+        # Silence alone would also be what a *clean* image produces, so the
+        # load-bearing assertion is that no work happened at all: a real check
+        # over 64M voxels cannot come in under a few bytes. Bounded rather than
+        # compared to zero because `@allocated` differences `gc_bytes()`, which
+        # sums every thread's counter: a background task allocating during the
+        # measurement would fail an exact zero without the guard having run.
+        @test_logs _warn_nonpercolating(big, :x, nothing)
+        _warn_nonpercolating(big, :x, nothing)                  # warm
+        @test (@allocated _warn_nonpercolating(big, :x, nothing)) < 4096
+
+        # …and the image really does have something to warn about, so the
+        # silence above is the guard rather than the geometry. This is the
+        # expensive half — 625 MiB and 0.36 s, an order of magnitude under a
+        # GitHub-hosted runner's 7 GB — and it is what stops a fixture edit from
+        # quietly making the testset vacuous.
+        @test_logs (:warn,) match_mode = :any _warn_nonpercolating(big, :x, true)
+
+        # `false` skips below the threshold too, which is the keyword's whole
+        # purpose on an image small enough to be checked automatically.
+        @test_logs _warn_nonpercolating(img, :x, false)
+    end
+
     @testset "the warning changes nothing about the assembled system" begin
         quiet = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
         loud = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=true)
@@ -163,6 +203,24 @@ end
     @testset "reconstruct_field requires the vector length to match the mask" begin
         @test_throws AssertionError reconstruct_field(rand(count(prob.img) + 1), prob.img)
         @test_throws AssertionError reconstruct_field(rand(count(prob.img) - 1), prob.img)
+    end
+
+    @testset "a diffusivity field handed to τ must line up with the mask" begin
+        # `_reference_diffusivity` reduces over `eachindex(img, D)` rather than
+        # materialising `D[img]`, and the shape agreement it checks is the one
+        # logical indexing used to give for free. Without it a mismatched field
+        # reads the wrong voxels and returns a plausible D0 — the reference the
+        # whole of τ is measured against.
+        img = ones(Bool, 6, 5, 4)
+        c = reconstruct_field(
+            solve(SteadyDiffusionProblem(img; axis=:x, gpu=false).prob,
+                  KrylovJL_CG(); reltol=1e-10).u, img,
+        )
+        @test_throws DimensionMismatch tortuosity(c, img; axis=:x, D=ones(6, 5, 5))
+        # Same element count, different shape: the one case a length check alone
+        # would let through.
+        @test_throws DimensionMismatch tortuosity(c, img; axis=:x, D=ones(5, 6, 4))
+        @test_throws DimensionMismatch formation_factor(c, img; axis=:x, D=ones(5, 6, 4))
     end
 end
 

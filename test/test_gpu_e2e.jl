@@ -19,7 +19,14 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruc
 # Steady-state
 # ---------------------------------------------------------------------------
 
-@testset "open space $(n)^3 · axis=$(ax)" for n in (16, 24), ax in (:x, :y, :z)
+# The small sizes are a regression guard, not padding: small-box GPU runs once
+# produced τ ≈ 0.73 instead of 1.0 on Metal because histogram_connections_kernel!
+# interleaved a per-bucket atomic with a shared-counter atomic, and the latter
+# silently lost updates under contention. The undercount only matters in absolute
+# terms (~24 missing entries in the connectivity list), so 16³ and 24³ absorbed
+# it within atol=1e-3 — it only became visible once the box was small enough that
+# 24 lost edges was a meaningful fraction of the total.
+@testset "open space $(n)^3 · axis=$(ax)" for n in (4, 6, 16, 24), ax in (:x, :y, :z)
     img = ones(Bool, n, n, n)
     sim = SteadyDiffusionProblem(img; axis=ax, gpu=true)
 
@@ -28,23 +35,6 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruc
     @test sim.img isa Array{Bool,3}
     @test sim.prob.A isa PortableSparseCSC
 
-    sol = solve(sim.prob, KrylovJL_CG(); reltol=1.0f-6)
-    c_grid = reconstruct_field(sol.u, sim.img)
-    @test tortuosity(c_grid, sim.img; axis=ax) ≈ 1.0 atol = 1e-3
-end
-
-# Regression: small-box GPU runs once produced τ ≈ 0.73 instead of 1.0 on
-# Metal because histogram_connections_kernel! interleaved a per-bucket atomic
-# with a shared-counter atomic, and the latter silently lost updates under
-# contention. The undercount only matters in absolute terms (~24 missing
-# entries in the connectivity list), so the existing 16³/24³ tests above
-# absorbed it within atol=1e-3 — the bug only became visible once the box
-# was small enough that 24 lost edges was a meaningful fraction of total.
-@testset "open space $(n)^3 (small-box atomic regression) · axis=$(ax)" for n in (4, 6),
-    ax in (:x, :y, :z)
-
-    img = ones(Bool, n, n, n)
-    sim = SteadyDiffusionProblem(img; axis=ax, gpu=true)
     sol = solve(sim.prob, KrylovJL_CG(); reltol=1.0f-6)
     c_grid = reconstruct_field(sol.u, sim.img)
     @test tortuosity(c_grid, sim.img; axis=ax) ≈ 1.0 atol = 1e-3
@@ -59,6 +49,42 @@ end
     # Half the cross-section blocked: τ = 1 (no tortuous path), FF = 2.
     @test tortuosity(c_grid, sim.img; axis=:x) ≈ 1.0 atol = 1e-3
     @test formation_factor(c_grid, sim.img; axis=:x) ≈ 2.0 atol = 1e-3
+end
+
+@testset "reconstruct_field copies a device mask even behind a wrapper" begin
+    # `reconstruct_field` decides whether to copy the mask by asking whether it
+    # is host-indexable (`isa Union{Array,BitArray}`), not by asking `_on_gpu`.
+    # The difference only shows up here: a device array behind a
+    # `PermutedDimsArray` reports `_on_gpu == false`, so an `_on_gpu`-based guard
+    # would hand it straight to the logical index and iterate it one voxel at a
+    # time from the host. That is not a wrong answer — it is the right answer at
+    # 512M device round-trips on an 800³ image — so a value check cannot see it
+    # and this asserts the absence of scalar indexing instead.
+    mask = Bool[true false true; false true true; true true false]
+    dev = _gpu_adapt[](mask)
+    wrapped = PermutedDimsArray(dev, (2, 1))
+    u = collect(1.0:count(mask))
+
+    # The trap, stated: the wrapper hides the device array from `_on_gpu`.
+    @test !_on_gpu(wrapped)
+    @test !(wrapped isa Union{Array,BitArray})
+
+    # GPUArraysCore is what every backend routes scalar indexing through, and
+    # `ScalarDisallowed` turns a scalar read into an error instead of a warning.
+    # Reached by UUID rather than by `using`, so this stays backend-agnostic and
+    # needs no new test dependency.
+    gac = Base.loaded_modules[Base.PkgId(
+        Base.UUID("46192b85-c4d5-4398-a991-12ede77f4527"), "GPUArraysCore",
+    )]
+    # `task_local_storage(f, key, value)` scopes the setting to the call, so
+    # nothing here leaks into the rest of the suite.
+    no_scalar(f) = task_local_storage(f, :ScalarIndexing, gac.ScalarDisallowed)
+
+    # `isequal`, not `==`: solid voxels come back as NaN.
+    @test isequal(no_scalar(() -> reconstruct_field(u, dev)),
+                  reconstruct_field(u, mask))
+    @test isequal(no_scalar(() -> reconstruct_field(u, wrapped)),
+                  reconstruct_field(u, permutedims(mask, (2, 1))))
 end
 
 @testset "CPU/GPU parity on blobs (seed=$(seed))" for seed in (1, 42, 100)
@@ -121,7 +147,11 @@ end
           effective_diffusivity(c_cpu, img; axis=:x, D=2.0) rtol = 1e-4
 end
 
-@testset "the preconditioner returns the same bits every time (seed=$(seed))" for seed in (1, 42)
+@testset "the preconditioner returns the same bits every time" begin
+    # One image, deliberately: bit-determinism is a property of the reduction,
+    # not of the geometry, and the second 48³ blob this used to run is
+    # statistically the same image at three seconds of device time.
+    #
     # Regression guard. `_restrict_kernel!` used to sum each coarse cell's fine
     # values with an atomic, and thread-block arrival order is not fixed between
     # launches, so the non-associative float sum gave a different coarse
@@ -134,9 +164,9 @@ end
     # is exact rather than approximate. A tolerance would not express the
     # property and would pass at this size even with the atomic back.
     img = Array{Bool}(
-        Imaginator.blobs(; shape=(48, 48, 48), porosity=0.55f0, blobiness=1, seed=seed)
+        Imaginator.blobs(; shape=(48, 48, 48), porosity=0.55f0, blobiness=1, seed=1)
     )
-    (any(img[1, :, :]) && any(img[end, :, :])) || return
+    @test any(img[1, :, :]) && any(img[end, :, :])
 
     sim = SteadyDiffusionProblem(img; axis=:x, gpu=true, warn_nonpercolating=false)
     Pl = Tortuosity.two_level_preconditioner(sim; block=8)

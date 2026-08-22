@@ -144,12 +144,23 @@ end
     @testset "Dirichlet zeroes only the boundary rows" begin
         insulated = TransientDiffusionProblem(img; axis=:z, bc_inlet=nothing, bc_outlet=nothing, gpu=false)
         clamped = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false)
-        bc = union(find_boundary_nodes(clamped.img, :bottom), find_boundary_nodes(clamped.img, :top))
+        inlet = find_boundary_nodes(clamped.img, :bottom)
+        outlet = find_boundary_nodes(clamped.img, :top)
+        bc = union(inlet, outlet)
         free = setdiff(1:count(clamped.img), bc)
         A_ins = Array(insulated.A)
         A_bc = Array(clamped.A)
         @test all(iszero, A_bc[bc, :])
         @test A_bc[free, :] ≈ A_ins[free, :]
+
+        # An insulated face is a *free* face, not a clamped one: zeroing its rows
+        # too would look like a working solve while pinning the outlet at its
+        # initial value instead of letting it accumulate.
+        half = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false)
+        A_half = Array(half.A)
+        @test all(iszero, A_half[inlet, :])
+        @test all(!iszero, sum(abs, A_half[outlet, :]; dims=2))
+        @test A_half[outlet, :] ≈ A_ins[outlet, :]
     end
 
     @testset "operator entries scale as 1/voxel_size²" begin

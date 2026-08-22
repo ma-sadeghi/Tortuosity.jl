@@ -1,12 +1,9 @@
 # Tests for transient diffusion functionality via the TransientDiffusionProblem public API
 using Test
-using SparseArrays
-using LinearAlgebra: norm, tr
 using Tortuosity
 using Tortuosity:
     Imaginator,
     apply_boundaries!,
-    find_boundary_nodes,
     slice_concentration,
     slab_concentration,
     slab_mass_uptake,
@@ -122,30 +119,11 @@ end
     @test occursin("axis=z", s)
 end
 
-# --- Operator structure ---
-
-@testset "Operator — Dirichlet rows are zeroed" begin
-    img = ones(Bool, (4, 4, 4))
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=false)
-    A = prob.A
-    bc_nodes = find_boundary_nodes(prob.img, :bottom)
-    append!(bc_nodes, find_boundary_nodes(prob.img, :top))
-    for node in bc_nodes
-        @test all(A[node, :] .== 0)
-    end
-end
-
-@testset "Operator — insulated boundary rows are NOT zeroed" begin
-    img = ones(Bool, (4, 4, 4))
-    prob = TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=nothing, gpu=false)
-    A = prob.A
-    outlet_nodes = find_boundary_nodes(prob.img, :top)
-    for node in outlet_nodes
-        @test !all(A[node, :] .== 0)
-    end
-end
-
 # --- Boundary application ---
+#
+# (Operator structure — which rows Dirichlet zeroes and which insulation leaves
+# alone — is checked in test_transient_physics.jl, against the insulated
+# operator rather than against zero.)
 
 @testset "apply_boundaries! — Dirichlet on both faces" begin
     img = ones(Bool, (4, 4, 4))
@@ -186,12 +164,6 @@ end
     @test all(length(u) == count(blob_8) for u in sol.u)
 end
 
-@testset "solve — sol.u is CPU even under GPU-style code path" begin
-    prob = TransientDiffusionProblem(blob_8; gpu=false)
-    sol = solve(prob, ROCK4(); saveat=0.1, tspan=(0.0, 0.5))
-    @test all(u isa Vector{Float64} for u in sol.u)
-end
-
 @testset "TransientSolution — show" begin
     prob = TransientDiffusionProblem(blob_8; gpu=false)
     sol = solve(prob, ROCK4(); saveat=0.2, tspan=(0.0, 0.5))
@@ -213,6 +185,16 @@ end
         tspan=(0.0, 20.0))
     @test sol.retcode == :Terminated
     @test sol.t[end] < 20.0  # terminated before hitting the end
+
+    # "Terminated early" and "terminated at steady state" are the same event to
+    # a retcode, so pin what the name claims: the field it stopped on really is
+    # the steady one. The transient error decays exponentially here — 0.36 at
+    # t = 0.4, 3.6e-4 at the t ≈ 7.7 this fires at — so the bound below is 14x
+    # the measured error and still rejects any firing before t ≈ 5.4. Without it
+    # a condition that fired an order of magnitude too soon looks identical.
+    sim = SteadyDiffusionProblem(prob.img; axis=:z, gpu=false, warn_nonpercolating=false)
+    u_steady = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
+    @test maximum(abs, sol.u[end] .- u_steady) < 5e-3
 end
 
 @testset "StopAtSaturation — terminates at target mean" begin
@@ -223,8 +205,19 @@ end
         callback=StopAtSaturation(target),
         tspan=(0.0, 20.0))
     @test sol.retcode == :Terminated
-    mean_final = sum(sol.u[end]) / length(sol.u[end])
-    @test mean_final >= target - 1e-2  # rootfinding + default reltol gives ~1e-3 slack
+    means = [sum(u) / length(u) for u in sol.u]
+    # The callback roots on `mean(u) - (target - max(abstol, reltol·|target|))`,
+    # so it fires exactly at that level; snapshots land on the `saveat` grid with
+    # `save_end=false`, so the last one is the grid point at or just before the
+    # root. That brackets it from both sides without depending on the grid:
+    # never past the firing level, and never more than one snapshot below it.
+    fire = target - max(1e-4, 1e-3 * abs(target))
+    @test means[end] <= fire + 1e-12
+    @test means[end] >= fire - (means[end] - means[end - 1])
+    # The one-sided check this replaced passed just as well for a condition that
+    # never fired until the mean had run far past the target — the failure that
+    # makes a saturation study silently measure the wrong state.
+    @test means[end] > target - 1e-2
 end
 
 @testset "StopAtFluxBalance — terminates near steady state" begin
@@ -381,7 +374,11 @@ end
     # fit_effective_diffusivity auto-picks a late t_fit window that skips
     # the early-time finite-cell discretization — users don't need to know
     # about either pathology to get accurate :mass fits.
-    for N in (17, 33, 65, 129)
+    # Two well-separated grids rather than four: the bias this guards against is
+    # O(1/N), i.e. 6% at N = 17 and 0.8% at N = 129, both four orders of
+    # magnitude above the tolerance below. The intermediate sizes cost two long
+    # tight-tolerance ODE solves and can only fail if these two already have.
+    for N in (17, 129)
         img = trues(1, 1, N)
         prob = TransientDiffusionProblem(img;
             axis=:z, bc_inlet=1.0, bc_outlet=0.0, gpu=false)

@@ -158,6 +158,32 @@ end
         @test isequal(reconstruct_field(u, dense), reconstruct_field(u, img))
     end
 
+    @testset "a mask behind a wrapper numbers its pores the wrapper's way" begin
+        # `PermutedDimsArray` is how a caller transports along a different axis
+        # without copying the image, so it reaches every entry point. The pore
+        # ordinals are the column-major order of whatever mask was handed in, so
+        # the wrapper's answer must match the *materialised permutation's* — not
+        # a permutation of the original's, which is a different numbering.
+        dense = Array(img)
+        for perm in ((2, 1, 3), (3, 1, 2))
+            wrapped = PermutedDimsArray(dense, perm)
+            materialised = permutedims(dense, perm)
+            @test !(wrapped isa Union{Array,BitArray})   # really is a wrapper
+            @test wrapped == materialised
+            @test isequal(reconstruct_field(u, wrapped),
+                          reconstruct_field(u, materialised))
+        end
+
+        # A `SubArray` over the whole parent is the same mask, so it must give
+        # the same field; a strict sub-block is a smaller one, and the length
+        # assertion is what stops a caller pairing it with the parent's vector.
+        @test isequal(reconstruct_field(u, view(dense, :, :, :)),
+                      reconstruct_field(u, dense))
+        block = view(dense, 1:3, 1:4, 1:2)
+        @test_throws AssertionError reconstruct_field(u, block)
+        @test size(reconstruct_field(ones(count(block)), block)) == size(block)
+    end
+
     @testset "reconstruct_slice matches a slice of reconstruct_field" begin
         # Two independent reconstruction routes; the slice version exists purely
         # to avoid materialising the full grid, so it must agree exactly.

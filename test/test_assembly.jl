@@ -143,8 +143,10 @@ end
     @testset "is the harmonic mean of the two node values" begin
         a, b = D[conns[:, 1]], D[conns[:, 2]]
         @test g ≈ @. 2 * a * b / (a + b)
-        # The docstring justifies the simplified form as bit-equivalent to the
-        # literal two-half-cell-resistors-in-series expression. Pin that claim.
+        # The simplified form is the two-half-cell-resistors-in-series expression
+        # the docstring derives it from — algebraically equal, and equal to
+        # rounding here. It is deliberately not asserted bit-identical; the
+        # Float32 testset below bounds how far the two may drift.
         @test g ≈ @. 1 / (1 / (2a) + 1 / (2b))
     end
 
@@ -314,6 +316,28 @@ end
         sim2 = SteadyDiffusionProblem(img; axis=:x, gpu=false)
         @test sim2.prob.A == A
         @test sim2.prob.b == b
+    end
+end
+
+@testset "construction and solving leave the caller's arrays untouched" begin
+    # `sim.img` aliases the mask the caller handed in — the struct deliberately
+    # does not copy it — so any in-place step in assembly would silently rewrite
+    # the user's image, and every later `tortuosity(c, img)` would be measured
+    # against the wrong geometry. The pore numbering is built with `cumsum!` into
+    # a fresh array and masked in place, which is one edit away from being done
+    # on `img` itself.
+    img = Array{Bool}(Imaginator.blobs(; shape=(12, 12, 12), porosity=0.6, blobiness=1, seed=3))
+    D = zeros(size(img))
+    D[img] .= 1.5
+    img_before, D_before = copy(img), copy(D)
+
+    for matrixfree in (false, true)
+        sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=D, matrixfree=matrixfree,
+                                     warn_nonpercolating=false)
+        solve(sim.prob, KrylovJL_CG(); reltol=1e-10)
+        @test img == img_before
+        @test D == D_before
+        @test sim.img === img          # aliased, hence the check above
     end
 end
 
@@ -501,6 +525,55 @@ end
 
     # The wrap the bound exists to prevent.
     @test Int32(typemax(Int32)) + Int32(1) == typemin(Int32)
+end
+
+# The assertion someone with the machine for it would write, kept here as the
+# executable statement of what the predicates above stand in for. It is never
+# run: `@test_skip` records it Broken without evaluating it, so it costs nothing
+# and cannot turn the suite red.
+#
+# Why it is skipped rather than sized down: the widening rule keys off
+# `7 * nnodes + 1 > typemax(Int32)`, i.e. 306,783,378 pore voxels — about 800³
+# at ε = 0.6. Holding one costs 512 MB for the mask, 1.2 GB for the grid index
+# array, and 24.4 GB for the `Int64` matrix itself, before the solver allocates
+# a single Krylov vector, and roughly 36 GB once it has. There is no smaller
+# image that reaches the branch, because the branch is a function of the pore
+# count alone.
+#
+# `Ti=Int64` forced at a tractable size is the nearest thing the suite can run,
+# and it does — "Ti=Int64 changes the index width and nothing else" above pins
+# that the wide build is the narrow one widened, entry for entry. What that
+# cannot reach is the *automatic* widening: an image that selects `Int64` on its
+# own, where a mis-stated bound would let `Int32` through and every offset would
+# wrap to negative under `@inbounds`.
+function _automatic_wide_index_path_holds()
+    # ε = 0.65, not the 0.6 the bound sits at: `blobs` lands a few tenths of a
+    # percent under its target porosity, and at 0.6 an 800³ image comes out just
+    # below 306,783,378 pore voxels — the guard below would fire instead of the
+    # branch this exists to exercise.
+    img = Array{Bool}(Imaginator.blobs(; shape=(800, 800, 800), porosity=0.65, blobiness=1, seed=1))
+    count(img) > fld(typemax(Int32) - 1, 7) || error("fixture does not reach the bound")
+
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+    # Nobody asked for `Int64`; the image itself is what selects it. Comparing
+    # against a `Ti=Int64`-forced build would prove nothing here — past the bound
+    # `Int32` is refused outright, so both builds are the same code path, and the
+    # second one costs another 24.4 GB to say so.
+    eltype(SparseArrays.getcolptr(sim.prob.A)) === Int64 || return false
+    # Every offset ascends, which is the property the bound exists to keep: a
+    # wrapped `accumulate(+, counts)` goes negative, and `_steady_fill_kernel!`
+    # then writes through `@inbounds` off the end of arrays sized from the
+    # wrapped count.
+    issorted(SparseArrays.getcolptr(sim.prob.A)) || return false
+
+    c = reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1e-10).u, img)
+    return tortuosity(c, img; axis=:x) > 1
+end
+
+@testset "the automatic 64-bit index path, end to end" begin
+    # Needs ~26 GB before the solver allocates, ~36 GB with its Krylov vectors.
+    # Skipped unconditionally — see above.
+    @test_skip _automatic_wide_index_path_holds()
 end
 
 @testset "the Ti keyword is honoured or refused, never ignored" begin

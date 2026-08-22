@@ -84,6 +84,23 @@ end
 
 const PARITY_IMAGES = parity_fixtures()
 
+# Most testsets below skip a fixture that has no pore voxels on both `:x` faces,
+# or fewer than four nodes, because the Dirichlet cases they compare would be
+# empty. A fixture list that stopped satisfying either would empty those loops
+# silently and look exactly like a passing run — which is the reason case 8
+# counts what it checked. Assert the precondition once here instead of eight
+# times below.
+@testset "every parity fixture reaches both Dirichlet faces" begin
+    for (label, img) in PARITY_IMAGES
+        @testset "$(label)" begin
+            @test any(img[1, :, :])
+            @test any(img[end, :, :])
+            @test count(img) >= 4
+            @test size(_build_connectivity_list_cpu(img), 1) > 0
+        end
+    end
+end
+
 function build_laplacian_cpu(img::AbstractArray{Bool,3})
     conns = _build_connectivity_list_cpu(img)
     nnodes = count(img)

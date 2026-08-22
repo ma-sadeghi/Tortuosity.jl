@@ -127,6 +127,12 @@ end
 # --- Right-hand side ---
 
 @testset "RHS parity: b matches build_steady_system on device" begin
+    # Each entry is a sum of edge weights taken in `_NEIGHBOURS` order by a
+    # single thread in both paths, so the device reduction has no order to vary
+    # and `==` holds. Both claims are asserted on the same pair of builds: the
+    # tolerance one is what the physics needs, the equality one is what the
+    # shared per-thread summation buys, so a future kernel reordering shows up
+    # as a rounding-level change rather than as a bare failure.
     for (label, img) in matrixfree_gpu_images
         nnodes = count(img)
         d_img = CuArray(img)
@@ -140,28 +146,6 @@ end
                 @test eltype(b_mf) === eltype(b_asm) === Float32
                 @test length(b_mf) == nnodes
                 @test isapprox(Array(b_mf), Array(b_asm); rtol=1e-6)
-                release!(b_asm, b_mf)
-            end
-        end
-        release!(d_img, D_dev)
-    end
-end
-
-@testset "RHS parity: b is bit-identical to the assembled one on device" begin
-    # Each entry is a sum of edge weights taken in `_NEIGHBOURS` order by a
-    # single thread in both paths, so the device reduction has no order to vary
-    # and `==` holds. Split from the tolerance testset above so that a future
-    # kernel reordering shows up as a rounding-level change, not a failure.
-    for (label, img) in matrixfree_gpu_images
-        nnodes = count(img)
-        d_img = CuArray(img)
-        D_dev = device_diffusivity(img)
-        for (dlabel, D) in (("uniform D", nothing), ("variable D", D_dev)),
-            axis in (:x, :y, :z)
-
-            @testset "$(label) — $(dlabel) — axis=$(axis)" begin
-                _, b_asm = build_steady_system(d_img; nnodes=nnodes, axis=axis, D=D, T=Float32)
-                _, b_mf = build_steady_operator(d_img; nnodes=nnodes, axis=axis, D=D, T=Float32)
                 @test Array(b_mf) == Array(b_asm)
                 release!(b_asm, b_mf)
             end

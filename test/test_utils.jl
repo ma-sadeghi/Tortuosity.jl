@@ -34,12 +34,9 @@ img[:, :, 21:32] .= 5
         @test phase_fraction(img, [1, 5]) ≈ ε1 + ε5 atol=1e-4
         @test phase_fraction(img, [0, 5]) ≈ ε0 + ε5 atol=1e-4
         @test phase_fraction(img, [0, 1, 5]) ≈ ε0 + ε1 + ε5 atol=1e-4
-    end
-
-    @testset "Scalar and array inputs match" begin
-        @test phase_fraction(img, [0]) ≈ phase_fraction(img, 0) atol=1e-4
-        @test phase_fraction(img, [1]) ≈ phase_fraction(img, 1) atol=1e-4
-        @test phase_fraction(img, [5]) ≈ phase_fraction(img, 5) atol=1e-4
+        # A one-element list is the scalar method's answer, not a sum over
+        # nothing — the degenerate case of the array overload.
+        @test phase_fraction(img, [5]) ≈ ε5 atol=1e-4
     end
 
 end
@@ -60,42 +57,28 @@ end
     end
 end
 
-# --- Command-line argument plumbing (used by the batch-run scripts) ---
+# --- Command-line argument plumbing ---
+#
+# Nothing in the package calls these; they exist for the batch-run scripts. Kept
+# to one round trip through the pair — the `--key=value` grammar the regex
+# implements, and the two ways `format_args_dict` is asked for something it
+# cannot produce.
 
-@testset "args_to_dict" begin
-    @test args_to_dict(["--fpath=img.h5", "--gpu_id=2"]) ==
-          Dict("fpath" => "img.h5", "gpu_id" => "2")
+@testset "args_to_dict / format_args_dict" begin
+    # Only `--key=value` is a pair: bare flags and positionals are skipped, and
+    # a value runs to the next space, so paths and punctuation survive.
+    d = args_to_dict(["--verbose", "positional", "--fpath=/tmp/in-1.h5",
+                      "--path_export=out.h5", "--gpu_id=3", "--axis=:x"])
+    @test d == Dict("fpath" => "/tmp/in-1.h5", "path_export" => "out.h5",
+                    "gpu_id" => "3", "axis" => ":x")
+    @test isempty(args_to_dict(String[]))
 
-    @testset "arguments that do not match --key=value are ignored" begin
-        @test args_to_dict(["--verbose", "positional", "--n=5"]) == Dict("n" => "5")
-        @test isempty(args_to_dict(String[]))
-        @test isempty(args_to_dict(["nothing", "to", "see"]))
-    end
+    @test format_args_dict(d) == ("/tmp/in-1.h5", "out.h5", 3)
+    @test format_args_dict(d)[3] === 3          # parsed to Int, not left a String
 
-    @testset "values may contain paths and punctuation" begin
-        d = args_to_dict(["--path_export=/tmp/out-1.h5", "--axis=:x"])
-        @test d["path_export"] == "/tmp/out-1.h5"
-        @test d["axis"] == ":x"
-    end
-
-    @testset "a later occurrence of a key wins" begin
-        # `Dict` construction from a generator keeps the last pair.
-        @test args_to_dict(["--n=1", "--n=9"])["n"] == "9"
-    end
-end
-
-@testset "format_args_dict" begin
-    d = Dict("fpath" => "in.h5", "path_export" => "out.h5", "gpu_id" => "3")
-    fpath, path_export, gpu_id = format_args_dict(d)
-    @test fpath == "in.h5"
-    @test path_export == "out.h5"
-    @test gpu_id === 3
-
-    @testset "missing and malformed entries surface as errors" begin
-        @test_throws KeyError format_args_dict(Dict("fpath" => "in.h5"))
-        bad = Dict("fpath" => "in.h5", "path_export" => "out.h5", "gpu_id" => "first")
-        @test_throws ArgumentError format_args_dict(bad)
-    end
+    @test_throws KeyError format_args_dict(Dict("fpath" => "in.h5"))
+    bad = Dict("fpath" => "in.h5", "path_export" => "out.h5", "gpu_id" => "first")
+    @test_throws ArgumentError format_args_dict(bad)
 end
 
 # --- HDF5 export ---

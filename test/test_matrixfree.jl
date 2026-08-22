@@ -98,8 +98,10 @@ end
 # tighter than the physics requires. They are not bit-identical: the diagonal
 # sits between the two halves of that order but is only known once both have
 # been walked, so the upper half is summed on its own and folded in as one term.
-# The loose claim and the rounding-level one are separate testsets on purpose: if
-# only the second goes red, the summation order drifted, not the operator.
+#
+# Both claims are asserted on the same applies: the loose one is what the physics
+# needs, the rounding-level one is what the shared summation order buys. If only
+# the second goes red, that order drifted rather than the operator.
 
 @testset "apply parity vs the assembled matrix" begin
     for (label, img) in matrixfree_images
@@ -115,25 +117,6 @@ end
                     y_asm = mul!(zeros(nnodes), A, x)
                     y_mf = mul!(zeros(nnodes), op, x)
                     @test isapprox(y_mf, y_asm; rtol=1e-14)
-                end
-            end
-        end
-    end
-end
-
-@testset "apply matches the assembled mul! to within summation rounding" begin
-    for (label, img) in matrixfree_images
-        nnodes = count(img)
-        nnodes >= 4 || continue
-        for (dlabel, D) in diffusivity_cases(img), axis in transport_axes
-            @testset "$(label) — $(dlabel) — axis=$(axis)" begin
-                A, _ = build_steady_system(img; nnodes=nnodes, axis=axis, D=D)
-                op, _ = build_steady_operator(img; nnodes=nnodes, axis=axis, D=D)
-                rng = MersenneTwister(4711)
-                for _ in 1:3
-                    x = randn(rng, nnodes)
-                    y_asm = mul!(zeros(nnodes), A, x)
-                    y_mf = mul!(zeros(nnodes), op, x)
                     @test isapprox(y_mf, y_asm; rtol=1e-15)
                 end
             end
@@ -460,6 +443,41 @@ end
     @test_throws ArgumentError Tortuosity._operator_index_type(true, typemax(Int32))
     @test_throws ArgumentError Tortuosity._operator_index_type(true, Int64(typemax(Int32)) + 10)
     @test Int32(typemax(Int32)) + Int32(1) == typemin(Int32)
+end
+
+# The device half of the same rule, as it would be written by someone with the
+# card for it. Never run: `@test_skip` records it Broken without evaluating it.
+#
+# The predicate above is called with a pore count; this is the thing that proves
+# `build_steady_operator` actually consults it before allocating `idx`. Reaching
+# it needs more than `typemax(Int32)` pore voxels — over 2.1 billion, about
+# 1625³ at half porosity. The mask alone is 4.3 GB on the host and the operator's
+# index array another 8.6 GB on the device, so the refusal has to be raised on a
+# card in the 80 GB class to be observed at all; this machine has 48 GB.
+#
+# Nothing smaller substitutes. The failure it guards is silent by construction:
+# `cumsum!` into an `Int32` buffer wraps to `typemin` rather than saturating, so
+# `idx` goes negative, the kernel's `c0 > 0` test drops most voxels, and `y`
+# comes back partly unwritten with no error raised anywhere.
+function _device_operator_refuses_to_wrap()
+    # `_gpu_adapt[]` rather than a backend package by name: this is the host-side
+    # file, and the rule is the same on every backend. A dense `Bool` array, not
+    # a `BitArray` — that is what `Imaginator.blobs` produces and what the device
+    # kernels take, and it is the 4.3 GB the note above budgets for.
+    img_dev = Tortuosity._gpu_adapt[](ones(Bool, 1625, 1625, 1625))
+    nnodes = count(img_dev)
+    nnodes > typemax(Int32) || error("fixture does not reach the bound")
+    try
+        build_steady_operator(img_dev; nnodes=nnodes, axis=:x, T=Float32)
+        return false                     # wrapped silently instead of refusing
+    catch err
+        return err isa ArgumentError
+    end
+end
+
+@testset "the device operator refuses an image past the 32-bit ordinal, end to end" begin
+    # Needs an 80 GB-class card. Skipped unconditionally — see above.
+    @test_skip _device_operator_refuses_to_wrap()
 end
 
 @testset "the operator releases only the arrays it owns" begin
