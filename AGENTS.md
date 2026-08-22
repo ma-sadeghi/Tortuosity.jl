@@ -52,4 +52,8 @@ No breaking API changes.
 
 If the General PR gets blocked because notes were missing, **re-post the same trigger comment with notes added on the same release commit**. Registrator updates the existing General PR in place; do not bump the version again.
 
-After AutoMerge passes, the General PR enters a 3-day registry waiting period and then merges. TagBot then tags `vX.Y.Z` and creates the GitHub release without further action.
+After AutoMerge passes, a new version of an already-registered package merges in the next round — about 20 minutes, measured at 17.6 for v0.1.0. The three-day waiting period applies to registering a *brand-new package*, not to a version bump.
+
+**Do not comment on the General PR.** Any comment blocks auto-merging unless its body contains the literal `[noblock]`, and an existing blocking comment can be edited to add it.
+
+TagBot then tags `vX.Y.Z` and creates the GitHub release without further action. It has no cron here: it fires on the `issue_comment` JuliaTagBot leaves once the registration merges, and `workflow_dispatch` (input `lookback`, in days) is the manual fallback if that comment never arrives.
