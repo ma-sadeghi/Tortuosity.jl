@@ -168,6 +168,14 @@ regardless of whether the solver ran on GPU.
 
 # Fields
 - `t::Vector{Float64}`: snapshot times at the requested `saveat` intervals.
+  Snapshots land on that grid and nowhere else, so when a stop condition
+  terminates the solve the series ends at the last grid point **at or before**
+  the termination time — the terminal state itself is not appended. `sol.u[end]`
+  can therefore be up to one `saveat` interval short of the state the stop
+  condition fired on, and the gap closes only by asking for a finer `saveat`.
+  Measured on an 8³ blob with `StopAtSaturation(0.3)`: the callback fires at
+  mean concentration 0.29970, while `sol.u[end]` reads 0.29750 at
+  `saveat = 0.05` and 0.29946 at `saveat = 0.002`.
 - `u::Vector{Vector{T}}`: concentration snapshots (CPU). Each entry is a 1D
   pore-only vector.
 - `retcode::Symbol`: `:Success` if the solver reached the end of `tspan`,
@@ -180,7 +188,10 @@ regardless of whether the solver ran on GPU.
 - `alg`: the algorithm passed to `solve`.
 - `ode_sol`: the raw `SciMLBase.ODESolution` the solve produced. Exposed for
   power users who need solver diagnostics like `ode_sol.destats`; the common
-  path only needs `t`, `u`, and `retcode`.
+  path only needs `t`, `u`, and `retcode`. It carries statistics and a return
+  code but no trajectory: the solve runs with `save_everystep`, `save_start`
+  and `save_end` all `false` so that the snapshots exist once, on CPU, in this
+  wrapper's `t` and `u`. `ode_sol.t` and `ode_sol.u` are empty.
 """
 struct TransientSolution{T,P<:TransientDiffusionProblem,A,S}
     t::Vector{Float64}
@@ -516,6 +527,13 @@ Users who want the strict crossing can set `abstol = 0, reltol = 0`.
 The check is `sum(u)/length(u)` on the integrator state `u` directly — no
 geometry lookup needed because `u` is already the pore-only concentration
 vector.
+
+That tolerance describes the integrator state at the crossing, not the last
+snapshot returned. Snapshots land on the `saveat` grid, so `sol.u[end]` is the
+grid point at or before the crossing and its mean sits below the threshold by up
+to one interval's worth of rise — see [`TransientSolution`](@ref
+Tortuosity.TransientSolution). Ask for a finer `saveat` when you need the state
+the callback actually fired on.
 """
 function StopAtSaturation(target::Real; abstol::Real=1e-4, reltol::Real=1e-3)
     tol = max(abstol, reltol * abs(target))
