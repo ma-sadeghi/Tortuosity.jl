@@ -417,3 +417,31 @@ end
         @test got == want
     end
 end
+
+# The coarsest solve runs once per CG iteration, so what it allocates is
+# multiplied by the iteration count. `_vcycle!`'s base case writes the solution
+# into the caller's vector with `ldiv!`; the obvious alternative, `e .= fact \ r`,
+# is bit-identical but allocates a coarse-sized vector to throw away on every
+# iteration. The reference below is the same factorisation solving the same
+# system, so the bound calibrates itself rather than naming a byte count that
+# would drift with SuiteSparse.
+@testset "the coarsest solve allocates nothing per iteration of its own" begin
+    img = Array{Bool}(Imaginator.blobs(; shape=(48, 48, 48), porosity=0.6, blobiness=1, seed=42))
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+    P = two_level_preconditioner(sim; block=6)
+    # With no interposed grids the cycle *is* the base case, which is the branch
+    # under test; a hierarchy would put smoothing allocations in the way.
+    @test isempty(P.levels)
+
+    r = randn(MersenneTwister(20260821), P.nc)
+    e = similar(r)
+    ldiv!(e, P.fact, r)                                  # warm both paths
+    Tortuosity._vcycle!(e, P.levels, 1, r, P.fact)
+    direct = @allocated ldiv!(e, P.fact, r)
+    cycle = @allocated Tortuosity._vcycle!(e, P.levels, 1, r, P.fact)
+    @test cycle <= 2 * direct
+
+    # And the result is the coarse solve, not something cheaper that happens to
+    # allocate less.
+    @test Tortuosity._vcycle!(similar(r), P.levels, 1, r, P.fact) == P.fact \ r
+end

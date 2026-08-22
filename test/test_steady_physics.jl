@@ -198,6 +198,46 @@ end
 
     # An explicit D0 overrides the default reference.
     @test tortuosity(c, img; axis=:x, D=2.0, D0=1.0) ≈ τ_ref / 2 rtol = 1e-8
+    @test formation_factor(c, img; axis=:x, D=2.0, D0=1.0) ≈ F_ref / 2 rtol = 1e-8
+end
+
+@testset "the reference diffusivity is the largest value in the pore space" begin
+    # Every other test of `D0` compares ratios, which any reducer would satisfy.
+    # This one pins the value, against a geometry with a closed form.
+    #
+    # A prismatic duct whose diffusivity varies laterally but not along the
+    # transport axis is a set of independent 1D chains in parallel: the
+    # concentration profile is the same linear drop in every column, so no
+    # lateral gradient exists for the harmonic-mean face weights to act on and
+    # D_eff is exactly the mean of D over the whole cross-section, solid counted
+    # as zero. There is no discretisation error to hide in.
+    img = falses(16, 8, 8)
+    img[:, 3:6, 3:6] .= true          # a 4x4 duct, φ = 16/64
+    D = zeros(size(img))
+    D[:, 3:4, 3:6] .= 2.0             # half the duct fast…
+    D[:, 5:6, 3:6] .= 0.6             # …half of it slow
+    ε = count(img) / length(img)
+    @test ε == 0.25
+
+    c = solve_steady(img; axis=:x, D=D)
+    D_eff_exact = (8 * 2.0 + 8 * 0.6) / 64
+    @test effective_diffusivity(c, img; axis=:x, D=D) ≈ D_eff_exact rtol = 1e-8
+    # τ = D0·ε/D_eff with D0 = max(D over the pore space) = 2.0. Taking the
+    # minimum instead gives 0.46 and the mean gives 1.0; dropping D0 altogether
+    # gives 0.77. Two of those three are below 1, which no geometry can produce.
+    @test tortuosity(c, img; axis=:x, D=D) ≈ 2.0 * ε / D_eff_exact rtol = 1e-8
+    @test formation_factor(c, img; axis=:x, D=D) ≈ 2.0 / D_eff_exact rtol = 1e-8
+    @test tortuosity(c, img; axis=:x, D=D) > 1
+
+    # The solid phase cannot set the scale. These voxels carry no flux, so a
+    # reference taken over the whole array rather than over the pore space would
+    # move τ by a factor of 25 while leaving D_eff untouched.
+    D_hot_solid = copy(D)
+    D_hot_solid[.!img] .= 50.0
+    @test maximum(D_hot_solid) == 50.0
+    @test tortuosity(c, img; axis=:x, D=D_hot_solid) == tortuosity(c, img; axis=:x, D=D)
+    @test formation_factor(c, img; axis=:x, D=D_hot_solid) ==
+          formation_factor(c, img; axis=:x, D=D)
 end
 
 @testset "scaling the whole diffusivity field scales D_eff by the same factor" begin

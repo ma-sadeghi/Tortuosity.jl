@@ -236,3 +236,26 @@ end
     img = ones(Bool, 4, 4, 4)
     @test_throws ErrorException _build_connectivity_list_ka(img; inds=zeros(Int32, 3, 3, 3))
 end
+
+# --- Preconditioner ---
+
+@testset "the two-level preconditioner rejects a mask that is not the matrix's" begin
+    # `agg` is sized from `size(A, 1)` but filled at the pore ordinals `img`
+    # produces, and it is later read back as an unchecked index into the
+    # stencil. A mask with a different pore count leaves entries unwritten, so
+    # the consequence is an out-of-bounds device write off uninitialised memory
+    # rather than a wrong answer — which is why it is refused up front.
+    img = ones(Bool, 12, 12, 12)
+    img[5:8, 5:8, 5:8] .= false
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
+
+    trimmed = copy(img)
+    trimmed[6, 6, 2] = false          # one pore voxel fewer than `A` has rows
+    @test count(trimmed) == count(img) - 1
+    @test_throws AssertionError two_level_preconditioner(sim.prob.A, trimmed; block=4)
+
+    # The mask the matrix was actually built from is accepted, so the guard is
+    # rejecting the disagreement rather than the call shape.
+    @test two_level_preconditioner(sim.prob.A, img; block=4) isa
+          Tortuosity.TwoLevelPreconditioner
+end

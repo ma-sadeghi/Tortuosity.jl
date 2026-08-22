@@ -104,6 +104,42 @@ end
     @test prec.iters < plain.iters
 end
 
+@testset "the preconditioner returns the same bits every time (seed=$(seed))" for seed in (1, 42)
+    # Regression guard. `_restrict_kernel!` used to sum each coarse cell's fine
+    # values with an atomic, and thread-block arrival order is not fixed between
+    # launches, so the non-associative float sum gave a different coarse
+    # residual — and therefore a different τ — on every run of the same image.
+    # It runs once per CG iteration, so the scatter was re-injected continuously
+    # rather than once per solve; the measured spread grew from 0.008% at 100³
+    # to 0.094% at 400³, past the accuracy target the benchmark selects on.
+    #
+    # The restriction is a gather over a fixed adjacency now, so equality here
+    # is exact rather than approximate. A tolerance would not express the
+    # property and would pass at this size even with the atomic back.
+    img = Array{Bool}(
+        Imaginator.blobs(; shape=(48, 48, 48), porosity=0.55f0, blobiness=1, seed=seed)
+    )
+    (any(img[1, :, :]) && any(img[end, :, :])) || return
+
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=true, warn_nonpercolating=false)
+    Pl = Tortuosity.two_level_preconditioner(sim; block=8)
+
+    # The application itself, which is where the schedule-dependent sum lived.
+    x = copy(sim.prob.b)
+    reference = Array(ldiv!(similar(x), Pl, x))
+    for _ in 1:8
+        @test Array(ldiv!(similar(x), Pl, x)) == reference
+    end
+
+    # And end to end: repeated solves of one image agree to the last bit, which
+    # is the property a caller actually depends on.
+    taus = map(1:3) do _
+        sol = solve(sim.prob, KrylovJL_CG(); Pl=Pl, reltol=1.0f-6)
+        tortuosity(reconstruct_field(sol.u, sim.img), sim.img; axis=:x)
+    end
+    @test allequal(taus)
+end
+
 # The image that forces `Ti=Int64` on its own has >306M pore voxels and needs
 # ~27 GB of matrix before the solve allocates, so the wide path is exercised by
 # asking for it at a size that fits instead. Everything below the type is

@@ -338,4 +338,14 @@ end
     @testset "length mismatch throws" begin
         @test_throws DimensionMismatch exclusive_scan!(zeros(Int32, 3), Int32[1, 2])
     end
+
+    @testset "an aliased output is refused rather than silently wrong" begin
+        # `cumsum!` followed by `out .-= inp` reads `inp` after overwriting it,
+        # so scanning a vector into itself returns zeros instead of the scan —
+        # and the GPU connectivity builder would then write every edge to
+        # offset 0. Refusing costs one comparison and the alternative is silent.
+        x = Int32[1, 2, 3, 4]
+        @test_throws ArgumentError exclusive_scan!(x, x)
+        @test x == Int32[1, 2, 3, 4]
+    end
 end
