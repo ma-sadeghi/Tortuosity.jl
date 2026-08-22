@@ -111,39 +111,3 @@ sequential pore-voxel number (1, 2, …, `count(img)`).
 function build_reverse_lookup(img::AbstractArray{Bool})
     return Dict(zip(find_true_indices(img), 1:count(img)))
 end
-
-"""
-    get_taufactor_conc(tau_solver; fill_value=NaN, normalize=true)
-
-Extract the concentration field from a TauFactor (Python) solver object.
-Pads are removed and non-conducting voxels are filled with `fill_value`.
-
-# Arguments
-- `tau_solver`: a `taufactor.Solver` object (via PythonCall).
-
-# Keyword Arguments
-- `fill_value`: value for non-conducting voxels. Default: `NaN`.
-- `normalize`: if `true`, rescale concentrations to `[0, 1]` using the
-  solver's boundary conditions. Default: `true`.
-
-# Returns
-- `Array{Float64, 3}`: the 3D concentration field.
-"""
-function get_taufactor_conc(tau_solver; fill_value=NaN, normalize=true)
-    # Get needed data from the solver object
-    c = tau_solver.conc
-    bcs = pyconvert(Array{Float64}, [tau_solver.bot_bc, tau_solver.top_bc])
-    c_low, c_high = min(bcs...), max(bcs...)
-    img = pyconvert(Array, tau_solver.cpu_img.squeeze())
-    # NOTE: TauFactor always solves along the x-axis
-    img_padded = pad(img, :replicate, (1, 0, 0))
-    c = isa(c, Py) ? pyconvert(Array, tau_solver.conc.squeeze().numpy()) : c
-    # Hardcode BC values; taufactor doesn't update them
-    c[1, :, :] .= 0.5
-    c[end, :, :] .= -0.5
-    # Remove padded voxels (in-plane), and ensure non-conducting phase is NaN-filled
-    c = c[:, 2:(end - 1), 2:(end - 1)]
-    c[.!img] .= fill_value
-    c = normalize ? (c .- c_low) ./ (c_high - c_low) : c
-    return c
-end
