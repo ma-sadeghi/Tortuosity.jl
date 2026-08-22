@@ -49,11 +49,14 @@ MEMORY_LABEL = {
 # result. `speedup_taufactor_gpu` publishes under the unsuffixed name for the
 # same reason: it is the comparison the docs linked before taufactor was also run
 # on the CPU.
+# Only the two figures `paper.md` embeds are published into `paper/`. JOSS builds
+# the manuscript from that directory, so every other figure goes to the docs alone
+# rather than leaving an unreferenced image beside the paper.
 PUBLISH = {
     "summary.png": ("benchmark_summary.png", ["paper", "docs/src/assets"]),
     "memory_gpu.png": ("benchmark_memory_gpu.png", ["paper", "docs/src/assets"]),
-    "memory_cpu.png": ("benchmark_memory_cpu.png", ["paper", "docs/src/assets"]),
-    "blobiness.png": ("benchmark_blobiness.png", ["paper", "docs/src/assets"]),
+    "memory_cpu.png": ("benchmark_memory_cpu.png", ["docs/src/assets"]),
+    "blobiness.png": ("benchmark_blobiness.png", ["docs/src/assets"]),
     "scaling_gpu.png": ("benchmark_scaling_gpu.png", ["docs/src/assets"]),
     "scaling_cpu.png": ("benchmark_scaling_cpu.png", ["docs/src/assets"]),
     "time_bars_gpu.png": ("benchmark_time_bars_gpu.png", ["docs/src/assets"]),
