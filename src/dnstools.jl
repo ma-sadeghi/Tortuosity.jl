@@ -49,6 +49,17 @@ back out for `τ` to be a property of the geometry alone. Without it, scaling a
 diffusivity field by a constant would change `τ` by that constant and could
 drive it below 1, which is physically impossible.
 
+# Disconnected pore space
+
+When no pore path joins the inlet face to the outlet face, `D_eff` is zero and
+`τ = D0·ε/D_eff` diverges. It does not come back as `Inf`: the solve leaves a
+`D_eff` of rounding size rather than exactly zero, so `τ` is enormous — of order
+`1e15` — with a sign that is whichever way that rounding fell, and the solver
+still reports `Success`. Test `abs(τ)` rather than `τ >= 1` if you need to
+detect this. [`SteadyDiffusionProblem`](@ref) warns about stranded pore volume
+as it is constructed, which is the earlier and more informative signal; see its
+`warn_nonpercolating` keyword.
+
 # Arguments
 - `c`: concentration field (full grid, same shape as `img`).
 - `img`: 3D boolean pore mask (`true` = pore).
@@ -96,7 +107,9 @@ _reference_diffusivity(D, img) = maximum(D[i] for i in eachindex(img, D) if img[
 
 Compute the formation factor `F = D0 / D_eff` from a steady-state concentration
 field. As with [`tortuosity`](@ref), the reference diffusivity divides back out
-so that `F` describes the geometry rather than the units `D` was given in.
+so that `F` describes the geometry rather than the units `D` was given in, and a
+pore space that does not span the domain sends `F` to a rounding-signed value of
+order `1e16` rather than to `Inf`.
 
 # Arguments
 - `c`: concentration field (full grid, same shape as `img`).
