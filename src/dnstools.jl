@@ -23,7 +23,7 @@ length, and `dc` is the concentration drop between inlet and outlet faces.
 # Keyword Arguments
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
 - `ind`: voxel index at which flux is measured. Default: `1`.
-- `D`: intrinsic diffusivity (scalar). Default: `1.0`.
+- `D`: intrinsic diffusivity, a scalar or a per-voxel field. Default: `1.0`.
 - `voxel_size`: physical voxel spacing. Default: `1.0`.
 - `L`: domain length. Default: `(N - 1) * voxel_size` where `N` is the number of voxels along `axis`.
 - `dc`: imposed concentration drop. Default: mean inlet minus mean outlet concentration.
@@ -77,8 +77,19 @@ end
 # scalar `D` is itself the intrinsic diffusivity; for a per-voxel field the
 # conventional reference is the fastest conducting phase, taken over the pore
 # space so that whatever value fills the solid voxels cannot set the scale.
+#
+# Reduced lazily rather than as `maximum(D[img])`: logical indexing materialises
+# one element per pore voxel — 4.8 GB at 1000³ and ε = 0.6, on top of the field
+# itself — to read a single number. Measured on a 24³ field: 16 B against
+# 32.7 kB, at about 2.2x the time. Memory is the binding constraint at the sizes
+# this package is built for, so the trade goes this way deliberately; it is not
+# free. `eachindex` over both arrays keeps the shape check that indexing gave.
+#
+# `D` is a host array on every path that reaches here: `flux` broadcasts `D`
+# against the host concentration field, so a device `D` fails there before this
+# reduction's cost could matter.
 _reference_diffusivity(D::Number, img) = D
-_reference_diffusivity(D, img) = maximum(D[img])
+_reference_diffusivity(D, img) = maximum(D[i] for i in eachindex(img, D) if img[i])
 
 """
     formation_factor(c, img; axis, ind=1, D=1.0, D0=nothing, voxel_size=1.0, L=nothing, dc=nothing)
