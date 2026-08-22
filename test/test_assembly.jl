@@ -559,3 +559,61 @@ end
         @test maximum(abs, c .- ramp) < 1e-8
     end
 end
+
+# --- Scalar diffusivity ---
+
+# A scalar `D` is uniform diffusivity. The kernels already express that case as
+# `D === nothing` with the weight carried in `D0`, so a scalar rides that path
+# rather than being expanded into a grid-sized array of one repeated value. The
+# executable statement of it: assembling with a scalar must produce exactly what
+# assembling with an array holding that value on the pore space produces.
+@testset "a scalar D assembles the pore-constant array — $(label)" for (label, img) in ASSEMBLY_IMAGES
+    # k = 0.1 is in the list deliberately: `2k²/(k+k)` is exactly k for most
+    # values and *not* for 0.1, so it is the one that distinguishes the two
+    # paths' arithmetic from their answers.
+    for k in (2.0, 0.1)
+        D = zeros(size(img))
+        D[img] .= k                # the array form requires zeros off the pore space
+
+        scalar = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=k, warn_nonpercolating=false)
+        array = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=D, warn_nonpercolating=false)
+        # Same sparsity pattern exactly; same values to rounding. Not bit-identical,
+        # and deliberately not asserted as such: the array path takes the harmonic
+        # mean of k with itself at every face, which is a no-op mathematically but
+        # not in floating point.
+        @test scalar.prob.A.colptr == array.prob.A.colptr
+        @test scalar.prob.A.rowval == array.prob.A.rowval
+        @test scalar.prob.A.nzval ≈ array.prob.A.nzval
+        @test scalar.prob.b ≈ array.prob.b
+
+        # The scalar path is the sharper of the two, which is the point of routing
+        # it through `D0` rather than expanding it into an array: `D0` *is* the
+        # edge weight, so every off-diagonal entry is exactly -k with no
+        # arithmetic in between.
+        A = scalar.prob.A
+        offdiag = [A.nzval[p] for j in 1:size(A, 2)
+                   for p in A.colptr[j]:(A.colptr[j + 1] - 1) if A.rowval[p] != j]
+        @test !isempty(offdiag)
+        @test all(==(-k), offdiag)
+
+        # The matrix-free operator takes the same route and holds no array for it.
+        mf = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=k, matrixfree=true,
+                                    warn_nonpercolating=false)
+        @test isnothing(mf.prob.A.D)
+        @test mf.prob.A.D0 == k
+        @test mf.prob.b == scalar.prob.b
+    end
+end
+
+@testset "a scalar D sets the element type the way an array's does" begin
+    # `A` follows `D`'s element type when one is given; a scalar is a `D`, so a
+    # Float32 scalar must narrow the matrix exactly as a Float32 array would.
+    img = ones(Bool, 6, 5, 4)
+    D32 = fill(1.0f0, size(img))
+    @test eltype(SteadyDiffusionProblem(img; axis=:x, gpu=false, D=1.0f0).prob.A) === Float32
+    @test eltype(SteadyDiffusionProblem(img; axis=:x, gpu=false, D=D32).prob.A) === Float32
+    @test eltype(SteadyDiffusionProblem(img; axis=:x, gpu=false, D=1.0).prob.A) === Float64
+    # Omitting `D` is still the Float64 host default rather than anything the
+    # scalar path leaks into it.
+    @test eltype(SteadyDiffusionProblem(img; axis=:x, gpu=false).prob.A) === Float64
+end

@@ -309,7 +309,9 @@ every apply.
 # Keyword Arguments
 - `nnodes`: number of pore voxels, i.e. `count(img)`.
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
-- `D`: diffusivity array matching `img`, or `nothing` for uniform `D = 1`.
+- `D`: diffusivity array matching `img`, a scalar for uniform diffusivity at that
+  value, or `nothing` for uniform `D = 1`. A scalar takes the same path as
+  `nothing` — the operator holds no diffusivity array, `D0` carries the weight.
 - `T`: element type of `b`. `A` follows `D`'s element type when one is given.
 - `owns_D`: hand the operator ownership of `D`, so that `_free!` releases it.
   Set this only when `D` is a copy made for the operator and held nowhere else.
@@ -320,8 +322,19 @@ function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::
     nbc = size(img, bcdim)
     on_gpu = _on_gpu(img)
     Ti = _operator_index_type(on_gpu, nnodes)
-    Tv = isnothing(D) ? T : eltype(D)
-    D0 = one(Tv)
+    # A scalar `D` is the uniform case, which the operator already expresses as
+    # `D === nothing` with `D0` carrying the weight — so it rides that path and
+    # the operator holds no diffusivity array at all.
+    D_scalar = D isa Number
+    # `float` on the scalar's own type, so `D = 2` means the same thing as
+    # `D = 2.0` — see the same step in `build_steady_system` for what an
+    # integer `D0` would otherwise make of the operator's element type.
+    Tv = isnothing(D) ? T : (D_scalar ? float(typeof(D)) : eltype(D))
+    D0 = D_scalar ? Tv(D) : one(Tv)
+    # `nothing`, not the scalar — see the same step in `build_steady_system` for
+    # why keeping it would depend on `@inbounds` eliding a bounds check. Here it
+    # also decides what the operator holds for its whole life.
+    D = D_scalar ? nothing : D
 
     # Pore numbering: an inclusive scan over the mask hands each pore voxel its
     # ordinal, and masking the solids back to zero lets `idx` double as the

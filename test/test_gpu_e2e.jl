@@ -104,6 +104,23 @@ end
     @test prec.iters < plain.iters
 end
 
+@testset "a scalar D narrows to the device element type" begin
+    # `_gpu_adapt` narrows a diffusivity array to Float32 on the way to the
+    # device; a scalar has to take the same narrowing, or `D0` stays Float64 and
+    # drags the whole operator's element type up with it.
+    img = ones(Bool, 16, 12, 12)
+    img[6:11, 4:8, 4:8] .= false
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=true, D=2.0)
+    @test eltype(sim.prob.A) === Float32
+    @test eltype(sim.prob.b) === Float32
+
+    c = reconstruct_field(Array(solve(sim.prob, KrylovJL_CG(); reltol=1.0f-8).u), sim.img)
+    cpu = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=2.0)
+    c_cpu = reconstruct_field(solve(cpu.prob, KrylovJL_CG(); reltol=1e-12).u, img)
+    @test effective_diffusivity(c, sim.img; axis=:x, D=2.0) ≈
+          effective_diffusivity(c_cpu, img; axis=:x, D=2.0) rtol = 1e-4
+end
+
 @testset "the preconditioner returns the same bits every time (seed=$(seed))" for seed in (1, 42)
     # Regression guard. `_restrict_kernel!` used to sum each coarse cell's fine
     # values with an atomic, and thread-block arrival order is not fixed between

@@ -161,6 +161,25 @@ end
     end
 end
 
+@testset "a uniform D cancels out of the concentration field but scales D_eff" begin
+    # ∇·(D∇c) = 0 with constant D reduces to ∇²c = 0, so a scalar `D` handed to
+    # the constructor scales the matrix and the right-hand side by the same
+    # factor and leaves the solution where D = 1 puts it. It shows up in D_eff,
+    # which is what carries the physical units, and divides back out of τ.
+    img = fixture("obstructed 12x8x8")
+    c_unit = solve_steady(img; axis=:x)
+    D_unit = effective_diffusivity(c_unit, img; axis=:x)
+    for k in (0.25, 2.0, 100.0)
+        sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=k)
+        c = reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u, img)
+        # Same field, to the solver's tolerance rather than to the bit: CG on the
+        # scaled system takes a slightly different floating-point path to it.
+        @test maximum(abs, (c .- c_unit)[img]) < 1e-8
+        @test effective_diffusivity(c, img; axis=:x, D=k) ≈ k * D_unit rtol = 1e-8
+        @test tortuosity(c, img; axis=:x, D=k) ≈ tortuosity(c_unit, img; axis=:x) rtol = 1e-8
+    end
+end
+
 @testset "D_eff is independent of voxel_size (it is a dimensionless ratio here)" begin
     img = fixture("half channel 10^3")
     c = solve_steady(img; axis=:x)

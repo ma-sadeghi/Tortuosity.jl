@@ -255,7 +255,9 @@ compare against.
 # Keyword Arguments
 - `nnodes`: number of pore voxels, i.e. `count(img)`.
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
-- `D`: diffusivity array matching `img`, or `nothing` for uniform `D = 1`.
+- `D`: diffusivity array matching `img`, a scalar for uniform diffusivity at that
+  value, or `nothing` for uniform `D = 1`. A scalar takes the same path as
+  `nothing` — no diffusivity array is read, `D0` carries the weight.
 - `T`: element type of `b`. `A` follows `D`'s element type when one is given.
 - `Ti`: index type of `A`, `Int32` or `Int64`. `nothing` (default) picks the
   narrowest that fits — see [`_assembled_index_type`](@ref). Force `Int64` to
@@ -269,8 +271,24 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing
     nbc = size(img, bcdim)
     on_gpu = _on_gpu(img)
     Ti = _resolve_index_type(Ti, nnodes)
-    Tv = isnothing(D) ? T : eltype(D)
-    D0 = one(Tv)
+    # A scalar `D` is the uniform case, which the kernels already express as
+    # `D === nothing` with `D0` carrying the weight — so it rides that path
+    # rather than being expanded into a grid-sized array of one repeated value.
+    D_scalar = D isa Number
+    # `float` on the scalar's own type, so `D = 2` means the same thing as
+    # `D = 2.0`. Taking `eltype(2)` literally would build the matrix over the
+    # integers against a floating-point `b`, which Krylov warns about and the
+    # preconditioner cannot construct at all.
+    Tv = isnothing(D) ? T : (D_scalar ? float(typeof(D)) : eltype(D))
+    D0 = D_scalar ? Tv(D) : one(Tv)
+    # Handing the kernels `nothing` rather than the scalar is required, not
+    # tidiness. `_node_diffusivity`'s array method reads `@inbounds D[i, j, k]`,
+    # and `getindex` on a `Number` bounds-checks that every index is 1 — so a
+    # scalar left in place appears to work only because `@inbounds` elides that
+    # check, and throws `BoundsError` under `--check-bounds=yes`. It also takes
+    # the harmonic mean of the value with itself at every face, which is a no-op
+    # mathematically but not in floating point.
+    D = D_scalar ? nothing : D
 
     # Pore numbering: an inclusive scan over the mask hands each pore voxel its
     # ordinal, and masking the solids back to zero lets `idx` double as the

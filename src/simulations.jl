@@ -113,8 +113,13 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
 
 # Keyword Arguments
 - `axis`: transport direction (`:x`, `:y`, or `:z`).
-- `D`: diffusivity. `nothing` for uniform (default), or an array matching `img` shape
-  for spatially variable diffusivity.
+- `D`: diffusivity. `nothing` for uniform `D = 1` (default), a scalar for uniform
+  diffusivity at that value, or an array matching `img` shape for a spatially
+  variable one. A uniform `D` cancels out of the steady problem — `∇·(D∇c) = 0`
+  reduces to `∇²c = 0` — so it leaves the concentration field where `D = 1` puts
+  it and shows up only in [`effective_diffusivity`](@ref), which is what carries
+  the physical units. Pass the same value to that and to [`tortuosity`](@ref),
+  whose reference diffusivity divides it back out.
 - `gpu`: `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect
   (uses GPU when a backend package is loaded *and* the image has ≥100k pore
   voxels). See [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
@@ -156,7 +161,10 @@ function SteadyDiffusionProblem(
                Pass `gpu=true` if you want the solver kernels to run on GPU." maxlog = 1
         img = Array(img)
     end
-    D = isnothing(D) ? nothing : atleast_3d(D)
+    # A scalar `D` is uniform diffusivity and stays a scalar: `atleast_3d` would
+    # turn it into a 1x1x1 array and the shape check below would then reject it
+    # with a message about matching the image.
+    D = (isnothing(D) || D isa Number) ? D : atleast_3d(D)
 
     # Deal with variable diffusivity
     if D isa AbstractArray
@@ -199,7 +207,15 @@ function SteadyDiffusionProblem(
     verbose && gpu && @info "Using GPU..."
     T = gpu ? Float32 : Float64
     img_dev = gpu ? _gpu_adapt[](img) : img
-    D_dev = isnothing(D) ? nothing : (gpu ? _gpu_adapt[](D) : D)
+    # A scalar `D` narrows the same way `_gpu_adapt` narrows an array, so the
+    # device path computes its edge weights in `Float32` either way.
+    D_dev = if isnothing(D)
+        nothing
+    elseif D isa Number
+        gpu ? T(D) : D
+    else
+        gpu ? _gpu_adapt[](D) : D
+    end
 
     # Assemble the Dirichlet-eliminated Laplacian in one shot. A fixed
     # concentration drop of 1.0 between inlet and outlet is the boundary
@@ -210,7 +226,7 @@ function SteadyDiffusionProblem(
     # made, ownership goes with it — otherwise nothing would ever release it.
     A, b = if matrixfree
         build_steady_operator(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T,
-                              owns_D=(!isnothing(D_dev) && D_dev !== D))
+                              owns_D=(D_dev isa AbstractArray && D_dev !== D))
     else
         build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T, Ti=Ti)
     end
