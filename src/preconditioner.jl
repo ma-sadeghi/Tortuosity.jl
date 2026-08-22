@@ -555,6 +555,22 @@ function _coarse_mul!(y, A, x)
 end
 
 """
+Solve the coarsest system into `e`, without allocating where the backend allows
+it.
+
+`SparseArrays`' CHOLMOD carries a three-argument `ldiv!` for plain vectors from
+Julia 1.12 on. Below that the generic `LinearAlgebra` fallback takes the call and
+delegates to a two-argument method CHOLMOD never defines, so it raises rather
+than solving, and the throwaway coarse-sized vector is unavoidable. Both forms
+give the same answer bit for bit.
+"""
+@static if VERSION >= v"1.12"
+    _coarse_solve!(e, fact, r) = ldiv!(e, fact, r)
+else
+    _coarse_solve!(e, fact, r) = copyto!(e, fact \ r)
+end
+
+"""
 Apply one symmetric V(1,1) cycle at level `l`: `e ← B r`, with `B ≈ A⁻¹`.
 
 Pre-smooth from a zero guess, correct from the level below, post-smooth. The
@@ -567,10 +583,10 @@ levels at all takes that branch directly and is the plain direct coarse solve.
 """
 function _vcycle!(e, levels, l, r, fact)
     if l > length(levels)
-        # `ldiv!` rather than `e .= fact \ r`: this runs once per CG iteration,
-        # and the two are bit-identical while only one of them allocates a
-        # coarse-sized vector to throw away.
-        ldiv!(e, fact, r)
+        # `_coarse_solve!` rather than `e .= fact \ r`: this runs once per CG
+        # iteration, and the two are bit-identical while only one of them is
+        # free to skip the coarse-sized vector thrown away on every call.
+        _coarse_solve!(e, fact, r)
         return e
     end
     L = levels[l]

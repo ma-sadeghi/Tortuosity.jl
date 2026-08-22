@@ -18,9 +18,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `1` and `lts` are the endpoints of the supported range. 1.11 sits
+        # between them and tracks neither one's stdlib, so a method present on
+        # one side of it and absent on the other goes untested unless 1.11 runs
+        # too.
         version:
           - '1'
           - 'lts'
+          - '1.11'
         os:
           - ubuntu-latest
         arch:

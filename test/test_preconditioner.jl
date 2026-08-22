@@ -420,7 +420,7 @@ end
 
 # The coarsest solve runs once per CG iteration, so what it allocates is
 # multiplied by the iteration count. `_vcycle!`'s base case writes the solution
-# into the caller's vector with `ldiv!`; the obvious alternative, `e .= fact \ r`,
+# into the caller's vector with `_coarse_solve!`; the obvious alternative, `e .= fact \ r`,
 # is bit-identical but allocates a coarse-sized vector to throw away on every
 # iteration. The reference below is the same factorisation solving the same
 # system, so the bound calibrates itself rather than naming a byte count that
@@ -435,9 +435,9 @@ end
 
     r = randn(MersenneTwister(20260821), P.nc)
     e = similar(r)
-    ldiv!(e, P.fact, r)                                  # warm both paths
+    Tortuosity._coarse_solve!(e, P.fact, r)              # warm both paths
     Tortuosity._vcycle!(e, P.levels, 1, r, P.fact)
-    direct = @allocated ldiv!(e, P.fact, r)
+    direct = @allocated Tortuosity._coarse_solve!(e, P.fact, r)
     cycle = @allocated Tortuosity._vcycle!(e, P.levels, 1, r, P.fact)
     @test cycle <= 2 * direct
 
