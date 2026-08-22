@@ -21,7 +21,7 @@ numpy = "<2"
 # by version rather than by source content, so it leaves the previously built
 # copy in site-packages and the benchmark reports numbers for code nobody edited.
 #
-# This is why the submodule is checked out under `vendor/` rather than beside the
+# This is why the fork is checked out under `vendor/` rather than beside the
 # scripts. `benchmarks/` is `sys.path[0]` when they run, so a checkout at
 # `benchmarks/taufactor/` is found there first — and although it has no
 # `__init__.py`, `PathFinder` still returns it as a PEP 420 namespace package,

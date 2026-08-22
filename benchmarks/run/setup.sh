@@ -35,11 +35,28 @@ echo "=== julia environment"
 $JULIA --startup-file=no --project=. -e 'using Pkg; Pkg.develop(path=".."); Pkg.instantiate()'
 
 echo "=== python environment"
-# taufactor is vendored as a submodule under vendor/ and installed *editable*, so
-# that a patch to the fork takes effect without a reinstall. Getting that wrong is
-# silent — the benchmark imports a stale copy and reports numbers for code nobody
-# edited — so the check below asserts the import resolves into the working tree.
-git submodule update --init --recursive
+# taufactor is checked out under vendor/ at a pinned commit and installed
+# *editable*, so that a patch to the fork takes effect without a reinstall.
+# Getting that wrong is silent — the benchmark imports a stale copy and reports
+# numbers for code nobody edited — so the check below asserts the import
+# resolves into the working tree.
+#
+# A clone rather than a git submodule: a gitlink makes this repository's git tree
+# hash disagree with the one Pkg recomputes from an installed package's files, so
+# a submodule here would cost every Linux and macOS user of Tortuosity.jl a
+# warning and a git-clone fallback on `Pkg.add`. See README, "The taufactor fork".
+TAUFACTOR_URL=https://github.com/ma-sadeghi/taufactor.git
+TAUFACTOR_COMMIT=a4bc5f9ed5a9d92f315d64e3d0872d1673bc0c94
+if [ ! -e vendor/taufactor/.git ]; then
+  mkdir -p vendor
+  git clone "$TAUFACTOR_URL" vendor/taufactor
+fi
+# Fetch only when the pin is missing, so a machine that already has it can run
+# this offline.
+if ! git -C vendor/taufactor cat-file -e "$TAUFACTOR_COMMIT^{commit}" 2> /dev/null; then
+  git -C vendor/taufactor fetch --quiet origin
+fi
+git -C vendor/taufactor checkout --quiet --detach "$TAUFACTOR_COMMIT"
 $PIXI install
 
 echo "=== checks"

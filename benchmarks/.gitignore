@@ -2,6 +2,13 @@
 .pixi/*
 !.pixi/config.toml
 
+# taufactor, fetched by run/setup.sh at the commit pinned in the README. Not a
+# git submodule: a gitlink makes this repository's git tree hash disagree with
+# the one Pkg recomputes from an installed package's files, which would cost
+# every Linux and macOS user of Tortuosity.jl a warning and a git-clone fallback
+# on `Pkg.add`.
+vendor/
+
 # The image store is regenerable and large — tens of gigabytes at the full grid.
 # The manifest is not: it records the SHA-256 of every image, which is what lets
 # a store rebuilt on another machine be checked identical rather than assumed so.

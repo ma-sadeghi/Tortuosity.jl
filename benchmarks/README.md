@@ -35,7 +35,7 @@ cd benchmarks/
 ./run/setup.sh
 ```
 
-That resolves the Julia project, installs the Python environment with [pixi](https://pixi.sh), initialises the vendored taufactor submodule, and checks that the GPU and all three tools actually work before anything is measured.
+That resolves the Julia project, installs the Python environment with [pixi](https://pixi.sh), checks out the vendored taufactor fork at its pinned commit, and checks that the GPU and all three tools actually work before anything is measured.
 
 Two things about the environments are deliberate and easy to undo by accident:
 
@@ -177,9 +177,11 @@ A sweep is complete only once one of its rows carries a `stop_reason` (`target_r
 
 ## The taufactor fork
 
-taufactor is vendored as a git submodule from [`ma-sadeghi/taufactor@a4bc5f9`](https://github.com/ma-sadeghi/taufactor/commit/a4bc5f9), which carries the node-centered boundary patch of [`d05aa2e`](https://github.com/ma-sadeghi/taufactor/commit/d05aa2e) plus the checkpoint patch on top. The fork is a small change to `taufactor.py` whose purpose is to make all three tools solve the *same discrete problem* and be measurable in the same way, so that a difference in the reported τ reflects the solver rather than the discretisation or the harness. No solver logic is changed.
+taufactor is vendored as a pinned checkout of [`ma-sadeghi/taufactor@a4bc5f9`](https://github.com/ma-sadeghi/taufactor/commit/a4bc5f9), which carries the node-centered boundary patch of [`d05aa2e`](https://github.com/ma-sadeghi/taufactor/commit/d05aa2e) plus the checkpoint patch on top. The fork is a small change to `taufactor.py` whose purpose is to make all three tools solve the *same discrete problem* and be measurable in the same way, so that a difference in the reported τ reflects the solver rather than the discretisation or the harness. No solver logic is changed.
 
-Third-party source is modified as little as the comparison allows, and where modification is unavoidable the result is vendored as a pinned submodule rather than patched in place, so the exact source behind every number is recoverable from this repository.
+Third-party source is modified as little as the comparison allows, and where modification is unavoidable the result is vendored at a pinned commit rather than patched in place, so the exact source behind every number is recoverable. `run/setup.sh` clones it and checks that commit out; `vendor/` is ignored rather than tracked.
+
+It is deliberately not a git submodule. A gitlink in the tree makes this repository's git tree hash — the one the Julia registry records — disagree with the hash Pkg recomputes by walking an installed package's files, where the empty submodule directory is skipped. Every Linux and macOS user of Tortuosity.jl would then pay for the benchmark harness on `Pkg.add`, with a "tarball content does not match git-tree-sha1" warning and a fall back to a full git clone.
 
 - **Node-centered Dirichlet BCs.** Upstream places the boundary half a voxel outside the domain (`top_bc, bot_bc = -0.5, 0.5` with a `1/(2·Nx)` shift in `init_field`), a cell-centered ghost-cell convention. Tortuosity.jl and PuMA both pin concentrations at the boundary voxels themselves. The fork switches to `(0.0, 1.0)` pinned at voxels 1 and `Nx`, and zeroes the SOR checkerboard on those two slices so they are never relaxed.
 - **Domain length spans `Nx-1` intervals, not `Nx`.** Follows directly: with the boundaries *at* voxels 1 and `Nx`, the distance between them is `(Nx-1)·dx`. Upstream's `D_rel = mean_fl * Nx / ΔC` becomes `mean_fl * (Nx - 1) / ΔC`. This is an O(1/N) bias — 1% at N=100 — that would otherwise be attributed to the solver.
