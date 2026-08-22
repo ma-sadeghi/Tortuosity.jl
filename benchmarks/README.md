@@ -22,6 +22,7 @@ run/                   orchestration; see run/README.md for the rented-machine f
 data/images/           the image store and its manifest (regenerable; not in git)
 results/               the measured dataset: timings/, memory/, references.csv
 results/legacy/        the superseded pre-2026-08 dataset, kept unmodified
+results/archive/       datasets a later change made incomparable; see its README
 figures/               output of make_figures.py
 ```
 
@@ -163,6 +164,7 @@ results/references.csv          ground truth, one row per case
 results/timings/<tool>-<device>[-<variant>].csv
 results/memory/<tool>-<device>[-<variant>].csv
 results/environment.csv         what produced each batch of rows
+results/archive/<change>/       datasets superseded by that change
 ```
 
 The identifying columns — tool, device, variant, case, thread count, host, timestamp — are repeated on every row rather than encoded only in the filename, so post-processing concatenates the whole directory without parsing a name to know what it is reading. `environment.csv` exists because timings are only comparable within one machine and one software stack, and this campaign spans a laptop and a rented host by design.
@@ -170,6 +172,8 @@ The identifying columns — tool, device, variant, case, thread count, host, tim
 A sweep is complete only once one of its rows carries a `stop_reason` (`target_reached`, `timeout`, `ladder_exhausted`, `error` or `oom`). Resume keys on that rather than on the mere presence of a row, because a case interrupted halfway up its ladder would otherwise be silently accepted as converged — and a partial ladder is indistinguishable from a converged one once it is in the file.
 
 `results/legacy/` holds the superseded dataset measured before this harness existed. It is on a different schema, was measured over a different size grid at a single blobiness, and cannot be merged with the current one; it is kept only so the earlier figures can still be rebuilt. The image store it was measured against, `data/images.h5`, is likewise superseded — a single 3.9 GB HDF5 file rather than the per-case store — and can be deleted once those figures are no longer needed.
+
+`results/archive/` holds datasets a later change made incomparable with the current ones, one directory per change, each named for the change it precedes. They are kept because a before-and-after is the only way to show what a change cost, and one of them is cited by `docs/src/benchmark.md`; its own README says what each is. Their rows share the current schema and must still never be concatenated with it, because the solver underneath them is different.
 
 ## The taufactor fork
 
