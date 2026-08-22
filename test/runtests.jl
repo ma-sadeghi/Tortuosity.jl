@@ -64,10 +64,6 @@ const _has_gpu = _has_cuda || _has_metal
         include("test_assembly.jl")
     end
 
-    @testset verbose = true "Basic geometries" begin
-        include("test_basic.jl")
-    end
-
     @testset verbose = true "Steady-state physics invariants" begin
         include("test_steady_physics.jl")
     end

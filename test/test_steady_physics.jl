@@ -1,19 +1,26 @@
-# Physics invariants of the steady-state solve.
+# Physics invariants of the steady-state solve, and the closed forms it has to
+# reproduce exactly.
 #
-# Unlike the geometry fixtures in test_basic.jl, which check a handful of
-# closed-form answers, these tests assert properties that must hold for *every*
-# image and every implementation: flux conservation across all cross-sections,
-# the discrete maximum principle, invariance under relabelling of axes, and
-# exact agreement with 1D resistor-network theory for layered diffusivity.
-# They are the safety net for rewrites of the assembly or solver: an optimised
-# path that returns a slightly-wrong field will break conservation or the
-# maximum principle long before it visibly moves τ.
+# Most of these assert properties that must hold for *every* image and every
+# implementation: flux conservation across all cross-sections, the discrete
+# maximum principle, invariance under relabelling of axes, agreement with 1D
+# resistor-network theory for layered diffusivity. They are the safety net for
+# rewrites of the assembly or solver — an optimised path that returns a
+# slightly-wrong field will break conservation or the maximum principle long
+# before it visibly moves τ.
+#
+# The rest pin τ itself against geometries whose answer is known in closed form:
+# a prismatic duct (τ = 1, F = 1/φ), a staircase channel (τ = n(n-1)/(N(N-1)),
+# the one exact τ > 1 in the suite that comes from path length rather than from
+# a diffusivity contrast), and a pore space that does not connect the two faces
+# (no transport at all).
 
 using Test
 using Statistics
 using Tortuosity
 using Tortuosity:
     Imaginator,
+    axis_dim,
     effective_diffusivity,
     flux,
     formation_factor,
@@ -51,6 +58,35 @@ const PHYSICS_IMAGES = physics_fixtures()
 # geometry if the list is ever reordered, and the two ducts in it are
 # indistinguishable by their τ (both exactly 1).
 fixture(name) = PHYSICS_IMAGES[findfirst(p -> p[1] == name, PHYSICS_IMAGES)][2]
+
+# A prismatic channel of the given lateral cross-section running the full length
+# of `ax`. Written axis-first so the same closed forms can be checked on all
+# three transport directions rather than only on `:x`.
+function prismatic_duct(ax, lateral; long=16, wide=8)
+    d = axis_dim(ax)
+    img = falses(ntuple(i -> i == d ? long : wide, 3))
+    idx = Any[lateral[1], lateral[2]]
+    insert!(idx, d, :)
+    img[idx...] .= true
+    return img
+end
+
+# Number of face-connected pore neighbours of each pore voxel, in column-major
+# order. Used to prove a fixture really is the graph a closed form assumes.
+function pore_degrees(img)
+    nx, ny, nz = size(img)
+    degrees = Int[]
+    for c in findall(img)
+        deg = 0
+        for (di, dj, dk) in ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
+            i, j, k = c[1] + di, c[2] + dj, c[3] + dk
+            (1 <= i <= nx && 1 <= j <= ny && 1 <= k <= nz) || continue
+            img[i, j, k] && (deg += 1)
+        end
+        push!(degrees, deg)
+    end
+    return degrees
+end
 
 # --- Conservation and boundedness ---
 
@@ -144,10 +180,23 @@ end
     img2d = ones(Bool, 16, 16)
     img2d[5:12, 4:9] .= false
     img3d = reshape(img2d, 16, 16, 1)
-    c2 = solve_steady(img2d; axis=:x)
-    c3 = solve_steady(img3d; axis=:x)
-    @test isequal(vec(c2), vec(c3))
-    @test tortuosity(c2, img2d; axis=:x) ≈ tortuosity(c3, img3d; axis=:x)
+    # Both in-plane axes: `atleast_3d` promotes to (m, n, 1), so :x and :y are
+    # the two directions a 2D image can actually be transported along.
+    for ax in (:x, :y)
+        c2 = solve_steady(img2d; axis=ax)
+        c3 = solve_steady(img3d; axis=ax)
+        @test isequal(vec(c2), vec(c3))
+        @test tortuosity(c2, img2d; axis=ax) ≈ tortuosity(c3, img3d; axis=ax)
+    end
+
+    # And the 2D closed form is the 3D one: a prismatic channel of open
+    # fraction φ has τ = 1 and F = 1/φ.
+    duct2d = falses(16, 8)
+    duct2d[:, 3:6] .= true
+    φ = count(duct2d) / length(duct2d)
+    c = solve_steady(duct2d; axis=:x)
+    @test tortuosity(c, duct2d; axis=:x) ≈ 1.0 atol = 1e-9
+    @test formation_factor(c, duct2d; axis=:x) ≈ 1 / φ rtol = 1e-9
 end
 
 # --- Scaling laws ---
@@ -302,17 +351,100 @@ end
     @test maximum(abs, c[:, 1, 1] .- c_exact) < 1e-8
 end
 
-@testset "a straight duct has τ = 1 and D_eff = φ exactly" begin
-    # Independent of duct cross-section: a prismatic channel adds no tortuosity.
-    for lateral in ((3:6, 3:6), (2:3, 5:8), (1:8, 1:2))
-        img = falses(16, 8, 8)
-        img[:, lateral[1], lateral[2]] .= true
+@testset "a straight duct has τ = 1 and D_eff = φ exactly — axis=$(ax)" for ax in (:x, :y, :z)
+    # Independent of duct cross-section and of transport direction: a prismatic
+    # channel adds no tortuosity. The last cross-section is the whole domain, so
+    # this also pins τ = 1, D_eff = 1 and F = 1 for a fully open box on every
+    # axis, in both 3D and (below) 2D.
+    for lateral in ((3:6, 3:6), (2:3, 5:8), (1:8, 1:2), (1:8, 1:8))
+        img = prismatic_duct(ax, lateral)
         φ = count(img) / length(img)
-        c = solve_steady(img; axis=:x)
-        @test effective_diffusivity(c, img; axis=:x) ≈ φ atol = 1e-9
-        @test tortuosity(c, img; axis=:x) ≈ 1.0 atol = 1e-9
-        @test formation_factor(c, img; axis=:x) ≈ 1 / φ rtol = 1e-9
+        c = solve_steady(img; axis=ax)
+        @test effective_diffusivity(c, img; axis=ax) ≈ φ atol = 1e-9
+        @test tortuosity(c, img; axis=ax) ≈ 1.0 atol = 1e-9
+        @test formation_factor(c, img; axis=ax) ≈ 1 / φ rtol = 1e-9
     end
+end
+
+# The one closed form in the suite with τ > 1 that comes from the *geometry*
+# rather than from a diffusivity contrast. Everything else that pins an exact τ
+# does so at τ = 1, so a bug that scaled τ by a path-length factor — a wrong
+# domain length L, a flux normalised by the pore count instead of the slice
+# area, an ε taken over the wrong denominator — would leave every one of them
+# green while moving every reported τ on a real image.
+#
+# The channel advances monotonically along the transport axis while wandering
+# laterally: a full lateral column at even i, a single voxel at odd i, alternating
+# which end of the column that voxel sits at. Consecutive groups share exactly one
+# face, so the pore space is a simple path; and because i never decreases, each
+# plane normal to the axis is crossed by exactly one edge.
+function staircase_channel(N, width)
+    @assert isodd(N)
+    img = falses(N, width, 1)
+    for i in 1:N
+        if iseven(i)
+            img[i, :, 1] .= true
+        else
+            img[i, isodd((i + 1) ÷ 2) ? 1 : width, 1] = true
+        end
+    end
+    return img
+end
+
+@testset "a staircase channel matches the series-resistor τ — $(N)x$(width)" for
+        (N, width) in ((5, 3), (5, 5), (9, 3), (9, 5))
+    img = staircase_channel(N, width)
+    n = count(img)
+
+    # The closed forms below describe a chain of n-1 unit conductances, so they
+    # only hold while the pore space *is* that chain. Asserting it here makes a
+    # fixture that grew a shortcut fail as itself rather than as a wrong τ.
+    degrees = pore_degrees(img)
+    @test maximum(degrees) == 2
+    @test count(==(1), degrees) == 2      # exactly two ends
+    @test n > N                           # the path is genuinely longer than the domain
+
+    c = solve_steady(img; axis=:x)
+    # Series chain: the current is I = 1/(n-1) and it crosses each plane exactly
+    # once, so J = I/(width·1), L = N-1 and dc = 1. Hence
+    # D_eff = (N-1)/((n-1)·width) and τ = ε/D_eff = n(n-1)/(N(N-1)), which for
+    # n ≈ path length ℓ is the textbook (ℓ/L)².
+    @test effective_diffusivity(c, img; axis=:x) ≈ (N - 1) / ((n - 1) * width) rtol = 1e-9
+    @test tortuosity(c, img; axis=:x) ≈ n * (n - 1) / (N * (N - 1)) rtol = 1e-9
+    @test formation_factor(c, img; axis=:x) ≈ (n - 1) * width / (N - 1) rtol = 1e-9
+    @test tortuosity(c, img; axis=:x) > 1
+end
+
+@testset "a pore space that does not connect inlet to outlet carries no flux" begin
+    # Two one-voxel ducts that meet only at a corner. Face connectivity — the
+    # only kind this package's stencil has — leaves them disconnected; a
+    # 26-neighbour connectivity, or an off-by-one that let a stencil reach a
+    # diagonal, would join them and report ordinary transport through a geometry
+    # that has none.
+    blocked = falses(12, 6, 6)
+    blocked[1:6, 3, 3] .= true
+    blocked[7:12, 4, 4] .= true            # touches (6, 3, 3) at a corner only
+    joined = falses(12, 6, 6)
+    joined[1:12, 3, 3] .= true             # the same voxel count, sharing a face
+    @test count(joined) == count(blocked)
+
+    sim = SteadyDiffusionProblem(blocked; axis=:x, gpu=false, warn_nonpercolating=false)
+    c = reconstruct_field(solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u, blocked)
+    # Each cluster is pinned by the single Dirichlet face it touches, so the
+    # field is the boundary data exactly and nothing flows anywhere.
+    @test all(isapprox.(c[1:6, 3, 3], 1.0; atol=1e-9))
+    @test all(isapprox.(c[7:12, 4, 4], 0.0; atol=1e-9))
+    @test maximum(abs, [flux(c, 1.0, 1.0, blocked, :x; ind=k) for k in 1:11]) < 1e-12
+
+    c_joined = solve_steady(joined; axis=:x)
+    D_joined = effective_diffusivity(c_joined, joined; axis=:x)
+    @test D_joined ≈ count(joined) / length(joined) atol = 1e-9   # a straight duct
+    # Same porosity, same voxels, one face apart: transport is not merely small
+    # but zero to solver precision.
+    @test abs(effective_diffusivity(c, blocked; axis=:x)) < 1e-6 * D_joined
+    # …so τ diverges rather than coming back as a plausible finite number.
+    @test abs(tortuosity(c, blocked; axis=:x)) > 1e6
+    @test tortuosity(c_joined, joined; axis=:x) ≈ 1.0 atol = 1e-9
 end
 
 @testset "parallel ducts add their conductances" begin
