@@ -79,7 +79,8 @@ t_warmup_end = sol_warmup.t[end]
 sol = solve(prob, ROCK4();
     saveat = T/30,
     tspan  = (t_warmup_end, t_warmup_end + T),
-    u0     = reconstruct_field(sol_warmup.u[end], img))
+    u0     = reconstruct_field(sol_warmup.u[end], img),
+    reltol = 1e-4)
 
 # Animate the last period
 anim = @animate for k in eachindex(sol.t)

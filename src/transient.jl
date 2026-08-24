@@ -224,7 +224,7 @@ function solve(
     kwargs...,
 )
     T = eltype(nonzeros(prob.A))
-    u0_dev = _initial_state(prob, u0, T)
+    u0_dev = _initial_state(prob, u0, tspan[1], T)
 
     rhs! = build_rhs(prob)
     ode_prob = ODEProblem(rhs!, u0_dev, tspan)
@@ -256,7 +256,7 @@ function solve(
     return TransientSolution(saved.t, saved.saveval, retcode, prob, alg, ode_sol)
 end
 
-function _initial_state(prob::TransientDiffusionProblem, u0, ::Type{T}) where {T}
+function _initial_state(prob::TransientDiffusionProblem, u0, t0, ::Type{T}) where {T}
     if u0 === nothing
         c0 = zeros(T, size(prob.img))
     else
@@ -265,7 +265,7 @@ function _initial_state(prob::TransientDiffusionProblem, u0, ::Type{T}) where {T
         c0 = T.(c0)
     end
 
-    apply_boundaries!(c0, prob)
+    apply_boundaries!(c0, prob; t = t0)
     c0 = c0[prob.img]
 
     if prob.A isa PortableSparseCSC
@@ -378,19 +378,19 @@ end
 
 Set Dirichlet boundary values on the faces of `c0` along `prob.axis`. Each
 face whose boundary condition is not `nothing` is overwritten with that value.
-For time-varying (Function) boundaries, the function is evaluated at `t = 0`.
+For time-varying (Function) boundaries, the function is evaluated t (keyword argument).
 """
-function apply_boundaries!(c0, prob)
+function apply_boundaries!(c0, prob; t =0.0)
     ax = axis_dim(prob.axis)
     N = size(c0, ax)
 
     if prob.bc_inlet isa Function
-        selectdim(c0, ax, 1) .= prob.bc_inlet(0.0)
+        selectdim(c0, ax, 1) .= prob.bc_inlet(t)
     elseif !isnothing(prob.bc_inlet)
         selectdim(c0, ax, 1) .= prob.bc_inlet
     end
     if prob.bc_outlet isa Function
-        selectdim(c0, ax, N) .= prob.bc_outlet(0.0)
+        selectdim(c0, ax, N) .= prob.bc_outlet(t)
     elseif !isnothing(prob.bc_outlet)
         selectdim(c0, ax, N) .= prob.bc_outlet
     end
