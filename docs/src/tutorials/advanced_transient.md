@@ -4,13 +4,14 @@ This page covers advanced features of the transient solver: per-voxel tortuosity
 
 ## Per-voxel tortuosity distribution
 
-Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this by fitting the concentration history at individual voxels to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate.
+Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this by fitting the concentration history at individual voxels to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate. The spread of the tortuosity values reflects the domain size, the degree to which different paths intersect, and the degree of variation between paths.
 
 ```@example advtrans
 using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using LsqFit  # optional dependency behind fit_voxel_diffusivity
 using Plots
 using Tortuosity
+using Statistics
 
 # 3D image — we need spatial variation along the transport axis
 img = Imaginator.blobs(; shape=(64, 64, 32), porosity=0.4, blobiness=0.5, seed=3)
@@ -27,7 +28,12 @@ sol = solve(prob, ROCK4();
 # Fit tortuosity at 400 randomly sampled voxels at the outlet (depth=1.0)
 tau_vals, SE_tau, voxel_inds = fit_voxel_diffusivity(sol, prob; depth=1.0, n_samples=400)
 
-histogram(tau_vals,
+# IQR-based removal of outliers, isolated voxel could have huge tortuosity value
+q1, q3 = quantile(tau_vals, [0.25, 0.75])
+iqr = q3 - q1
+filtered_vals = filter(x -> (x ≥ q1 - 1.5*iqr) && (x ≤ q3 + 1.5*iqr), tau_vals)
+
+histogram(filtered_vals,
     xlabel = "Tortuosity", ylabel = "Count",
     title = "Per-Voxel Tortuosity Distribution at the Outlet",
     legend = false
