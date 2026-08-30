@@ -129,35 +129,133 @@ class Campaign:
 
 # ── Scaling at matched accuracy ──────────────────────────────────────
 
-def draw_scaling_panel(ax, campaign, device, target, sizes):
-    """One accuracy-matched scaling panel: time vs size, one line per tool.
+# Fewest sizes a porosity must have been measured at before its power law is
+# fitted and used to stand in for a size it was not measured at. Two points
+# define a line with nothing left over to judge it by.
+PROJECTION_MIN_SIZES = 3
 
-    Points where some porosity never reached the target are drawn hollow. A tool
-    that only converges on the easy images would otherwise show a flatteringly
-    low average with nothing to say it was incomplete.
+
+def out_of_memory(timings, *, device, series, size, porosity, blobiness):
+    """Whether this case failed on the hardware rather than going unmeasured.
+
+    Every `error` row in the campaign is an out-of-memory failure, so a cell
+    holding one is not a measurement someone chose to skip: the tool cannot solve
+    that image on this machine at all. Projecting a time for it would put a
+    number on the page for a run that can never happen, which is a different
+    claim from projecting one that was merely never afforded.
+    """
+    cell = timings[(timings["device"] == device) & (timings["series"] == series)
+                   & (timings["size"] == size)
+                   & np.isclose(timings["porosity_target"], porosity)
+                   & np.isclose(timings["blobiness"], blobiness)]
+    return bool((cell["stop_reason"] == "error").any())
+
+
+def scaling_points(campaign, device, target, sizes, series):
+    """Time against size for one series: `(points, projected_sizes, exponent)`.
+
+    Averaging over only the porosities a tool happened to reach makes the plotted
+    quantity a different one at every size, and biases it in a known direction:
+    the porosity a tool drops first is the one it is slowest on. taufactor's
+    hardest image at each size is its densest, so losing that image pulls the
+    mean down far enough to draw a solver that was still slowing as though it had
+    levelled off, and on the CPU as though it had started to speed up. Neither
+    happens. Both are the average changing underneath the curve.
+
+    So every size here averages over the same five porosities. A porosity the
+    tool was never run at, or ran at without reaching the target inside its
+    budget, is filled in from its own fitted power law over the sizes it did
+    reach. A porosity that ran out of memory is not filled in, and takes its
+    whole size off the curve: there is no honest mean over a set of images one of
+    which the tool cannot solve at all.
+    """
+    times = fig.target_times(campaign.timings, target, device=device, series=series,
+                             sizes=sizes, porosities=campaign.porosities,
+                             blobiness=campaign.reference_blobiness)
+    # One power law per porosity rather than one for the series. The exponent
+    # rises steeply as the pore space closes -- taufactor spans 3.1 to 3.9 on the
+    # GPU and 3.2 to 5.0 on the CPU -- so a single exponent would project the
+    # dense images, the ones that are missing, at the open images' rate.
+    fits = {}
+    for por in campaign.porosities:
+        measured = [n for n in sizes if np.isfinite(times[(n, por)])]
+        if len(measured) >= PROJECTION_MIN_SIZES:
+            fits[por] = fig.power_law(measured, [times[(n, por)] for n in measured])
+
+    points, projected = [], []
+    for size in sizes:
+        filled, borrowed = [], False
+        for por in campaign.porosities:
+            value = times[(size, por)]
+            if np.isfinite(value):
+                filled.append(value)
+                continue
+            fit = fits.get(por)
+            if fit is None or out_of_memory(campaign.timings, device=device, series=series,
+                                            size=size, porosity=por,
+                                            blobiness=campaign.reference_blobiness):
+                filled = None
+                break
+            a, exponent, _ = fit
+            filled.append(a * size ** exponent)
+            borrowed = True
+        if not filled:
+            continue
+        points.append((size, fig.geomean(filled)))
+        if borrowed:
+            projected.append(size)
+
+    # The line is fitted to the measured means alone. Refitting it through the
+    # projected ones would draw a model back through its own output and hide
+    # whether the two agree, which is the one thing a reader should be able to
+    # check by eye.
+    solid = [(n, t) for n, t in points if n not in projected]
+    fit = fig.power_law([n for n, _ in solid], [t for _, t in solid]) if len(solid) >= 3 else None
+    # Say what was projected and what was dropped. A curve that quietly stops
+    # short, or quietly rests on a fit, reads exactly like one that does neither.
+    if projected:
+        logger.info(f"{series} on the {device} at {target:g}: projected {projected} "
+                    f"from a per-porosity power law")
+    dropped = [n for n in sizes if n not in [p for p, _ in points]]
+    if dropped:
+        logger.info(f"{series} on the {device} at {target:g}: left {dropped} off, where a "
+                    "porosity was neither measured nor projectable")
+    return points, projected, fit
+
+
+def draw_scaling_panel(ax, campaign, device, target, sizes):
+    """One accuracy-matched scaling panel: time against size, one line per tool.
+
+    The solid line joins measurements and the dashed one runs on to sizes reached
+    by projection, drawn hollow. The fitted exponent rides in the legend rather
+    than as a line through the points, because it is a summary and not the
+    measurement: `Tortuosity.jl` is deliberately not a single power law, since a
+    setup cost that dominates a small image and vanishes on a large one bends the
+    curve, and a fitted line drawn through those points would look like a bad fit
+    where the data is fine.
     """
     for series in campaign.series_on(campaign.timings, device):
-        times = fig.target_times(campaign.timings, target, device=device, series=series,
-                                 sizes=sizes, porosities=campaign.porosities,
-                                 blobiness=campaign.reference_blobiness)
-        xs, ys, partial = [], [], []
-        for size in sizes:
-            hits = [times[(size, p)] for p in campaign.porosities]
-            hits = [t for t in hits if np.isfinite(t)]
-            if not hits:
-                continue
-            xs.append(size)
-            ys.append(fig.geomean(hits))
-            if len(hits) < len(campaign.porosities):
-                partial.append((size, ys[-1]))
-        if not xs:
+        points, projected, fit = scaling_points(campaign, device, target, sizes, series)
+        if not points:
             continue
         marker, color = fig.style_for(series)
-        ax.plot(xs, ys, marker=marker, color=color, label=series,
-                markeredgewidth=0.5, markeredgecolor="white", zorder=3)
-        if partial:
-            ax.plot(*zip(*partial), marker, color="white", markeredgewidth=1.0,
-                    markeredgecolor=color, linestyle="none", zorder=4)
+        label = series if fit is None else f"{series} ($N^{{{fit[1]:.1f}}}$)"
+        measured = [p for p in points if p[0] not in projected]
+        # Where the solid line hands over to the dashed one. With nothing measured
+        # the smallest size takes that role, which leaves the solid span a single
+        # point, too short to draw, and dashes the whole curve.
+        edge = max((n for n, _ in measured), default=min(n for n, _ in points))
+        for span, style in (([p for p in points if p[0] <= edge], "-"),
+                            ([p for p in points if p[0] >= edge], "--")):
+            if len(span) >= 2:
+                ax.plot(*zip(*span), style, color=color, zorder=2)
+        if measured:
+            ax.plot(*zip(*measured), marker, color=color, linestyle="none", label=label,
+                    markeredgewidth=0.5, markeredgecolor="white", zorder=3)
+        if projected:
+            ax.plot(*zip(*[p for p in points if p[0] in projected]), marker,
+                    color="white", markeredgewidth=1.0, markeredgecolor=color,
+                    linestyle="none", zorder=4, label=None if measured else label)
     ax.set_xlabel("Domain size $N$ (voxels per side)")
     ax.set_ylabel("Solve time (s)")
     fig.log_size_axis(ax, sizes)
@@ -175,15 +273,18 @@ def figure_scaling(campaign):
         for ax, target, label in zip(np.atleast_1d(axes), fig.THRESHOLDS, fig.THRESHOLD_LABELS):
             draw_scaling_panel(ax, campaign, device, target, sizes)
             ax.set_title(f"target $\\leq {label}$")
+            # A legend per panel rather than one for the figure. The exponent is
+            # part of each label and it is a property of the target as much as of
+            # the tool, so a shared legend would print the leftmost panel's
+            # exponents over all three. Every curve rises with N, which leaves the
+            # large-N corner free for it.
+            ax.legend(loc="lower right", framealpha=0.9, fontsize=6)
         for ax in np.atleast_1d(axes)[1:]:
             ax.set_ylabel("")
         np.atleast_1d(axes)[0].set_ylabel("Solve time (s), geometric mean")
-        handles, labels = np.atleast_1d(axes)[0].get_legend_handles_labels()
-        figure.legend(handles, labels, loc="lower center", ncol=len(labels),
-                      frameon=False, bbox_to_anchor=(0.5, -0.06))
         figure.suptitle(f"Scaling at matched accuracy on the {device.upper()} "
-                        f"(blobiness {campaign.reference_blobiness:g}; "
-                        "hollow: some porosity never reached the target)", y=1.02)
+                        f"(blobiness {campaign.reference_blobiness:g}; solid: measured; "
+                        "dashed and hollow: projected; legend: fitted exponent)", y=1.02)
         figure.tight_layout()
         campaign.save(figure, f"scaling_{device}.png")
 
@@ -621,7 +722,7 @@ def figure_summary(campaign):
         ax_map.set_title(f"({next(tag)}) vs {competitor}, both on the {device.upper()}", loc="left")
 
     figure.suptitle("Benchmark summary at $\\leq 0.1\\%$ relative error in $\\tau$ "
-                    "(hollow markers: some porosity never reached the target)")
+                    "(solid: measured; dashed and hollow: projected; legend: fitted exponent)")
     campaign.save(figure, "summary.png")
 
 

@@ -122,6 +122,36 @@ def geomean(values):
     return float(np.exp(np.log(v).mean())) if v.size else np.nan
 
 
+def power_law(sizes, times):
+    """Fit `t = a N^p` by least squares on `log t` against `log N`.
+
+    Returns `(a, p, r2)`, or `None` from fewer than three sizes, where a
+    two-parameter fit would be interpolation with no residual left to judge it by.
+
+    A power law is the only form the physics admits. Every solver here does a
+    fixed amount of work per unknown per iteration, the unknown count is a power
+    of the edge length, and the iteration count is itself a power of it, so the
+    product is one too. A polynomial in `N` fitted over a size range spanning a
+    factor of five is free to curve back on itself and put a plateau, or a fall,
+    on a page where the runtime can only rise.
+
+    Fitting a straight line has a closed form, which is exact and reads as the
+    definition of the quantity it returns, so there is nothing here for a least
+    squares routine to do.
+    """
+    n = np.asarray(sizes, dtype=float)
+    t = np.asarray(times, dtype=float)
+    if n.size < 3:
+        return None
+    x, y = np.log(n), np.log(t)
+    dx, dy = x - x.mean(), y - y.mean()
+    p = float((dx * dy).sum() / (dx * dx).sum())
+    a = float(np.exp(y.mean() - p * x.mean()))
+    residual = ((y - (np.log(a) + p * x)) ** 2).sum()
+    spread = (dy ** 2).sum()
+    return a, p, float(1 - residual / spread) if spread > 0 else np.nan
+
+
 def time_to_target(frame, target):
     """Wall time of the fastest measured run in `frame` that reaches `target`.
 
