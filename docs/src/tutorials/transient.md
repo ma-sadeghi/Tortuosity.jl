@@ -63,11 +63,11 @@ The returned `sol` is a `TransientSolution` with:
 - `sol.prob`, `sol.alg` — the originating problem and algorithm.
 - `sol.ode_sol` — the raw `ODESolution` for power users who need solver diagnostics like `sol.ode_sol.destats`.
 
-Snapshots live on CPU even when the solver runs on GPU — the wrapper uses `DiffEqCallbacks.SavingCallback` internally to materialise each saved state to CPU, so `sol.u` is safe for long-running simulations that would otherwise exhaust VRAM.
+Snapshots live on CPU even when the solver runs on GPU: internally the wrapper uses `DiffEqCallbacks.SavingCallback` to materialise each saved state to CPU. That keeps `sol.u` safe for long-running simulations that would otherwise exhaust VRAM.
 
 ## Comparing to the homogeneous solution
 
-Let's compare the transient outlet flux from the porous image to the analytical solution for a homogeneous slab with $D_\text{eff} = 1/\tau_\text{ss}$:
+Now compare the transient outlet flux from the porous image to the analytical solution for a homogeneous slab with $D_\text{eff} = 1/\tau_\text{ss}$:
 
 ```@example transient
 # Outlet flux from the transient simulation at each snapshot
@@ -95,7 +95,7 @@ HTML("""<figure><img src=$(joinpath(Main.buildpath,"outlet_flux.svg"))><figcapti
 The porous medium approaches steady state differently than a homogeneous slab — this is the transient "fingerprint" of the microstructure.
 
 !!! note
-    The discrepancy may be exaggerated for low-resolution images or images with a low domain-to-pore size ratio.
+    The discrepancy can be exaggerated for low-resolution images or images with a low domain-to-pore size ratio.
 
 ## Stop conditions
 
@@ -121,7 +121,7 @@ Each factory expresses its tolerance in whatever units are native to the observa
 
 ### `tspan` as a hard cap
 
-Every `solve` call also accepts a `tspan` kwarg. Pass `tspan=(0.0, t_max)` to enforce a maximum run duration; the solver will terminate at `t_max` (with `sol.retcode == :Success`) even if no callback fired. The combination of `tspan` + `callback` gives you both a soft convergence criterion and a hard timeout:
+Every `solve` call also accepts a `tspan` kwarg. Pass `tspan=(0.0, t_max)` to enforce a maximum run duration. The solver then terminates at `t_max` (with `sol.retcode == :Success`) even if no callback fired. The combination of `tspan` + `callback` gives you both a soft convergence criterion and a hard timeout:
 
 ```julia
 sol = solve(prob, ROCK4();
@@ -132,7 +132,7 @@ sol = solve(prob, ROCK4();
 
 ### Custom callbacks
 
-Anything that works for a regular `ODEProblem` works here too. Compose with `CallbackSet`, write your own `DiscreteCallback`, or use other callbacks from `DiffEqCallbacks` (e.g., `PositiveDomain`). See the [DiffEqCallbacks docs](https://docs.sciml.ai/DiffEqCallbacks/stable/) for the full menu.
+Anything that works for a regular `ODEProblem` works here too. Compose with `CallbackSet`, write your own `DiscreteCallback`, or use other callbacks from `DiffEqCallbacks`, such as `PositiveDomain`. See the [DiffEqCallbacks docs](https://docs.sciml.ai/DiffEqCallbacks/stable/) for the full menu.
 
 ## Next steps
 

@@ -12,7 +12,7 @@ Imaginator.blobs(; shape, porosity, blobiness, seed=nothing)
 
 Generates a random binary image by thresholding Gaussian-blurred noise. Returns a `BitArray` where `true` = pore, `false` = solid.
 
-- **`shape`** — tuple specifying the image dimensions, e.g., `(64, 64, 64)` for 3D or `(64, 64, 1)` for a 2D slice.
+- **`shape`** — tuple of the image dimensions, for example `(64, 64, 64)` for 3D or `(64, 64, 1)` for a 2D slice.
 - **`porosity`** — target void fraction (0 to 1).
 - **`blobiness`** — spatial correlation (0 to 1). Higher values produce larger, smoother features; lower values produce finer, grainier textures.
 - **`seed`** — random seed for reproducibility.
@@ -53,7 +53,7 @@ Returns volume fractions. For a binary image, `phase_fraction(img, true)` gives 
 Imaginator.trim_nonpercolating_paths(img; axis)
 ```
 
-Removes pore clusters that do not form a connected path between the inlet and outlet faces along `axis`. This is essential before solving — isolated clusters would make the linear system singular.
+Removes pore clusters that do not form a connected path between the inlet and outlet faces along `axis`. Do this before you solve, because isolated clusters make the linear system singular.
 
 ```@example imag
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.5, blobiness=0.5, seed=2)
@@ -97,4 +97,4 @@ Structuring elements for morphological operations.
 Imaginator.faces(shape; inlet=nothing, outlet=nothing)
 ```
 
-Creates boolean masks for the inlet and outlet faces of an image. Used internally for boundary condition application.
+Creates boolean masks for the inlet and outlet faces of an image. Used internally to apply boundary conditions.

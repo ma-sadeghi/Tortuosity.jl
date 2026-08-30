@@ -3,11 +3,11 @@
 [![Build Status](https://github.com/ma-sadeghi/Tortuosity.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/ma-sadeghi/Tortuosity.jl/actions/workflows/CI.yml?query=branch%3Amain)
 
 > [!WARNING]  
-> We've just released `Tortuosity.jl` on the official Julia package registry. However, it is still under active development, and the API might change.
+> `Tortuosity.jl` is registered in the official Julia package registry. It is still under active development, and the API can change.
 
-`Tortuosity.jl` is a Julia package for calculating the tortuosity factor of volumetric images. It is designed to be fast and efficient, leveraging the power of Julia's multiple dispatch to support GPU acceleration right out of the box. You can consider it as a Julia version of the well-known [TauFactor](https://github.com/tldr-group/taufactor).
+`Tortuosity.jl` is a Julia package for calculating the tortuosity factor of volumetric images. It is built for speed, and it uses Julia's multiple dispatch to support GPU acceleration by default. You can think of it as a Julia version of the well-known [TauFactor](https://github.com/tldr-group/taufactor).
 
-`Tortuosity.jl` is designed to be granular, allowing users to see what's happening under the hood, and potentially modify the steps to suit their needs, e.g., using a different matrix solver, etc.
+The API is deliberately granular, so you can see each step and change it to suit your needs — swapping in a different matrix solver, for example.
 
 ## Installation
 
@@ -67,9 +67,9 @@ The steady operator comes in two forms, both fully supported. They produce the s
 | 1000³ on a 48 GiB card | runs out above ε ≈ 0.4 | every porosity, up to 46.2 GiB at ε = 0.95 |
 | GPU apply at 800³ | ~2× the matrix-free cost | — |
 
-Both paths take the same number of Krylov iterations at every size. On the CPU in `Float64` they agree on τ to every digit recorded; on the GPU in `Float32` they agree to about 5e-5 typically and 1e-3 at worst, the worst cases being the most tortuous geometries, where single precision is least forgiving.
+Both paths take the same number of Krylov iterations at every size. On the CPU in `Float64` they agree on τ to every digit recorded. On the GPU in `Float32` they agree to about 5e-5 typically and 1e-3 at worst, and the worst cases are the most tortuous geometries, where single precision is least forgiving.
 
-Take the assembled path when you want the CUSPARSE-backed matrix itself, or anything that reads matrix entries. Take the matrix-free path when the image is large, when memory is the binding constraint, or when you simply want the solve to be faster.
+Take the assembled path when you want the CUSPARSE-backed matrix itself, or anything that reads matrix entries. Take the matrix-free path when the image is large, when memory is the binding constraint, or when you want the solve to be faster.
 
 There is also a package-owned `solve` that picks the preconditioner and the tolerance for you:
 

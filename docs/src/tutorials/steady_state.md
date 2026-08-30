@@ -23,7 +23,7 @@ using Tortuosity
 img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2)
 ```
 
-Before solving, we must remove pore clusters that don't connect the inlet face to the outlet face. Isolated clusters create a singular linear system.
+Before solving, we must remove pore clusters that do not connect the inlet face to the outlet face, because isolated clusters create a singular linear system.
 
 ```@example steady
 img = Imaginator.trim_nonpercolating_paths(img, axis=:x)
@@ -91,9 +91,9 @@ println("Formation factor:     $F")
 These quantities are related: $\tau = \varepsilon / D_\text{eff}$ and $F = 1 / D_\text{eff}$.
 
 !!! tip "3D images"
-    This tutorial uses a 2D slice for easy visualization, but the workflow is identical for 3D images — just change `shape` to, e.g., `(64, 64, 64)`.
+    This tutorial uses a 2D slice for easy visualization, but the workflow is identical for 3D images — change `shape` to `(64, 64, 64)`, for example.
 
 ## Next steps
 
-- [Variable Diffusivity](variable_diffusivity.md) — what if diffusivity isn't uniform?
+- [Variable Diffusivity](variable_diffusivity.md) — what if diffusivity is not uniform?
 - [Transient Diffusion](transient.md) — time-dependent concentration fields

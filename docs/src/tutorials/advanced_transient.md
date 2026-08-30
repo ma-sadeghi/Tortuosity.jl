@@ -4,7 +4,7 @@ This page covers advanced features of the transient solver: per-voxel tortuosity
 
 ## Per-voxel tortuosity distribution
 
-Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this by fitting the concentration history at individual voxels to the analytical homogeneous solution, yielding a per-voxel tortuosity estimate.
+Steady-state tortuosity is a single number for the whole image. But transport through a porous medium follows many different paths — some short and straight, others long and winding. `fit_voxel_diffusivity` quantifies this: it fits the concentration history at individual voxels to the analytical homogeneous solution, and returns a per-voxel tortuosity estimate.
 
 ```@example advtrans
 using ImageFiltering  # optional dependency, needed by Imaginator.blobs
@@ -49,7 +49,7 @@ Key parameters of `fit_voxel_diffusivity`:
 
 **Smoother startup** — ramp the boundary to reduce numerical error from the large initial concentration jump.
 
-**Periodic probing** — a sine wave inlet at periodic steady state produces an outlet wave with decayed amplitude and shifted phase. The decay and shift depend on the pore structure, revealing dead-end channels and bottlenecks that steady-state tortuosity cannot capture.
+**Periodic probing** — a sine wave inlet at periodic steady state produces an outlet wave with decayed amplitude and shifted phase. The decay and shift depend on the pore structure, so they reveal dead-end channels and bottlenecks that steady-state tortuosity cannot capture.
 
 ```@example timedep
 using Plots

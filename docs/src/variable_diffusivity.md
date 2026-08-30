@@ -1,15 +1,15 @@
 # Variable Diffusivity
 
-By default, `Tortuosity.jl` assumes uniform diffusivity (`D=1`) across all conducting voxels. You can override this by passing a custom diffusivity array that assigns a value to each voxel. This is useful for heterogeneous media such as fractured rock, or non-porous domains composed of different materials (e.g., a bubbly mixture).
+By default, `Tortuosity.jl` assumes uniform diffusivity (`D=1`) across all conducting voxels. You can override this by passing a custom diffusivity array that assigns a value to each voxel. This is useful for heterogeneous media such as fractured rock, or non-porous domains composed of different materials, such as a composite electrode.
 
-The workflow is similar to the [basic usage](index.md), but you define a custom `D` array and pass it to the simulation. The effective diffusivity (and hence tortuosity) is then computed as a flux-weighted quantity that accounts for the spatially varying `D`.
+The workflow is similar to the [basic usage](index.md), but you define a custom `D` array and pass it to the simulation. The package then computes the effective diffusivity, and hence the tortuosity, as a flux-weighted quantity that accounts for the spatially varying `D`.
 
 ## Entire image as domain
 
 Assume you have a binary image where the `true` voxels are 5x more conductive than the `false` voxels. Here, we use the entire image as the computational domain by setting all voxels as conducting.
 
 !!! note
-    Tortuosity is ill-defined when the entire image is the domain, since there is no distinct void phase. The concentration field is the primary quantity of interest in this case, but you can still compute a tortuosity factor for comparison.
+    When the entire image is the domain, tortuosity is ill-defined, because there is no distinct void phase. The concentration field is the primary quantity of interest in this case, but you can still compute a tortuosity factor for comparison.
 
 ```@example
 using ImageFiltering  # optional dependency, needed by Imaginator.blobs

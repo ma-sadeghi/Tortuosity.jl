@@ -23,10 +23,10 @@ backend the user has loaded — `using CUDA`, `using Metal`, or `using AMDGPU`
 — via the corresponding extension. The core package never imports any
 GPU-specific package.
 
-**Data.** Beyond portability, the refactor turned out to be **3.2-3.9× faster
+**Data.** Beyond portability, the refactor was also **3.2-3.9× faster
 than the previous CUDA-specific code at all problem sizes**. That comparison was
 made against a frozen copy of the old implementation, in a harness that has since
-been deleted along with the copy (see decision #6); the figure stands as a record
+been deleted along with the copy (see decision #6). The figure stands as a record
 of the migration and is not reproducible from the current tree. Most of the win
 came from replacing CUSPARSE-mediated sparse matrix construction with direct KA
 kernels — see decision #3.
@@ -36,10 +36,10 @@ kernels — see decision #3.
 - *Multiple parallel implementations (one per GPU)*: rejected. Triples the
   surface area to maintain. Test matrix explodes.
 - *Stick with CUDA.jl, give up portability*: rejected. The package's main
-  use case is large 3D imaging volumes; users on Apple Silicon and AMD
+  use case is large 3D imaging volumes. Users on Apple Silicon and AMD
   hardware are excluded for no good technical reason.
 - *Rewrite to use GPUArrays.jl abstract types*: investigated and rejected.
-  GPUArrays.jl's abstract sparse types aren't subtyped by `CuSparseMatrixCSC`
+  GPUArrays.jl's abstract sparse types are not subtyped by `CuSparseMatrixCSC`
   in CUDA.jl, and Metal.jl has no sparse support at all. KA is the right
   abstraction layer.
 
@@ -58,7 +58,7 @@ AMDGPU (`V = ROCVector{T}`).
 2. Is `<: AbstractMatrix{T}` so `LinearSolve.jl` and `Krylov.jl` accept it
 3. Implements `mul!(y, A, x)` (the only operation Krylov needs)
 4. Supports the in-place ops we use: `set_diag!`, `zero_rows_cols!`,
-   `dropzeros!`, etc.
+   `dropzeros!`, and others.
 
 `SparseMatrixCSC` is CPU-only. `CuSparseMatrixCSC` is CUDA-only. There is
 no existing sparse type that works across GPU backends. So we made one.
@@ -69,16 +69,20 @@ acceleration on large 3D images. A CPU fallback for non-CUDA GPUs would be
 30-100× slower than an actual GPU kernel.
 
 **Data.** The custom `PortableSparseCSC` is verified mathematically equivalent
-to `CuSparseMatrixCSC` on 374 GPU parity tests across 43 fuzz images
-(`test/test_gpu_parity.jl`). Performance comparison vs CUSPARSE shows we're
+to `CuSparseMatrixCSC` on 374 GPU parity tests across 43 fuzz images. Those tests
+lived in `test/test_gpu_parity.jl`, which went with the frozen baseline they
+compared against (see decision #6); the figure stands as the record of what was
+measured, not as something the current tree reruns. Correctness on the GPU is now
+covered by properties and golden values in `test/`, which need no second
+implementation to compare against. Performance comparison against CUSPARSE shows we are
 **8-10× faster than CUSPARSE for matrix construction** (`laplacian`,
 `adjacency_matrix`, `dropzeros!`, `zero_rows_cols!`) and **at parity for
 SpMV** (via the fast-path in decision #3).
 
 **Alternatives considered.**
 
-- *Subtype `AbstractGPUSparseMatrixCSC` from GPUArrays*: doesn't exist /
-  isn't subtyped by CUDA.jl. Dead end.
+- *Subtype `AbstractGPUSparseMatrixCSC` from GPUArrays*: does not exist /
+  is not subtyped by CUDA.jl. Dead end.
 - *Wrap `SparseMatrixCSC` and dispatch internally*: same problem — no GPU
   storage.
 
@@ -94,12 +98,12 @@ backends (Metal, AMD, CPU), the fallback KA SpMV kernel is used.
 **Rationale.** We tried writing our own SpMV kernel using `Atomix.@atomic`.
 On GPU it was about **0.47× the speed of CUSPARSE** for the symmetric Laplacian
 matrices we use. CUSPARSE's hand-tuned implementation uses warp-level reduction
-tricks and tensor-core paths we don't replicate. Since CUDA is the only backend
+tricks and tensor-core paths we do not replicate. Since CUDA is the only backend
 with CUSPARSE, the cleanest fix was a vendor-specific fast-path *inside the
 extension*, leaving the portable KA fallback for everything else.
 
 **Data.** With the fast-path, SpMV is at **0.99-1.02× of the old CUDA-specific
-code** at all sizes. Without it, we'd be at 0.47-0.56×.
+code** at all sizes. Without it, we would be at 0.47-0.56×.
 
 **Wrapper reuse.** `PortableSparseCSC` carries an opaque `_cache::Ref{Any}`
 slot that the CUDA extension uses to memoise the `CuSparseMatrixCSC`
@@ -125,7 +129,7 @@ atomic scatter. The atomics produce non-deterministic row ordering within
 each column. We do **not** sort the rowvals after the scatter.
 
 **Rationale.** It would be more code, more memory traffic, more kernel
-launches — and we measured that it doesn't help.
+launches — and we measured that it does not help.
 
 **Data.** Direct measurement on RTX 3060
 (`bench/sort_csc_experiment.jl`, since deleted but reproducible from this
@@ -139,14 +143,14 @@ documentation):
 
 At 100K and 250K, sorted is *marginally slower* than unsorted (within noise).
 At 1M, sorted is marginally faster, but the per-call savings are 2.4 µs while
-the host-side sort costs 297 ms. Break-even is **~125,000 SpMV calls** — a
-typical Krylov CG solve runs 50-500 iterations, so we'd never recover the
+the host-side sort costs 297 ms. Break-even is **~125,000 SpMV calls**. A
+typical Krylov CG solve runs 50-500 iterations, so we would never recover the
 sort cost from a single solve. Even with a fast GPU radix sort instead of
 CPU `sortperm`, the per-call savings are too small to amortise within a
 realistic workload.
 
 **Why is the difference so small?** CUSPARSE's modern `cusparseSpMV` uses a
-row-block algorithm internally that doesn't depend on row order — it iterates
+row-block algorithm internally that does not depend on row order — it iterates
 `colptr[j]:(colptr[j+1]-1)` regardless of how `rowval[k]` are ordered within
 that range.
 
@@ -167,25 +171,25 @@ that range.
 
 - Float32 SpMV is 2× faster than Float64 on most consumer GPUs (memory
   bandwidth limited)
-- Float32 atomics are universally supported; Float64 atomics require
-  compute capability 6.0+ on NVIDIA and aren't supported at all on Apple
+- Float32 atomics are universally supported. Float64 atomics require
+  compute capability 6.0+ on NVIDIA and are not supported at all on Apple
   Metal
 - CG solves of the diffusion Laplacian converge to user-meaningful tolerance
   with Float32 — `reltol=1e-6` is achievable
 
-**Trade-off.** On CPU, Float64 is the natural choice because there's no
-bandwidth penalty and double-precision atomics aren't an issue. So we have
+**Trade-off.** On CPU, Float64 is the natural choice because there is no
+bandwidth penalty and double-precision atomics are not an issue. So we have
 a backend-dependent default. **This is a real footgun**: if you compute
 something on GPU and compare against CPU output, expect ~1e-6 differences
-that aren't bugs.
+that are not bugs.
 
 **Alternatives considered.**
 
 - *Float64 everywhere*: rejected due to GPU performance hit.
 - *Float32 everywhere*: rejected because CPU users have no reason to give
   up precision and double-precision is the Julia ecosystem default.
-- *User-controlled `T` parameter*: future work; currently the simulation
-  constructors don't expose this knob.
+- *User-controlled `T` parameter*: future work. Currently the simulation
+  constructors do not expose this knob.
 
 ---
 
@@ -220,10 +224,10 @@ properly sampled memory. The migration figures they produced survive in this
 document and in git history.
 
 **Do not reintroduce a second harness.** A performance assertion inside
-`Pkg.test()` is flaky by construction — machine-dependent, noisy, and CI runners
-vary by more than any real regression — and a per-machine baseline file nobody
-re-measures is worse than no baseline. Correctness belongs in `test/`, as
-properties and stored values; performance belongs in `benchmarks/`, end to end.
+`Pkg.test()` is flaky by construction — machine-dependent, noisy, and run on CI
+runners that vary by more than any real regression — and a per-machine baseline
+file nobody re-measures is worse than no baseline. Correctness belongs in `test/`,
+as properties and stored values. Performance belongs in `benchmarks/`, end to end.
 
 ---
 
@@ -233,13 +237,13 @@ properties and stored values; performance belongs in `benchmarks/`, end to end.
 its dependencies to the package. It is invoked as
 `julia --project=benchmarks benchmarks/bench_tortuosity.jl`.
 
-**Rationale.** The main package's `[deps]` should contain only what users
+**Rationale.** The main package's `[deps]` must contain only what users
 actually need at runtime. The sharpest case is CUDA: it is a **weak** dependency
 of Tortuosity.jl, and adding it to the package's own `Project.toml` to satisfy a
 benchmark would turn the CUDA extension into a hard dependency of the released
 package — the opposite of what the extension exists for.
 
-**Why not `[extras]`?** `[extras]` is for test dependencies; it is how
+**Why not `[extras]`?** `[extras]` is for test dependencies. It is how
 `Pkg.test()` finds things. A benchmark is not a test — it has its own lifecycle
 and its own runtime, measured in hours. Keeping it separate also means the test
 environment does not pull the plotting and Python-interop tooling.
@@ -252,12 +256,12 @@ environment does not pull the plotting and Python-interop tooling.
 
 **Decision.** `SteadyDiffusionProblem(...; gpu=true)` and
 `TransientDiffusionProblem(...; gpu=true)` explicitly `error(...)` if no GPU backend
-extension has been loaded.
+extension is loaded.
 
 **Rationale.** Without this check, `gpu=true` silently falls back to CPU
 because `_gpu_adapt[]` defaults to `identity`. The user sees no warning, the
 construction succeeds, and they get a CPU computation when they explicitly
-asked for GPU. That's a footgun.
+asked for GPU. That is a footgun.
 
 **Cost.** ~5 lines per constructor. Trivial.
 
@@ -317,7 +321,7 @@ vector at 200³ — about 0.5% of the per-snapshot ODE work on a consumer GPU.
 For the longest plausible runs (≥ 1000 snapshots) this adds up to a few
 seconds of host-device traffic, still dwarfed by the solve cost.
 
-*Group C* was a performance problem and has been partially fixed:
+*Group C* was a performance problem and is now partially fixed:
 
 - `find_boundary_nodes` previously allocated a 64 MB `Int` array plus a
   `Dict` of 6 slice copies to answer "which pore ordinals are on this face?".
@@ -374,7 +378,7 @@ bespoke façade that blocked legitimate composition:
 1. **Algorithm choice was hard-coded.** `init_state` instantiated `ROCK4()`
    unconditionally. Users who wanted `Tsit5`, `TRBDF2`, `AutoTsit5(Rosenbrock23())`,
    or anything else had to reach past the public API.
-2. **Stop conditions weren't composable with SciML callbacks.** The old
+2. **Stop conditions were not composable with SciML callbacks.** The old
    closures had signature `(t_hist, C_hist) -> Bool` and only ran between `dt`
    intervals. A user who wanted to combine the flux-balance check with
    `PositiveDomain` or a custom conservation check had no clean path.
@@ -387,7 +391,7 @@ bespoke façade that blocked legitimate composition:
 
 **How the wrapper preserves the "CPU snapshots even on GPU" invariant.**
 Default `sol.u` in OrdinaryDiffEq stores whatever the integrator state type is
-— on GPU that's `Vector{CuVector{Float32}}`, which OOMs for long runs. To
+— on GPU that is `Vector{CuVector{Float32}}`, which OOMs for long runs. To
 keep the old invariant, `solve(::TransientDiffusionProblem, alg; …)`:
 
 1. Builds an internal `ODEProblem(rhs!, u0, tspan)`.
@@ -472,10 +476,10 @@ when relevant.
   the uniform 7-point stencil gives each column only ≈7 entries, so the
   per-nnz launch has higher GPU occupancy and better coalescing than the
   per-column launch. If this workload ever shifts to matrices with
-  long-tail column lengths (e.g. multi-physics couplings), revisit.
+  long-tail column lengths (for example, multi-physics couplings), revisit.
 
 - **Matrix construction uses `Int32` indices throughout.** This is mandated
   by the CUSPARSE fast-path (CUSPARSE expects Int32). If someone ever
   constructs a `PortableSparseCSC` manually with Int64 indices the fallback
   `_as_cusparse` will quietly convert, allocating on every `mul!`. A warning
-  on that path would be nice but hasn't been prioritised.
+  on that path would be nice but has not been prioritised.

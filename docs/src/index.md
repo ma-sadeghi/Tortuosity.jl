@@ -1,8 +1,8 @@
 # Tortuosity.jl
 
-`Tortuosity.jl` is a GPU-accelerated Julia package for computing the tortuosity factor ($\tau$) of voxel images of porous media. The tortuosity factor quantifies how much a porous microstructure slows down diffusive transport relative to free diffusion — $\tau = 1$ means no hindrance, higher values mean slower transport.
+`Tortuosity.jl` is a GPU-accelerated Julia package for computing the tortuosity factor ($\tau$) of voxel images of porous media. The tortuosity factor quantifies how much a porous microstructure slows down diffusive transport relative to free diffusion. $\tau = 1$ means no hindrance, and higher values mean slower transport.
 
-The package supports both **steady-state** and **transient** diffusion, uniform or spatially varying diffusivity, and runs on CPU or any of the supported GPU backends: NVIDIA (CUDA), Apple Silicon (Metal), and AMD (ROCm/AMDGPU).
+The package supports both **steady-state** and **transient** diffusion, with uniform or spatially varying diffusivity. It runs on CPU, or on any of the supported GPU backends: NVIDIA (CUDA), Apple Silicon (Metal), and AMD (ROCm/AMDGPU).
 
 It is similar to [TauFactor](https://www.mathworks.com/matlabcentral/fileexchange/57956-taufactor) in MATLAB and [taufactor](https://github.com/tldr-group/taufactor) in Python.
 
@@ -17,7 +17,7 @@ Pkg.add("Tortuosity")
 
 ## Optional dependencies
 
-Parts of the API live in package extensions, so `using Tortuosity` stays light for people who do not need them. `Pkg.add("Tortuosity")` does **not** install them — Julia resolves only a package's hard dependencies — so add the ones you need yourself, then load them before calling the entry points they back.
+Parts of the API live in package extensions, so `using Tortuosity` stays light for people who do not need them. `Pkg.add("Tortuosity")` does **not** install them, because Julia resolves only a package's hard dependencies. Add the ones you need yourself, then load them before you call the entry points they back.
 
 | Add and load this | To use |
 |-------------------|--------|
@@ -49,7 +49,7 @@ println("τ = $τ")
 
 ## GPU backends
 
-Tortuosity ships CPU kernels unconditionally. GPU kernels live in package extensions — one for each supported backend, loaded lazily when the backend package is imported:
+Tortuosity ships CPU kernels unconditionally. GPU kernels live in package extensions, one for each supported backend, and load lazily when you import the backend package:
 
 | Backend | Package | Hardware |
 |---------|---------|----------|
@@ -70,12 +70,12 @@ sim = SteadyDiffusionProblem(img; axis=:x)     # auto-detects the loaded backend
 
 The `gpu` keyword of [`SteadyDiffusionProblem`](@ref) and [`TransientDiffusionProblem`](@ref) controls whether solver kernels run on GPU:
 
-- **`gpu=nothing`** (default) — auto-detect. Uses GPU when a backend package is loaded *and* the image has at least 100,000 pore voxels; otherwise runs on CPU. If you pass a large image but have not loaded a backend package, you'll see a one-time `@info` message pointing back to this section.
+- **`gpu=nothing`** (default) — auto-detect. Uses GPU when a backend package is loaded *and* the image has at least 100,000 pore voxels, and otherwise runs on CPU. If you pass a large image but have not loaded a backend package, you will see a one-time `@info` message that points back to this section.
 - **`gpu=true`** — force GPU. Errors immediately if no backend is loaded.
 - **`gpu=false`** — force CPU, even when a backend is available.
 
 !!! warning "Silent CPU fallback"
-    The auto-detect mode will run on CPU without erroring if no backend package has been loaded — the intent is to never force `using CUDA` on users who don't need it. If you're expecting GPU performance, either pass `gpu=true` (which errors on a missing backend) or make sure one of `CUDA.jl`, `Metal.jl`, or `AMDGPU.jl` is imported before constructing the simulation.
+    If no backend package has been loaded, auto-detect runs on CPU without an error, because the intent is to never force `using CUDA` on users who do not need it. If you expect GPU performance, either pass `gpu=true`, which errors on a missing backend, or import one of `CUDA.jl`, `Metal.jl`, or `AMDGPU.jl` before you construct the simulation.
 
 ## Learn more
 

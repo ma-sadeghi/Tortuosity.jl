@@ -1,7 +1,7 @@
 # Orchestration runbook
 
 An ordered procedure for driving a full campaign on a rented machine. Written for
-whoever — or whatever — is holding the SSH key: every step has a check that must
+whoever — or whatever — is holding the SSH key. Every step has a check that must
 pass before the next one starts, because the failures that matter here are silent.
 A contaminated timing looks exactly like a real one once it is in the CSV.
 
@@ -24,7 +24,7 @@ Collect and record these. They belong in the campaign notes, not in anyone's hea
 hosts cannot be compared, and nothing downstream will stop you mixing them —
 `results/environment.csv` records the host per batch so the mistake is at least
 auditable afterwards. If a pod dies mid-campaign, the timings already collected on
-it are only usable if the replacement is the same instance type, and even then it
+it are only usable if the replacement is the same instance type. Even then it
 is safer to re-run the timing stages from scratch.
 
 ## 1. Get the code there
@@ -56,7 +56,7 @@ not continue past a warning here. In particular:
 - `CUDA is not functional` — every GPU stage will refuse to run. Fix the driver
   before spending anything.
 - `torch.cuda.is_available(): False` — taufactor would be benchmarked on the CPU
-  against a GPU competitor. On Linux this usually means the wrong torch wheel;
+  against a GPU competitor. On Linux this usually means the wrong torch wheel.
   `pyproject.toml` pins the CUDA index for a reason.
 
 ## 3. Smoke grid, every time
@@ -88,7 +88,7 @@ renders is not the same as a figure that is right.
 ```
 
 This is the expensive, irreplaceable half. Every later stage depends on these
-values and nothing else does; a campaign that runs out of budget here has still
+values and nothing else does. A campaign that runs out of budget here has still
 produced the thing that cannot be cheaply redone. Each reference is appended the
 moment it is solved, so an interruption costs at most one case.
 
@@ -112,7 +112,7 @@ rather than guessed at.
 Fourteen stages, serially, ordered so that an interrupted night leaves the results
 the paper most needs. Do not add parallelism. The stages contend for the same GPU
 and the same cores, and concurrency corrupts the very timings this exists to
-measure — `campaign.sh` takes a PID lock and refuses to start beside a live
+measure. `campaign.sh` takes a PID lock and refuses to start beside a live
 campaign, but that only catches the obvious case.
 
 To split the work over several sittings, pass the stage and tool through:
@@ -135,7 +135,7 @@ Expect and do not treat as failures:
   and where it ends is a result.
 - `timeout` rows from PuMA at the largest sizes. Its conjugate gradient is
   effectively serial even with the whole machine available, and the grid is
-  large; that too is a result.
+  large. That too is a result.
 - Blank cells in a figure. Every one has a `stop_reason` in the CSV explaining it.
 
 ## 6. Stopping, killing and resuming
@@ -148,7 +148,7 @@ pgrep -af 'campaign.sh|bench_tortuosity|bench_taufactor|bench_puma'
 ```
 
 **Killing the solver process is not enough.** The campaign script waits on its
-child; kill only the child and the script simply advances to the next stage, so a
+child. If you kill only the child, the script advances to the next stage, so a
 replacement campaign started afterwards runs concurrently with it. Match on the
 command line and kill the shell too:
 
@@ -163,7 +163,7 @@ one of its rows carries a `stop_reason` — so a case interrupted halfway up its
 ladder is redone rather than silently accepted as converged.
 
 **After any interruption, check coverage rather than values.** A timing taken while
-something else was running is indistinguishable from a clean one by inspection; the
+something else was running is indistinguishable from a clean one by inspection. The
 tell is a results file containing more cases than the run had time to complete.
 
 ## 7. Bring the results home
@@ -194,7 +194,7 @@ campaign on it is the one failure nothing here can recover from.
 ## Things not to do
 
 - **Do not edit `config.toml` mid-campaign.** The grid, the ladders and the thread
-  budget are recorded in the rows already written; changing one silently produces a
+  budget are recorded in the rows already written. Changing one silently produces a
   file whose rows were measured under two different definitions.
 - **Do not run the stages in parallel**, on any machine, for any reason.
 - **Do not run anything else on the machine** while a timing stage is running.
