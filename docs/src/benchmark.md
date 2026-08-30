@@ -2,7 +2,7 @@
 
 This page documents the benchmark campaign that backs the performance claims in the JOSS paper. It carries the detail the paper had to cut for length: the full protocol, the patches each tool needed, the per-case numbers behind every aggregate, and the gaps in the data.
 
-`Tortuosity.jl` is compared against two established image-based tortuosity tools:
+We compare `Tortuosity.jl` against two established image-based tortuosity tools:
 
 - [taufactor](https://github.com/tldr-group/taufactor) — Python/PyTorch, successive over-relaxation (SOR) on the full image grid, CPU and GPU.
 - [PuMA](https://github.com/nasa/puma) — C++ with Python bindings (`pumapy`), finite volume with SciPy's conjugate gradient on the full grid, CPU only.
@@ -13,7 +13,7 @@ Every number below is traceable to a file under [`benchmarks/results/`](https://
 
 ### The image grid
 
-All three tools read the same images, generated once by the `Imaginator` submodule and cached as one HDF5 file per case under `benchmarks/data/images/`, each with a SHA-256 in `manifest.csv` that every stage verifies before it loads.
+All three tools read the same images. The `Imaginator` submodule generates them once and caches them as one HDF5 file per case under `benchmarks/data/images/`. Each file carries a SHA-256 in `manifest.csv` that every stage verifies before it loads.
 
 | axis | values |
 |---|---|
@@ -23,15 +23,15 @@ All three tools read the same images, generated once by the `Imaginator` submodu
 
 That is 75 combinations, of which **74 are measurable**. `n1000_b050_p020` has no percolating pore space at all — `manifest.csv` records it with zero nodes — so it has no reference and never runs. The same porosity and feature size *do* percolate at ``N = 200``, so this is a finite-size effect rather than a solver failure, and any coverage count at ``1000^3`` is out of 14 rather than 15.
 
-Blobiness is the feature-size knob: `Imaginator.blobs` blurs with ``\sigma = \text{mean(shape)}/40/\text{blobiness}``, so a higher value gives finer features and longer transport paths. Because ``\sigma`` scales with the domain, a ``200^3`` and a ``1000^3`` image at the same blobiness hold the same number of blobs, and the size sweep therefore measures scaling rather than a changing geometry. Porosity alone does not describe a porous medium: at ``N = 600``, ``\varepsilon \approx 0.19`` the coarse structure gives ``\tau = 23.4`` and the fine one ``\tau = 11.2``, a factor of two at the same pore fraction. Three structures are covered so that a ranking between solvers can be shown to survive that. Across the whole grid ``\tau`` runs from 1.028 to 33.93.
+Blobiness is the feature-size knob: `Imaginator.blobs` blurs with ``\sigma = \text{mean(shape)}/40/\text{blobiness}``, so a higher value gives finer features and longer transport paths. Because ``\sigma`` scales with the domain, a ``200^3`` and a ``1000^3`` image at the same blobiness hold the same number of blobs, and the size sweep therefore measures scaling rather than a changing geometry. Porosity alone does not describe a porous medium: at ``N = 600``, ``\varepsilon \approx 0.19`` the coarse structure gives ``\tau = 23.4`` and the fine one ``\tau = 11.2``, a factor of two at the same pore fraction. The campaign covers three structures to show that a ranking between solvers survives that. Across the whole grid ``\tau`` runs from 1.028 to 33.93.
 
-Every image is trimmed to the pore space that percolates along the transport axis. This is not cosmetic: an isolated pore cluster contributes nodes no boundary condition reaches, leaving the operator singular on that subspace, and solvers differ in how gracefully they absorb that — so an untrimmed image would measure error handling rather than transport.
+Every image is trimmed to the pore space that percolates along the transport axis. This is not cosmetic: an isolated pore cluster contributes nodes no boundary condition reaches, leaving the operator singular on that subspace, and solvers differ in how they cope with that. An untrimmed image would therefore measure error handling rather than transport.
 
 ### Matched-accuracy protocol
 
 The three tools' convergence parameters measure different quantities, so setting all three to a common value does not produce comparable accuracy: a single-tolerance comparison measures the choice of parameter rather than the solver.
 
-Instead each tool is swept over the knob that best traces *its own* accuracy–time frontier, and the frontiers are compared. We report the wall time of the **fastest measured run that reaches a given relative error in ``\tau``**, at three targets — 10%, 1% and 0.1% — because the margin depends on which one you ask for. Every rung is written to the CSV, so the time to reach any looser target is answerable from the same data without re-measuring.
+Instead we sweep each tool over the knob that best traces *its own* accuracy–time frontier, and compare the frontiers. We report the wall time of the **fastest measured run that reaches a given relative error in ``\tau``**, at three targets — 10%, 1% and 0.1% — because the margin depends on which one you ask for. Every rung is written to the CSV, so the time to reach any looser target is answerable from the same data without re-measuring.
 
 | tool | knob | range |
 |---|---|---|
@@ -39,10 +39,10 @@ Instead each tool is swept over the knob that best traces *its own* accuracy–t
 | taufactor | SOR iteration count | 18 log-spaced, 1 … 20 000 |
 | PuMA | CG iteration count | 18 log-spaced, 1 … 20 000 |
 
-**Iteration count rather than tolerance, for all three.** `knob_name` is `iters` in every row of every file in `results/timings/`, PuMA included. Tolerance samples the frontier badly at both ends — the loosest settings return ``\tau \approx 0`` and the tightest can step straight past the target in a single rung — and taufactor evaluates its own `conv_crit` only every 100 iterations, which puts the entire coarse-accuracy regime out of reach through that knob.
+**Iteration count rather than tolerance, for all three.** `knob_name` is `iters` in every row of every file in `results/timings/`, PuMA included. Tolerance samples the frontier badly at both ends: the loosest settings return ``\tau \approx 0``, and the tightest can step straight past the target in a single rung. And taufactor evaluates its own `conv_crit` only every 100 iterations, which puts the entire coarse-accuracy regime out of reach through that knob.
 
 !!! note "What PuMA needed to reach the same axis"
-    Two workarounds, both in `bench_puma.py`. `PropertySolver.solve` raises rather than returning a partial result when SciPy stops on `maxiter`; and it passes only `atol` to SciPy and never `tol`, leaving that at its `1e-5` default, so every tolerance rung below ``10^{-5}\|b\|`` was a duplicate of the one above it. Driving SciPy's conjugate gradient directly, over PuMA's own operator and preconditioner, fixes both. Nothing about PuMA's algorithm changes — only the stopping rule, which is the thing being swept.
+    Two workarounds, both in `bench_puma.py`. `PropertySolver.solve` raises rather than returning a partial result when SciPy stops on `maxiter`. It also passes only `atol` to SciPy and never `tol`, which leaves that at its `1e-5` default, so every tolerance rung below ``10^{-5}\|b\|`` was a duplicate of the one above it. Driving SciPy's conjugate gradient directly, over PuMA's own operator and preconditioner, fixes both. Nothing about PuMA's algorithm changes — only the stopping rule, which is the thing being swept.
 
 ### One solve per case, not one per rung
 
@@ -50,25 +50,25 @@ Each tool's whole ladder is traced from a **single** solve. A Krylov or SOR iter
 
 This was verified rather than assumed, on both devices and all three tools: ``\tau`` comes back bit-identical at every rung, and the traced time lands within a few percent of one-solve-per-rung, converging on it as the rung grows.
 
-Two things this required. `abstol = 0` for `Tortuosity.jl`, because LinearSolve otherwise defaults it to ``\sqrt{\varepsilon_\text{machine}}`` — 3.4e-4 in `Float32` — which ends the solve long before the iteration cap and leaves most of the ladder unreachable. And a `checkpoints` argument on the vendored taufactor fork.
+This required two things. `abstol = 0` for `Tortuosity.jl`, because LinearSolve otherwise defaults it to ``\sqrt{\varepsilon_\text{machine}}`` — 3.4e-4 in `Float32` — which ends the solve long before the iteration cap and leaves most of the ladder unreachable. And a `checkpoints` argument on the vendored taufactor fork.
 
 ### What the clock covers
 
 **Every tool is clocked from the moment it receives the image to the moment tortuosity can be read.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all three. Only the image itself, and the tortuosity read-off at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work a user does.
 
 !!! note "This replaces an earlier, less even convention"
-    An earlier version of this benchmark excluded setup for taufactor and PuMA on the grounds that their users pay it before solving, and called the result conservative. It was not conservative by a little. taufactor's `Solver` constructor builds the SOR chequerboard from an ``N^3`` `float64` array and a three-way ``N^3`` meshgrid; measured at ``200^3`` on the GPU it cost **0.415 s against a 0.48 s solve — 45% of the total**, and it grows as ``N^3``. Charging `Tortuosity.jl` for its assembly and coarse space while charging taufactor nothing skewed the GPU comparison by about the whole margin being measured, and inverted the ranking at the loose end of the accuracy ladder.
+    An earlier version of this benchmark excluded setup for taufactor and PuMA on the grounds that their users pay it before solving, and called the result conservative. It was not conservative by a small margin. taufactor's `Solver` constructor builds the SOR checkerboard from an ``N^3`` `float64` array and a three-way ``N^3`` meshgrid; measured at ``200^3`` on the GPU it cost **0.415 s against a 0.48 s solve — 45% of the total**, and it grows as ``N^3``. Charging `Tortuosity.jl` for its assembly and coarse space while charging taufactor nothing skewed the GPU comparison by about the whole margin being measured, and inverted the ranking at the loose end of the accuracy ladder.
 
-Each rung is run three times and the **median** reported, with the spread recorded in a `tau_spread` column. A first repeat slower than `repeat_threshold_s` (60 s) abandons the remaining repeats; those rows carry `repeats = 1` and a NaN spread, because a spread of zero is the claim that three runs agreed exactly, which is not the same thing as not having looked.
+Each rung is run three times and the **median** reported, with the spread recorded in a `tau_spread` column. A first repeat slower than `repeat_threshold_s` (60 s) abandons the remaining repeats. Those rows carry `repeats = 1` and a NaN spread, because a spread of zero is the claim that three runs agreed exactly, which is not the same thing as not having looked.
 
-Both competitors start from a supplied initial guess — taufactor's `init_field` seeds SOR with an exact linear concentration profile — while `Tortuosity.jl`'s CG starts from a zero vector. For a nearly open medium that profile is already close to the answer, so taufactor begins nearly converged and we do not. The current harness has no warm-start option; an earlier experiment that gave CG the same linear start is not reproducible against this code and its result is not reported here.
+Both competitors start from a supplied initial guess — taufactor's `init_field` seeds SOR with an exact linear concentration profile — while `Tortuosity.jl`'s CG starts from a zero vector. For a nearly open medium that profile is already close to the answer, so taufactor begins nearly converged and we do not. The current harness has no warm-start option. An earlier experiment that gave CG the same linear start is not reproducible against this code, so its result is not reported here.
 
 ### Reference solution
 
 Ground truth is a `Tortuosity.jl` **CPU** solve in `Float64` at `reltol = 1e-10`, computed once per image into `results/references.csv` and reused by every tool. Relative error is ``|\tau - \tau_\text{ref}| / \tau_\text{ref}``.
 
 !!! note "Why the reference is not computed on the GPU"
-    GPU solves run in `Float32`, whose machine epsilon (≈ 1.2e-7) falls inside the error range being measured, so a `Float32` reference could not resolve the errors it is meant to certify.
+    GPU solves run in `Float32`, whose machine epsilon (≈ 1.2e-7) falls inside the error range being measured, so a `Float32` reference cannot resolve the errors it is meant to certify.
 
 !!! note "Why `reltol = 1e-10` specifically"
     `reltol` bounds the *residual*, not the error. For conjugate gradient the solution error is bounded by ``\kappa(A) \cdot \texttt{reltol}``, and a 3D Laplacian on an ``N^3`` grid has ``\kappa \sim N^2``. At ``N = 400`` that is ``\kappa \approx 1.6\times10^5``, so a reference at `reltol = 1e-8` would admit a worst-case solution error near 1.6e-3 — *larger* than the 0.1% target it exists to certify. At `1e-10` the bound sits near 1.6e-5, roughly two orders below the target.
@@ -77,12 +77,12 @@ References are the most expensive thing the campaign computes: **51.1 hours over
 
 ### Matching the discretization, and the taufactor fork
 
-The tools do not discretize the same problem by default. `Tortuosity.jl` and PuMA pin Dirichlet values at the boundary voxels themselves (node-centered, domain length ``(N-1)\Delta x``); released taufactor places the boundaries half a voxel outside the domain and divides by ``N \Delta x``. That is an ``O(1/N)`` discrepancy — 1% at ``N = 100`` — that would otherwise be attributed to the solver.
+The tools do not discretize the same problem by default. `Tortuosity.jl` and PuMA pin Dirichlet values at the boundary voxels themselves (node-centered, domain length ``(N-1)\Delta x``). Released taufactor places the boundaries half a voxel outside the domain and divides by ``N \Delta x``. That is an ``O(1/N)`` discrepancy — 1% at ``N = 100`` — that would otherwise be attributed to the solver.
 
-taufactor is therefore vendored as a git submodule pinned at [`ma-sadeghi/taufactor@a4bc5f9`](https://github.com/ma-sadeghi/taufactor/commit/a4bc5f9), which is `v1.2.1-24-ga4bc5f9`: upstream's own history past the v1.2.1 tag, plus **two patches of ours, 13 lines and 46**. **No solver logic is changed.**
+taufactor is therefore vendored as a clone pinned at [`ma-sadeghi/taufactor@a4bc5f9`](https://github.com/ma-sadeghi/taufactor/commit/a4bc5f9), which is `v1.2.1-24-ga4bc5f9`: upstream's own history past the v1.2.1 tag, plus **two patches of ours, 13 lines and 46**. **No solver logic is changed.**
 
-- [`d05aa2e`](https://github.com/ma-sadeghi/taufactor/commit/d05aa2e) (+13 −7) — node-centered Dirichlet BCs at voxels 1 and ``N_x`` with the SOR chequerboard zeroed on those slices; domain length ``(N_x - 1)\Delta x`` to follow; and the convergence criterion honouring the user's `conv_crit` instead of a hard-coded `2e-3` that silently overrides it.
-- [`a4bc5f9`](https://github.com/ma-sadeghi/taufactor/commit/a4bc5f9) (+46 −3) — `checkpoints` and `checkpoint_hook` on `solve`, which read ``\tau`` off at a list of iteration counts without stopping and subtract the cost of the readings back out of the clock. This is what lets one solve trace the whole ladder, and it also finalises ``\tau`` when a run stops between the every-100-iteration convergence checks, where upstream would report a stale value. It touches no state the SOR sweep reads, which is why iterate ``k`` comes back bit-identical either way.
+- [`d05aa2e`](https://github.com/ma-sadeghi/taufactor/commit/d05aa2e) (+13 −7) — node-centered Dirichlet BCs at voxels 1 and ``N_x`` with the SOR checkerboard zeroed on those slices; domain length ``(N_x - 1)\Delta x`` to follow; and the convergence criterion honoring the user's `conv_crit` instead of a hard-coded `2e-3` that silently overrides it.
+- [`a4bc5f9`](https://github.com/ma-sadeghi/taufactor/commit/a4bc5f9) (+46 −3) — `checkpoints` and `checkpoint_hook` on `solve`, which read ``\tau`` off at a list of iteration counts without stopping and subtract the cost of the readings back out of the clock. This is what lets one solve trace the whole ladder, and it also finalizes ``\tau`` when a run stops between the every-100-iteration convergence checks, where upstream would report a stale value. It touches no state the SOR sweep reads, which is why iterate ``k`` comes back bit-identical either way.
 
 ### Memory is measured by its own stage
 
@@ -104,7 +104,7 @@ By default the memory stage covers only blobiness 1.0 (`memory.blobinesses` in `
 
 ### Threads
 
-**Nothing is pinned.** Every tool takes the machine the way a user running it would — `-t auto` for Julia, torch's own pool for taufactor, whatever NumPy and SciPy size their BLAS to for PuMA — and every row records the count that run actually got. What the campaign claims is a speedup, not an algorithmic advantage, so a tool that parallelises better is entitled to the result that follows from it, and one that does not is not protected from it.
+**Nothing is pinned.** Every tool takes the machine the way a user running it would — `-t auto` for Julia, torch's own pool for taufactor, whatever NumPy and SciPy size their BLAS to for PuMA — and every row records the count that run actually got. What the campaign claims is a speedup, not an algorithmic advantage, so a tool that parallelizes better is entitled to the result that follows from it, and one that does not is not protected from it.
 
 The counts recorded in `results/environment.csv` are asymmetric, and the asymmetry is real rather than a policy:
 
@@ -134,7 +134,7 @@ The whole dataset comes from one host. `results/environment.csv` records the hos
 | PuMA (`pumapy`) | 3.2.2 |
 | taufactor | fork of v1.2.1, pinned at `a4bc5f9` |
 
-The GPU model comes from the `accelerator` column of `environment.csv`; the core counts from `results/core-occupancy*.json`, which record `host_physical_cores` and `host_logical_cores` directly. **The operating system, the exact CPU model and the host RAM are not recorded anywhere in `results/`.** The largest CPU run in the campaign peaked at 165.4 GB resident, so the machine has at least that much memory, but the campaign does not record the figure itself. The `torch` build recorded (`2.10.0+cu128`) is the Linux wheel from `pixi.lock`; the Windows wheel pinned in the same lockfile is 2.11.0+cu128 and was not used.
+The GPU model comes from the `accelerator` column of `environment.csv`, and the core counts from `results/core-occupancy*.json`, which record `host_physical_cores` and `host_logical_cores` directly. **The operating system, the exact CPU model and the host RAM are not recorded anywhere in `results/`.** The largest CPU run in the campaign peaked at 165.4 GB resident, so the machine has at least that much memory, but the campaign does not record the figure itself. The `torch` build recorded (`2.10.0+cu128`) is the Linux wheel from `pixi.lock`; the Windows wheel pinned in the same lockfile is 2.11.0+cu128 and was not used.
 
 ## Results
 
@@ -143,6 +143,8 @@ The GPU model comes from the `accelerator` column of `environment.csv`; the core
 ![Scaling at matched accuracy and the Tortuosity.jl-vs-competitor regime maps](assets/benchmark_summary.png)
 
 Panels (a) and (b) are the GPU: scaling at matched accuracy, and the speedup against taufactor resolved by size and porosity. Panels (c) and (d) are the CPU, where the headline competitor is PuMA. Every panel is drawn at blobiness 1.0, and a blank heatmap cell means one or both tools never reached the target — the CSV carries a `stop_reason` for each.
+
+In the scaling panels a solid segment joins measurements, and a dashed segment with a hollow marker means at least one porosity there was projected rather than measured; the warning under *Against taufactor on the CPU* lists every projected value and how far each one reaches. A series stops where a porosity ran out of memory instead, since no mean over the porosities that remain covers the same images: that is why the assembled operator ends at ``600^3`` on the GPU. The legend carries the exponent of a power law fitted to the measured points, which is the comparison the panel exists for. taufactor comes to ``N^{3.3}`` on the GPU and ``N^{4.6}`` on the CPU, against ``N^{2.5}`` and ``N^{3.1}`` for the matrix-free path. Three is linear in voxel count, so ours is close to a fixed iteration count per solve while taufactor's rises with the edge length — the same effect the preconditioner section measures directly.
 
 ### Against taufactor on the GPU
 
@@ -170,7 +172,7 @@ Pooling all three microstructures rather than one gives 70 paired cases at the 0
 | ε ≈ 0.95 | 0.47× | 1.64× | 3.19× | 3.18× | 2.17× | **1.76×** |
 | column | **2.05×** | **7.12×** | **10.4×** | **10.6×** | **8.44×** | **6.55×** |
 
-Two things are worth reading off this beyond the headline.
+Two things in this table matter beyond the headline.
 
 **Porosity moves the result more than size does.** The margin is set by how much solid there is to exclude and falls monotonically with porosity at every size — from 58× near ε ≈ 0.2 to 1.8× at ε ≈ 0.95. At ``N = 600``, ε ≈ 0.19 taufactor needs its entire 20 000-sweep budget and 867.9 s to reach the target, against 189 preconditioned CG iterations and 5.6 s.
 
@@ -203,7 +205,7 @@ Reporting a single accuracy target flatters whichever solver happens to suit it.
 
 taufactor is faster **only** at ``N = 200``, on 10 of 74 paired cases at the loosest target and 7 of 70 at the tightest, always at ε ≥ 0.4. Its worst-case-for-us cell is `n200_b200_p095`, where 6 SOR sweeps and 0.381 s beat 59 CG iterations and 0.976 s — 0.39×.
 
-Both ends have a mechanism. taufactor's SOR starts from a linear concentration profile, which for an open medium is already close to the answer, so when little accuracy is demanded it has little left to do; `Tortuosity.jl` meanwhile pays a fixed setup cost — assembling the operator and building the coarse space — that is charged even to a solve which then runs for one iteration. At ``200^3`` that fixed cost is a large fraction of a sub-second solve. As the image grows, or the target tightens, the convergence rate of the method decides the outcome, which is where a Krylov method separates from a stationary one.
+Both ends have a mechanism. taufactor's SOR starts from a linear concentration profile, which for an open medium is already close to the answer, so when little accuracy is demanded it has little left to do. `Tortuosity.jl` meanwhile pays a fixed setup cost — assembling the operator and building the coarse space — that is charged even to a solve which then runs for one iteration. At ``200^3`` that fixed cost is a large fraction of a sub-second solve. As the image grows, or the target tightens, the convergence rate of the method decides the outcome, which is where a Krylov method separates from a stationary one.
 
 ![Accuracy vs solve time on the GPU](assets/benchmark_pareto.png)
 
@@ -228,8 +230,14 @@ Both tools also run on the CPU, where the margin is smaller and the sign flips a
 
 Pooled over all three microstructures, 56 paired cases, geometric mean 3.18×, ranging 0.041× to 157×. taufactor is faster in 14 of them, all at ε ≥ 0.4 and all at ``N \le 800``; at ε ≈ 0.95 it is faster on average at every size below ``600^3``. See `docs/src/assets/benchmark_speedup_taufactor_cpu.png` and `docs/src/assets/benchmark_scaling_cpu.png`.
 
-!!! warning "The taufactor CPU dataset has two gaps, and they are not results"
-    There is **no taufactor CPU data at ``1000^3``**, and none at ``800^3`` for ε ≈ 0.2. The ``800^3`` cases were excluded from the sweep that ran and the follow-up never happened — a sequencing gap, not a decision. Filling it was judged not worth the machine time: the worst ``600^3`` CPU case took 6.02 h and exhausted its ladder without reaching the target, and ``800^3`` projects to roughly 19 h per case. The memory figure projects taufactor's ``1000^3`` CPU footprint from its flat 60.0 bytes per voxel and labels the bar as projected; a *time* projection is not defensible the same way, because taufactor's sweep count to target is not monotonic in size.
+!!! warning "The taufactor CPU dataset has two gaps, and the scaling panel fills them by projection"
+    There is **no taufactor CPU data at ``1000^3``**, and none at ``800^3`` for ε ≈ 0.2. The ``800^3`` cases were excluded from the sweep that ran and the follow-up never happened — a sequencing gap, not a decision. Filling it was judged not worth the machine time: the worst ``600^3`` CPU case took 6.02 h and exhausted its ladder without reaching the target.
+
+    The tables above and the heatmaps report measurements only, so those cells stay blank. The scaling panels do not, because a mean over whichever porosities a tool happened to reach is a different quantity at every size, and biased in one direction: the porosity taufactor loses first is the densest, which is the one it is slowest on. Dropping it drew taufactor levelling off on the GPU and speeding up on the CPU, neither of which happens. Each missing cell is therefore projected from a power law fitted to that porosity's own measured sizes, and every point on those panels averages over the same five porosities.
+
+    A power law is the right form here — cost per unknown is fixed, and both the unknown count and the sweep count are powers of the edge length — and it fits taufactor tightly, at ``R^2`` from 0.95 to 0.998 per porosity. It is also what makes the per-cell noise tolerable: which rung of a coarse ladder first crosses the target is close to arbitrary, so individual cells are not monotonic in size even where the underlying cost is.
+
+    The projected values, at blobiness 1.0 and the 0.1% target: on the CPU ``1000^3`` comes to 3537 s at ε ≈ 0.4, 10658 s at 0.6, 3532 s at 0.8 and 1665 s at 0.95. **The two ε ≈ 0.2 projections are the weakest numbers in this document** — 27.7 h at ``800^3`` and 85.3 h at ``1000^3``, from three measured sizes and an exponent of 5.04, extrapolating two size steps rather than one. They dominate their geometric means. On the GPU only one cell is projected, ε ≈ 0.2 at ``1000^3``, at 5328 s; that case did run, reaching 0.86% error in 2349 s before it timed out, so the measurement bounds the projection from below and is consistent with it.
 
 ### Against our own CPU path
 
@@ -270,7 +278,7 @@ Neither CPU tool saturates the machine, and the margin above is not won by takin
 Of 8 physical cores (16 logical). PuMA occupies most of the machine throughout its solve. Our own occupancy is size-dependent: at ``200^3`` a solve finishes in seconds and the median sample catches serial setup rather than the threaded apply, while at ``600^3``, where the solve dominates, the median rises to 5.5 cores with peaks using every logical thread. So the PuMA comparison at ``200^3`` is won on **less** of the machine, not more.
 
 !!! warning "The paired run does not measure our side, and its number is not used"
-    `core-occupancy.json` ran both tools in one pass, but our process there recorded `"exit": -11` (SIGSEGV during exit cleanup, after the solve completed and the row was written) with only **6 usable samples**. Six samples is not a measurement, and the 1.39 median it reports for `tortuosity-cpu-matrixfree` should not be quoted. The `Tortuosity.jl` figures above come from the separate `core-occupancy-ours.json` run, which sampled ten times a second at ``200^3`` and added a ``600^3`` case where the solve dominates outright. Both scripts back up the published result files, restore them afterwards, and verify the restore by SHA-256 — `published_results_unchanged: true` in each JSON.
+    `core-occupancy.json` ran both tools in one pass, but our process there recorded `"exit": -11` (SIGSEGV during exit cleanup, after the solve completed and the row was written) with only **6 usable samples**. Six samples is not a measurement, and the 1.39 median it reports for `tortuosity-cpu-matrixfree` must not be quoted. The `Tortuosity.jl` figures above come from the separate `core-occupancy-ours.json` run, which sampled ten times a second at ``200^3`` and added a ``600^3`` case where the solve dominates outright. Both scripts back up the published result files, restore them afterwards, and verify the restore by SHA-256 — `published_results_unchanged: true` in each JSON.
 
 ### Memory
 
@@ -326,7 +334,7 @@ On the host the same structure holds with more headroom: at ``1000^3``, ε ≈ 0
 
 The tables above are measured with both enabled, because that is what `solve(sim)` selects for images this size. They contribute in quite different ways.
 
-**The operator buys memory, not speed.** Holding everything else fixed and switching only the operator, matrix-free is **1.14×** faster end to end on the GPU (geometric mean over 59 paired cases) and **1.34×** on the CPU (74 cases). Its apply is considerably faster in isolation, but a solve also pays for preconditioner setup and the coarse solve, which are common to both paths, so the advantage dilutes. On the CPU it grows with size — 0.96× at ``200^3`` to 1.60× at ``1000^3`` — which is the same dilution running the other way as the solve stops being dominated by fixed costs. What does not dilute is the 1.8×–2.3× memory ratio above, and the 20 cases where the assembled operator simply does not fit.
+**The operator buys memory, not speed.** Holding everything else fixed and switching only the operator, matrix-free is **1.14×** faster end to end on the GPU (geometric mean over 59 paired cases) and **1.34×** on the CPU (74 cases). Its apply is considerably faster in isolation, but a solve also pays for preconditioner setup and the coarse solve, which are common to both paths, so the advantage dilutes. On the CPU it grows with size — 0.96× at ``200^3`` to 1.60× at ``1000^3`` — which is the same dilution running the other way as the solve stops being dominated by fixed costs. What does not dilute is the 1.8×–2.3× memory ratio above, and the 20 cases where the assembled operator does not fit at all.
 
 **The preconditioner buys iterations.** Measured directly at a fixed relative residual of 1e-6, on the CPU in `Float64`, matrix-free, blobiness 1.0, over the cached campaign images (`results/iteration-counts-2026-08-21.log`). Iteration counts are deterministic given the image and the code, so this needs no quiet machine and reproduces exactly.
 
@@ -371,17 +379,17 @@ The left panel establishes that the three blobiness values really are different 
 
 ### Cross-code agreement
 
-The reference is our own code, which is the weakest link in the accuracy chain, so it is worth stating what the independent implementations say about it. Across the campaign, **taufactor reproduces our reference ``\tau`` to within the 0.1% target on 126 of 131 (tool, case) sweeps** — 70 of 74 on the GPU and 56 of 57 on the CPU — and **PuMA on 15 of 15**. The five that miss are the ladder-exhausted and timed-out cases listed above, where taufactor stopped short of the target rather than disagreeing with it. Where a tool's ladder overshoots the threshold rather than landing on it, agreement tightens to a few parts in ``10^6``, including on the most tortuous image in the set (ε ≈ 0.16, ``\tau = 33.9``).
+The reference is our own code, which is the weakest link in the accuracy chain, so the independent implementations are the check on it. Across the campaign, **taufactor reproduces our reference ``\tau`` to within the 0.1% target on 126 of 131 (tool, case) sweeps** — 70 of 74 on the GPU and 56 of 57 on the CPU — and **PuMA on 15 of 15**. The five that miss are the ladder-exhausted and timed-out cases listed above, where taufactor stopped short of the target rather than disagreeing with it. Where a tool's ladder overshoots the threshold rather than landing on it, agreement tightens to a few parts in ``10^6``, including on the most tortuous image in the set (ε ≈ 0.16, ``\tau = 33.9``).
 
 ## Limitations
 
-**The GPU result is reproducible run to run, but not guaranteed bit-for-bit.** The two-level preconditioner used to accumulate its restriction with atomic floating-point additions, whose order is not fixed between launches; a float sum is not associative, so the same image at the same tolerance returned a slightly different ``\tau`` on every run — by roughly the size of the accuracy target on the most ill-conditioned images. That has been fixed. `_restrict!` now **gathers over a fixed coarse-to-fine adjacency** built once at setup (`Aggregation` in `src/preconditioner.jl`), which needs no atomic and fixes the summation order, paying for the ordering once instead of on every CG iteration.
+**The GPU result is reproducible run to run, but not guaranteed bit-for-bit.** The two-level preconditioner used to accumulate its restriction with atomic floating-point additions, whose order is not fixed between launches. A float sum is not associative, so the same image at the same tolerance returned a slightly different ``\tau`` on every run — by roughly the size of the accuracy target on the most ill-conditioned images. That has been fixed. `_restrict!` now **gathers over a fixed coarse-to-fine adjacency** built once at setup (`Aggregation` in `src/preconditioner.jl`), which needs no atomic and fixes the summation order, paying for the ordering once instead of on every CG iteration.
 
 The campaign data shows the fix took: across `results/timings/tortuosity-gpu-matrixfree.csv`, **all 621 of the 621 rows measured with three repeats record `tau_spread` of exactly 0** — three GPU runs of the same configuration returning the identical ``\tau`` to every recorded digit. The same holds for all 496 three-repeat rows of the assembled GPU file. (The remaining rows carry `repeats = 1` because the first repeat exceeded the 60 s threshold, and a NaN spread rather than a zero, which is the honest record of not having looked.)
 
-What remains is narrower: **atomic additions are still used to assemble the Galerkin coarse operator** (`_coarse_stencil_kernel!`, which forms ``W^\top A W`` in one pass over the stored entries). That runs once per solve at setup, not once per iteration, but it means bit-for-bit equality across runs is still not guaranteed. Use the CPU `Float64` path when an exactly reproducible number is required; it shows zero spread throughout.
+What remains is narrower: **atomic additions are still used to assemble the Galerkin coarse operator** (`_coarse_stencil_kernel!`, which forms ``W^\top A W`` in one pass over the stored entries). That runs once per solve at setup, not once per iteration, but it means bit-for-bit equality across runs is still not guaranteed. If you need an exactly reproducible number, use the CPU `Float64` path. It shows zero spread throughout.
 
-**The CPU comparison is close to core-matched, and the residual asymmetry favours PuMA.** See [Core occupancy](#Core-occupancy): PuMA occupies a median 6.4 of 8 physical cores, our median at the same case is 1.0. This removes a doubt rather than raising one, but it does mean the two tools are not doing the same thing with the machine.
+**The CPU comparison is close to core-matched, and the residual asymmetry favors PuMA.** See [Core occupancy](#Core-occupancy): PuMA occupies a median 6.4 of 8 physical cores, our median at the same case is 1.0. This removes a doubt rather than raising one, but it does mean the two tools are not doing the same thing with the machine.
 
 **PuMA appears at one size only.** ``200^3``, by decision — a single case there costs it up to 19 minutes and the larger sizes were prohibitive. The larger images were not attempted and are not reported as failures.
 
@@ -395,10 +403,10 @@ What remains is narrower: **atomic additions are still used to assemble the Gale
 
 ## Reproducing
 
-The benchmark harness, environment specification, and raw CSV results live in [`benchmarks/`](https://github.com/ma-sadeghi/Tortuosity.jl/tree/main/benchmarks). Python dependencies (PuMA, PyTorch, the taufactor fork) are pinned with [pixi](https://pixi.sh); the taufactor fork is vendored as a git submodule under `vendor/`. Read `benchmarks/README.md` before changing anything, and `benchmarks/run/ORCHESTRATION.md` before driving a campaign on a rented machine.
+The benchmark harness, environment specification, and raw CSV results live in [`benchmarks/`](https://github.com/ma-sadeghi/Tortuosity.jl/tree/main/benchmarks). Python dependencies (PuMA, PyTorch, the taufactor fork) are pinned with [pixi](https://pixi.sh). The taufactor fork is not a submodule: `run/setup.sh` clones it under `vendor/` at the pinned commit, which keeps this repository's git tree free of a gitlink that would make `Pkg.add` fall back to cloning the whole repository. Read `benchmarks/README.md` before changing anything, and `benchmarks/run/ORCHESTRATION.md` before driving a campaign on a rented machine.
 
 ```bash
-git clone --recurse-submodules https://github.com/ma-sadeghi/Tortuosity.jl.git
+git clone https://github.com/ma-sadeghi/Tortuosity.jl.git
 cd Tortuosity.jl/benchmarks
 
 # Resolve both environments and prove the machine works before anything is
@@ -433,9 +441,9 @@ pixi run python bench_puma.py --measure=memory
 pixi run python make_figures.py --only=memory,summary
 ```
 
-Every stage takes the same selection flags — `--grid=`, `--sizes=`, `--porosities=`, `--blobiness=`, `--cases=`, `--overwrite`, `--dry-run`. They compose, `--cases=` overrides the rest, and an unrecognised flag is an error rather than something quietly ignored. `./run/campaign.sh` additionally takes `--stages=`, `--tools=` and `--devices=`.
+Every stage takes the same selection flags — `--grid=`, `--sizes=`, `--porosities=`, `--blobiness=`, `--cases=`, `--overwrite`, `--dry-run`. They compose, `--cases=` overrides the rest, and an unrecognized flag is an error rather than something quietly ignored. `./run/campaign.sh` additionally takes `--stages=`, `--tools=` and `--devices=`.
 
-Every stage resumes from its own results file, so an interrupted campaign is re-run with the same command. A sweep counts as complete only once one of its rows carries a `stop_reason` (`target_reached`, `timeout`, `ladder_exhausted`, `error` or `oom`); resume keys on that rather than on the mere presence of a row, because a case interrupted halfway up its ladder is indistinguishable from a converged one once it is in the file.
+Every stage resumes from its own results file, so an interrupted campaign is re-run with the same command. A sweep counts as complete only once one of its rows carries a `stop_reason` (`target_reached`, `timeout`, `ladder_exhausted`, `error` or `oom`). Resume keys on that rather than on the mere presence of a row, because a case interrupted halfway up its ladder is indistinguishable from a converged one once it is in the file.
 
 !!! warning "Run the stages serially, and the CPU and GPU passes in separate processes"
     The stages contend for the same GPU and the same cores, and concurrency contaminates the very timings the benchmark exists to measure. `campaign.sh` takes a PID lock and refuses to start beside a live campaign, but that only catches the obvious case.
