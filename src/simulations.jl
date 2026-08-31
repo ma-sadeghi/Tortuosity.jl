@@ -65,7 +65,7 @@ function _warn_nonpercolating(img, axis::Symbol, check::Union{Nothing,Bool})
     do_check || return nothing
 
     n_pore = count(img)
-    n_dead = n_pore - count(Imaginator.trim_nonpercolating_paths(img; axis=axis))
+    n_dead = n_pore - Imaginator._count_percolating(img; axis=axis)
     n_dead == 0 && return nothing
 
     pct = round(100 * n_dead / n_pore; digits=2)

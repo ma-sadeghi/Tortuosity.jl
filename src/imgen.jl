@@ -165,6 +165,51 @@ function trim_nonpercolating_paths(img; axis)
 end
 
 """
+Count pore voxels in components that connect both transport faces.
+
+This is the allocation-lean scalar counterpart of
+[`trim_nonpercolating_paths`](@ref). It labels into 32-bit storage whenever the
+image fits and counts matching labels directly, rather than allocating two
+full face masks and a second image only for its population count.
+"""
+function _count_percolating(img; axis)
+    Ti = length(img) <= typemax(Int32) ? Int32 : Int
+    return _count_percolating(img, Val(axis), Ti)
+end
+
+_boundary_slice(a, ::Val{:x}, i) = @view a[i, :, :]
+_boundary_slice(a, ::Val{:y}, i) = @view a[:, i, :]
+_boundary_slice(a, ::Val{:z}, i) = @view a[:, :, i]
+_axis_length(a, ::Val{:x}) = size(a, 1)
+_axis_length(a, ::Val{:y}) = size(a, 2)
+_axis_length(a, ::Val{:z}) = size(a, 3)
+
+function _count_percolating(img, axis, ::Type{Ti}) where {Ti<:Integer}
+    labels = similar(img, Ti)
+    label_components!(labels, img)
+
+    inlet = _boundary_slice(labels, axis, 1)
+    outlet = _boundary_slice(labels, axis, _axis_length(labels, axis))
+    max_boundary = max(maximum(inlet), maximum(outlet))
+    max_boundary == 0 && return 0
+
+    touches_inlet = falses(max_boundary)
+    percolating = falses(max_boundary)
+    @inbounds for label in inlet
+        label > 0 && (touches_inlet[label] = true)
+    end
+    @inbounds for label in outlet
+        label > 0 && touches_inlet[label] && (percolating[label] = true)
+    end
+
+    n = 0
+    @inbounds for label in labels
+        n += label > 0 && label <= max_boundary && percolating[label]
+    end
+    return n
+end
+
+"""
     phase_fraction(img, label)
     phase_fraction(img, labels::AbstractArray)
     phase_fraction(img)
