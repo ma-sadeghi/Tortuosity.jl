@@ -1,0 +1,28 @@
+%% High-level architecture of Tortuosity.jl and its principal numerical dependencies.
+%% Render with: mmdc -i software_architecture.mmd -o software_architecture.png -b white -w 1500 -s 2
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#eef4fb","primaryTextColor":"#1f2937","primaryBorderColor":"#5b7da5","lineColor":"#4b5563","secondaryColor":"#f4f5f7","tertiaryColor":"#ffffff","clusterBkg":"#fafafa","clusterBorder":"#9ca3af","fontSize":"18px"}}}%%
+flowchart TB
+    inputs["Inputs<br/>segmented image · diffusivity · boundary conditions · axis"] --> build
+
+    subgraph package["Tortuosity.jl"]
+        direction TB
+        build["Problem construction<br/>geometry · pore indexing · backend"]
+        build --> steady["SteadyDiffusionProblem"]
+        build --> transient["TransientDiffusionProblem"]
+        steady --> operator{"Operator representation"}
+        operator --> assembled["Assembled sparse matrix"]
+        operator --> matrixfree["Matrix-free stencil"]
+        assembled --> linear["Preconditioned Krylov solve"]
+        matrixfree --> linear
+        transient --> rhs["Sparse diffusion right-hand side"]
+        rhs --> ode["Stabilized ODE solve and callbacks"]
+        linear --> analysis["Analysis and post-processing"]
+        ode --> analysis
+    end
+
+    analysis --> outputs["Outputs<br/>concentration fields · τ · D_eff · formation factor · fluxes · fits"]
+    gpu["Backend extensions<br/>CUDA.jl · AMDGPU.jl · Metal.jl"] -.-> build
+    ka["KernelAbstractions.jl<br/>portable kernels"] -.-> operator
+    ka -.-> rhs
+    ls["LinearSolve.jl<br/>Krylov interface"] -.-> linear
+    od["OrdinaryDiffEq.jl · DiffEqCallbacks.jl<br/>integration and callbacks"] -.-> ode
