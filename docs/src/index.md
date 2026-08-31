@@ -43,7 +43,7 @@ img = Imaginator.blobs(; shape=(64, 64, 1), porosity=0.65, blobiness=0.5, seed=2
 img = Imaginator.trim_nonpercolating_paths(img, axis=:x)
 sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5)
-τ = tortuosity(reconstruct_field(sol.u, img), img; axis=:x)
+τ = tortuosity(sol.u, sim)
 println("τ = $τ")
 ```
 

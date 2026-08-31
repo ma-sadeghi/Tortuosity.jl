@@ -206,11 +206,11 @@ end
     end
 
     @testset "a diffusivity field handed to τ must line up with the mask" begin
-        # `_reference_diffusivity` reduces over `eachindex(img, D)` rather than
-        # materialising `D[img]`, and the shape agreement it checks is the one
-        # logical indexing used to give for free. Without it a mismatched field
-        # reads the wrong voxels and returns a plausible D0 — the reference the
-        # whole of τ is measured against.
+        # `_reference_diffusivity` uses a fused `mapreduce` rather than
+        # materialising `D[img]`, and its paired-array iteration must retain the
+        # shape check logical indexing used to give for free. Without it a
+        # mismatched field reads the wrong voxels and returns a plausible D0 —
+        # the reference the whole of τ is measured against.
         img = ones(Bool, 6, 5, 4)
         c = reconstruct_field(
             solve(SteadyDiffusionProblem(img; axis=:x, gpu=false).prob,

@@ -56,7 +56,9 @@ sparse matrix. It stores one `Int32` index array over the grid — four bytes pe
 grid voxel, against roughly 59 bytes per *pore* voxel for the assembled
 matrix — and its apply is about twice as fast on GPU and six times as fast
 threaded on CPU. Measured end to end, peak device memory is 32.0 bytes per pore
-node plus 4.00 bytes per grid voxel, which is 1.7× to 3.2× leaner than the
+node plus 4.00 bytes per grid voxel, with at most 8 bytes per open inlet-face
+voxel for direct flux readout. The O(N²) inlet term is negligible beside the
+O(N³) solve storage. The matrix-free path is 1.7× to 3.2× leaner than the
 assembled path depending on porosity. That margin is what lets a 1000³ image at
 any porosity fit on a 48 GiB card where the assembled path runs out above ε ≈ 0.4.
 
@@ -78,6 +80,16 @@ Tortuosity.build_steady_operator
 
 Once you have solved for a steady-state concentration field, these helpers
 derive the usual transport descriptors.
+
+Pass the pore-vector solution and its problem directly when you only need a transport scalar:
+
+```julia
+τ = tortuosity(sol.u, sim)
+D_eff = effective_diffusivity(sol.u, sim)
+F = formation_factor(sol.u, sim)
+```
+
+This path reduces the inlet flux from the linear system without allocating a full image or copying the complete solution from a GPU. Use `reconstruct_field` only when you also need the concentration field.
 
 ```@docs
 tortuosity

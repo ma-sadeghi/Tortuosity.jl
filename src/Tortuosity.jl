@@ -16,6 +16,14 @@ const _gpu_adapt = Ref{Any}(identity)
 """True for GPU arrays; extensions override for CuArray, MtlArray, etc."""
 _on_gpu(::AbstractArray) = false
 
+_device_backend(x) = _on_gpu(x) ? get_backend(x) : nothing
+_device_backend(x::SubArray) = _device_backend(parent(x))
+_device_backend(x::Base.ReshapedArray) = _device_backend(parent(x))
+_device_backend(x::Base.ReinterpretArray) = _device_backend(parent(x))
+_device_backend(x::PermutedDimsArray) = _device_backend(parent(x))
+_device_backend(x::Adjoint) = _device_backend(parent(x))
+_device_backend(x::Transpose) = _device_backend(parent(x))
+
 """
     _free!(x)
 
@@ -132,6 +140,9 @@ export slab_cumulative_flux
     sim = SteadyDiffusionProblem(img; axis=:x)
     sol = solve(sim.prob, KrylovJL_CG())
     c = reconstruct_field(sol.u, img)
+    tortuosity(sol.u, sim)
+    effective_diffusivity(sol.u, sim)
+    formation_factor(sol.u, sim)
     tortuosity(c, img; axis=:x)
     effective_diffusivity(c, img; axis=:x)
     formation_factor(c, img; axis=:x)

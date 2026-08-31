@@ -79,7 +79,7 @@ function _warn_nonpercolating(img, axis::Symbol, check::Union{Nothing,Bool})
 end
 
 """
-    SteadyDiffusionProblem{A}
+    SteadyDiffusionProblem{A,P,R,F}
 
 Holds the data for a steady-state diffusion problem on a binary pore image.
 
@@ -87,11 +87,26 @@ Holds the data for a steady-state diffusion problem on a binary pore image.
 - `img::A`: boolean pore mask (`true` = pore).
 - `axis::Symbol`: transport direction (`:x`, `:y`, or `:z`).
 - `prob::LinearProblem`: the assembled linear system ready for `solve(sim.prob, alg)`.
+- `D0::R`: reference pore diffusivity used by the direct transport-property methods.
+- `flux::F`: compact inlet-edge data used by the direct transport-property methods.
 """
-struct SteadyDiffusionProblem{A<:AbstractArray{Bool}}
+struct SteadyDiffusionProblem{A<:AbstractArray{Bool},P<:LinearProblem,R,F}
     img::A
     axis::Symbol
-    prob::LinearProblem
+    prob::P
+    D0::R
+    flux::F
+end
+
+function SteadyDiffusionProblem(img, axis, prob::LinearProblem)
+    return SteadyDiffusionProblem(img, axis, prob, nothing, nothing)
+end
+
+function SteadyDiffusionProblem{A}(img, axis, prob::LinearProblem) where {A<:AbstractArray{Bool}}
+    converted = convert(A, img)
+    return SteadyDiffusionProblem{A,typeof(prob),Nothing,Nothing}(
+        converted, axis, prob, nothing, nothing,
+    )
 end
 
 function Base.show(io::IO, ts::SteadyDiffusionProblem)
@@ -213,8 +228,13 @@ function SteadyDiffusionProblem(
         nothing
     elseif D isa Number
         gpu ? T(D) : D
+    elseif gpu
+        adapted = _gpu_adapt[](D)
+        isnothing(_device_backend(adapted)) ? _gpu_adapt[](Array(D)) : adapted
+    elseif !isnothing(_device_backend(D))
+        Array(D)
     else
-        gpu ? _gpu_adapt[](D) : D
+        D
     end
 
     # Assemble the Dirichlet-eliminated Laplacian in one shot. A fixed
@@ -224,11 +244,22 @@ function SteadyDiffusionProblem(
     # The matrix-free operator recomputes its weights from `D` on every apply, so
     # it holds that array for its whole life. When the device copy is one we
     # made, ownership goes with it — otherwise nothing would ever release it.
-    A, b = if matrixfree
+    A, b, inlet_flux = if matrixfree
         build_steady_operator(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T,
-                              owns_D=(D_dev isa AbstractArray && D_dev !== D))
+                              owns_D=(D_dev isa AbstractArray && D_dev !== D),
+                              return_flux=true)
     else
-        build_steady_system(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T, Ti=Ti)
+        build_steady_system(
+            img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T, Ti=Ti, return_flux=true,
+        )
+    end
+    D0 = if isnothing(D_dev)
+        one(T)
+    elseif D_dev isa Number
+        D_dev
+    else
+        D_mask = isnothing(_device_backend(D_dev)) ? img : img_dev
+        _reference_diffusivity(D_dev, D_mask)
     end
     if gpu
         # The device copies are dead the moment the system is built; releasing
@@ -241,7 +272,7 @@ function SteadyDiffusionProblem(
         (matrixfree || D_dev === D) || _free!(D_dev)
     end
 
-    return SteadyDiffusionProblem(img, axis, LinearProblem(A, b))
+    return SteadyDiffusionProblem(img, axis, LinearProblem(A, b), D0, inlet_flux)
 end
 
 """

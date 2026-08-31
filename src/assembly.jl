@@ -31,6 +31,103 @@ const _NEIGHBOURS = (_LOWER_NEIGHBOURS..., _UPPER_NEIGHBOURS...)
 @inline _edge_weight(D, D0, da, db) = 2 * da * db / (da + db)
 
 """
+    InletFlux
+
+Compact data needed to reduce the physical inlet flux from a pore-vector
+solution. `nodes` and `weights` describe the inlet-to-free-node edges. `direct`
+is the unit-drop flux on inlet-to-outlet edges when the transport axis is only
+two voxels long.
+"""
+struct InletFlux{Vi,Vw,T}
+    nodes::Vi
+    weights::Vw
+    direct::T
+end
+
+function _free!(flux::InletFlux)
+    isnothing(flux.nodes) || _free!(flux.nodes)
+    isnothing(flux.weights) || _free!(flux.weights)
+    return nothing
+end
+
+@inline function _inlet_pair(p, nx, ny, bcdim)
+    if bcdim == 1
+        j = (p - 1) % ny + 1
+        k = (p - 1) ÷ ny + 1
+        return 1, j, k, 2, j, k
+    elseif bcdim == 2
+        i = (p - 1) % nx + 1
+        k = (p - 1) ÷ nx + 1
+        return i, 1, k, i, 2, k
+    end
+    i = (p - 1) % nx + 1
+    j = (p - 1) ÷ nx + 1
+    return i, j, 1, i, j, 2
+end
+
+@kernel function _inlet_flags_kernel!(flags, @Const(idx), nx, ny, bcdim)
+    p = @index(Global)
+    i1, j1, k1, i2, j2, k2 = _inlet_pair(p, nx, ny, bcdim)
+    @inbounds flags[p] = (idx[i1, j1, k1] > 0) & (idx[i2, j2, k2] > 0)
+end
+
+@kernel function _inlet_fill_kernel!(
+    nodes, weights, @Const(scan), @Const(idx), D, nx, ny, bcdim, D0,
+)
+    p = @index(Global)
+    i1, j1, k1, i2, j2, k2 = _inlet_pair(p, nx, ny, bcdim)
+    @inbounds begin
+        node = idx[i2, j2, k2]
+        if (idx[i1, j1, k1] > 0) & (node > 0)
+            pos = scan[p]
+            da = _node_diffusivity(D, D0, i1, j1, k1)
+            db = _node_diffusivity(D, D0, i2, j2, k2)
+            nodes[pos] = node
+            weights[pos] = _edge_weight(D, D0, da, db)
+        end
+    end
+end
+
+"""
+Build the compact inlet-edge map while the full pore-index grid is available.
+
+Only one face is scanned and retained, so permanent storage is O(N²) rather
+than O(N³). The scan compacts the valid pore-to-pore edges without atomics and
+keeps their order deterministic on every backend.
+"""
+function _build_inlet_flux(idx, D, bcdim, D0)
+    nx, ny, _ = size(idx)
+    face_area = length(idx) ÷ size(idx, bcdim)
+    backend = get_backend(idx)
+    Ti = eltype(idx)
+
+    flags = similar(idx, Ti, face_area)
+    _inlet_flags_kernel!(backend)(flags, idx, nx, ny, bcdim; ndrange=face_area)
+    KernelAbstractions.synchronize(backend)
+    scan = accumulate(+, flags)
+    n = Int(Array(@view scan[end:end])[1])
+    _free!(flags)
+
+    nodes = similar(idx, Ti, n)
+    weights = similar(idx, typeof(D0), n)
+    if n > 0
+        _inlet_fill_kernel!(backend)(
+            nodes, weights, scan, idx, D, nx, ny, bcdim, D0; ndrange=face_area,
+        )
+        KernelAbstractions.synchronize(backend)
+    end
+    _free!(scan)
+
+    if size(idx, bcdim) == 2
+        direct = n == 0 ? zero(D0) : sum(weights)
+        _free!(nodes)
+        _free!(weights)
+        return InletFlux(nothing, nothing, direct)
+    end
+    return InletFlux(nodes, weights, zero(D0))
+end
+
+"""
     _steady_count_kernel!(counts, b, idx, D, nx, ny, nz, bcdim, nbc, D0)
 
 KA kernel, pass 1: one thread per grid voxel writes the number of stored entries
@@ -265,7 +362,9 @@ compare against.
   spare; force `Int32` to have the request checked against the bound rather than
   assumed.
 """
-function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing)
+function build_steady_system(
+    img; nnodes, axis, D=nothing, T=Float64, Ti=nothing, return_flux::Bool=false,
+)
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
@@ -299,6 +398,7 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing
     cumsum!(vec(idx), vec(img))
     idx .*= img
     backend = get_backend(idx)
+    inlet_flux = return_flux ? _build_inlet_flux(idx, D, bcdim, D0) : nothing
     # 256 threads laid out along the contiguous dimension, so a warp reads one
     # run of `idx` and its two in-plane neighbour rows coalesced.
     wg = (64, 4, 1)
@@ -333,5 +433,5 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing
     # and its column alike. `test_assembly.jl` pins this.
     A = on_gpu ? PortableSparseCSC(nnodes, nnodes, colptr, rowval, nzval; symmetric=true) :
         SparseMatrixCSC(nnodes, nnodes, colptr, rowval, nzval)
-    return A, b
+    return return_flux ? (A, b, inlet_flux) : (A, b)
 end

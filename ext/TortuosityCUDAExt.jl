@@ -142,7 +142,8 @@ end
             Tortuosity._gpu_adapt[] = CUDA.cu
             try
                 sim = Tortuosity.SteadyDiffusionProblem(img; axis=:x, gpu=true)
-                Tortuosity.solve(sim.prob, Tortuosity.KrylovJL_CG())
+                sol = Tortuosity.solve(sim.prob, Tortuosity.KrylovJL_CG())
+                Tortuosity.tortuosity(sol.u, sim)
 
                 prob = Tortuosity.TransientDiffusionProblem(img; axis=:z, bc_inlet=1, bc_outlet=0, gpu=true)
                 Tortuosity.solve(prob, Tortuosity.ROCK4(); saveat=0.1, tspan=(0.0, 0.2))

@@ -33,7 +33,7 @@ GPU backends work the same way: `Pkg.add("CUDA")` (or `"Metal"`, or `"AMDGPU"`),
 ```julia
 using ImageFiltering  # optional dependency, needed by Imaginator.blobs
 using Tortuosity
-using Tortuosity: tortuosity, reconstruct_field
+using Tortuosity: tortuosity
 
 USE_GPU = false
 
@@ -47,10 +47,8 @@ sim = SteadyDiffusionProblem(img; axis=:x, gpu=USE_GPU);
 # Solve the system of equations
 sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 
-# Convert the solution vector to an Nd grid
-c = reconstruct_field(sol.u, img)
-# Compute the tortuosity factor
-τ = tortuosity(c, img; axis=:x)
+# Compute the tortuosity factor directly from the pore-vector solution
+τ = tortuosity(sol.u, sim)
 println("τ = $τ")
 ```
 
@@ -63,7 +61,7 @@ The steady operator comes in two forms, both fully supported. They produce the s
 | how to ask for it | `SteadyDiffusionProblem(img; axis=:x)` | `SteadyDiffusionProblem(img; axis=:x, matrixfree=true)` |
 | what it stores | the sparse matrix: column pointers, row indices, values | one `Int32` index array over the grid |
 | operator storage | ~59 bytes per **pore** voxel | 4 bytes per **grid** voxel |
-| peak device memory | 1.7× to 3.2× the matrix-free figure, rising with porosity | 32.0 B per pore node + 4.00 B per grid voxel |
+| peak device memory | 1.7× to 3.2× the matrix-free figure, rising with porosity | 32.0 B per pore node + 4.00 B per grid voxel + at most 8 B per open inlet-face voxel |
 | 1000³ on a 48 GiB card | runs out above ε ≈ 0.4 | every porosity, up to 46.2 GiB at ε = 0.95 |
 | GPU apply at 800³ | ~2× the matrix-free cost | — |
 

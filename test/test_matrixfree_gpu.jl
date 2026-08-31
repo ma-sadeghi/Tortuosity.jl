@@ -290,7 +290,23 @@ end
     kept = SteadyDiffusionProblem(img; axis=:x, D=d_D, gpu=true, matrixfree=true)
     @test kept.prob.A.D !== d_D
     @test kept.prob.A.owns_D === true
-    @test _free!(kept.prob.A) === nothing
     @test Array(d_D) == Float32.(D)
+
+    host = SteadyDiffusionProblem(img; axis=:x, D=d_D, gpu=false, matrixfree=true)
+    @test host.prob.A.D isa Array
+    @test host.D0 == 1.5f0
+
+    D_lazy = reshape(range(0.5f0, 1.5f0; length=length(img)), size(img))
+    lazy = SteadyDiffusionProblem(img; axis=:x, D=D_lazy, gpu=true, matrixfree=true)
+    @test lazy.D0 == 1.5f0
+    @test isfinite(tortuosity(solve(lazy).u, lazy))
+
+    u = solve(kept.prob, KrylovJL_CG(); reltol=1.0f-8).u
+    c = reconstruct_field(u, img)
+    tau_grid = tortuosity(c, img; axis=:x, D=Float32.(D))
+    @test kept.D0 == 1.5f0
+    @test tortuosity(u, kept) ≈ tau_grid rtol = 1e-4
+
+    @test _free!(kept.prob.A) === nothing
     release!(d_D)
 end

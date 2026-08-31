@@ -106,6 +106,11 @@ end
     @test isfinite(tau_gpu)
     @test tau_gpu > 1
     @test tau_cpu ≈ tau_gpu rtol = 1e-3
+    @test tortuosity(sol_gpu.u, sim_gpu) ≈ tau_gpu rtol = 1e-3
+    @test tortuosity(Array(sol_gpu.u), sim_gpu) ≈ tau_gpu rtol = 1e-3
+    u_gpu = Tortuosity._gpu_adapt[](sol_cpu.u)
+    @test tortuosity(u_gpu, sim_cpu) ≈ tau_cpu rtol = 1e-3
+    Tortuosity._free!(u_gpu)
 end
 
 # The two-level preconditioner has to give the same tortuosity on the device as
@@ -242,15 +247,18 @@ end
 
     sim_cpu = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=Float64.(D))
     sol_cpu = solve(sim_cpu.prob, KrylovJL_CG(); reltol=1.0e-8)
-    tau_cpu = tortuosity(reconstruct_field(sol_cpu.u, sim_cpu.img), sim_cpu.img; axis=:x)
+    tau_cpu = tortuosity(
+        reconstruct_field(sol_cpu.u, sim_cpu.img), sim_cpu.img; axis=:x, D=Float64.(D),
+    )
 
     sim_gpu = SteadyDiffusionProblem(img; axis=:x, gpu=true, D=D)
     sol_gpu = solve(sim_gpu.prob, KrylovJL_CG(); reltol=1.0f-6)
-    tau_gpu = tortuosity(reconstruct_field(sol_gpu.u, sim_gpu.img), sim_gpu.img; axis=:x)
+    tau_gpu = tortuosity(reconstruct_field(sol_gpu.u, sim_gpu.img), sim_gpu.img; axis=:x, D=D)
 
     @test isfinite(tau_gpu)
     @test tau_gpu > 1
     @test tau_cpu ≈ tau_gpu rtol = 2e-3
+    @test tortuosity(sol_gpu.u, sim_gpu) ≈ tau_gpu rtol = 1e-3
 end
 
 # ---------------------------------------------------------------------------

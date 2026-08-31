@@ -64,7 +64,18 @@ nothing # hide
 
 ## Step 4: Extract results
 
-The solution `sol.u` is a 1D vector containing concentrations at pore voxels only (solid voxels are excluded to save memory). Use `reconstruct_field` to reconstruct the full 3D concentration field, with `NaN` for solid voxels.
+The solution `sol.u` is a 1D vector containing concentrations at pore voxels only (solid voxels are excluded to save memory). Compute transport properties directly from this vector and its problem:
+
+```@example steady
+D_eff = effective_diffusivity(sol.u, sim)
+τ = tortuosity(sol.u, sim)
+F = formation_factor(sol.u, sim)
+println("Effective diffusivity: $D_eff")
+println("Tortuosity factor:    $τ")
+println("Formation factor:     $F")
+```
+
+This direct reduction avoids allocating a full image and, on a GPU, transfers only scalar results to the host. Use `reconstruct_field` when you need the concentration field for visualization or further spatial analysis:
 
 ```@example steady
 c = reconstruct_field(sol.u, img)
@@ -75,17 +86,6 @@ savefig("c-ss.svg"); nothing # hide
 
 ```@example steady
 HTML("""<figure><img src=$(joinpath(Main.buildpath,"c-ss.svg"))><figcaption>Steady-state concentration field (inlet at left, outlet at right)</figcaption></figure>""") # hide
-```
-
-Now compute the transport properties:
-
-```@example steady
-Deff = effective_diffusivity(c, img; axis=:x)
-τ = tortuosity(c, img; axis=:x)
-F = formation_factor(c, img; axis=:x)
-println("Effective diffusivity: $Deff")
-println("Tortuosity factor:    $τ")
-println("Formation factor:     $F")
 ```
 
 These quantities are related: $\tau = \varepsilon / D_\text{eff}$ and $F = 1 / D_\text{eff}$.

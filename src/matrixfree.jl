@@ -316,7 +316,10 @@ every apply.
 - `owns_D`: hand the operator ownership of `D`, so that `_free!` releases it.
   Set this only when `D` is a copy made for the operator and held nowhere else.
 """
-function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::Bool=false)
+function build_steady_operator(
+    img; nnodes, axis, D=nothing, T=Float64, owns_D::Bool=false,
+    return_flux::Bool=false,
+)
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
@@ -344,6 +347,7 @@ function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::
     cumsum!(vec(idx), vec(img))
     idx .*= img
     backend = get_backend(idx)
+    inlet_flux = return_flux ? _build_inlet_flux(idx, D, bcdim, D0) : nothing
     # 256 threads laid out along the contiguous dimension, so a warp reads one
     # run of `idx` and its two in-plane neighbour rows coalesced.
     wg = (64, 4, 1)
@@ -356,7 +360,7 @@ function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::
 
     # `idx` is not released here: it is the operator's state, not scratch.
     A = MaskedLaplacian(idx, nnodes, bcdim, nbc, D, D0, owns_D)
-    return A, b
+    return return_flux ? (A, b, inlet_flux) : (A, b)
 end
 
 # --- LinearSolve integration ---

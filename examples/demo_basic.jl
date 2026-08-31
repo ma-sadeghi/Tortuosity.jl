@@ -27,7 +27,7 @@ sol = solve(sim.prob, KrylovJL_CG(); verbose=false, reltol=1e-5);
 # %%
 # Compute the tortuosity factor and visualize the solution
 
+τ = tortuosity(sol.u, sim);
 c = reconstruct_field(sol.u, img);
-τ = tortuosity(c, img; axis=:x);
 @info "τ: $(@sprintf("%.5f", τ))"
 PLOT && display(heatmap(c[:, :, 1]; aspect_ratio=:equal, clim=(0, 1)));

@@ -199,6 +199,70 @@ end
     @test formation_factor(c, duct2d; axis=:x) ≈ 1 / φ rtol = 1e-9
 end
 
+@testset "pore-vector observables match field reconstruction" begin
+    img = fixture("obstructed 12x8x8")
+    D_field = zeros(size(img))
+    D_field[img] .= 0.5 .+ 0.1 .* mod.(1:count(img), 5)
+
+    for matrixfree in (false, true), ax in (:x, :y, :z), D in (nothing, 2.5, D_field)
+        sim = SteadyDiffusionProblem(
+            img; axis=ax, D, gpu=false, matrixfree, warn_nonpercolating=false,
+        )
+        u = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
+        c = reconstruct_field(u, img)
+        D_measure = isnothing(D) ? 1.0 : D
+
+        @test effective_diffusivity(u, sim) ≈
+              effective_diffusivity(c, img; axis=ax, D=D_measure) rtol = 1e-9
+        @test tortuosity(u, sim) ≈
+              tortuosity(c, img; axis=ax, D=D_measure) rtol = 1e-9
+        @test formation_factor(u, sim) ≈
+              formation_factor(c, img; axis=ax, D=D_measure) rtol = 1e-9
+    end
+
+    sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+    @test_throws DimensionMismatch effective_diffusivity(zeros(count(img) - 1), sim)
+    bare = SteadyDiffusionProblem(sim.img, sim.axis, sim.prob)
+    typed_bare = SteadyDiffusionProblem{typeof(sim.img)}(sim.img, sim.axis, sim.prob)
+    @test typed_bare isa SteadyDiffusionProblem
+    abstract_bare = SteadyDiffusionProblem{AbstractArray{Bool,3}}(
+        sim.img, sim.axis, sim.prob,
+    )
+    @test typeof(abstract_bare).parameters[1] === AbstractArray{Bool,3}
+    converted_bare = SteadyDiffusionProblem{Array{Bool,3}}(
+        BitArray(sim.img), sim.axis, sim.prob,
+    )
+    @test converted_bare.img isa Array{Bool,3}
+    bare_u = solve(sim.prob).u
+    @test_throws ArgumentError effective_diffusivity(bare_u, bare)
+    @test_throws ArgumentError tortuosity(bare_u, bare)
+
+    line = ones(Bool, 8, 1, 1)
+    line_sim = SteadyDiffusionProblem(line; axis=:x, gpu=false, warn_nonpercolating=false)
+    u_range = range(1.0, 0.0; length=8)
+    @test tortuosity(u_range, line_sim) ≈ 1.0 rtol = 1e-12
+end
+
+@testset "pore-vector observables include direct boundary edges" begin
+    for matrixfree in (false, true), ax in (:x, :y, :z)
+        d = axis_dim(ax)
+        shape = ntuple(i -> i == d ? 2 : 5 + i, 3)
+        img = ones(Bool, shape)
+        D = reshape(range(0.5, 1.5; length=length(img)), shape)
+        sim = SteadyDiffusionProblem(
+            img; axis=ax, D, gpu=false, matrixfree, warn_nonpercolating=false,
+        )
+        u = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
+        c = reconstruct_field(u, img)
+
+        @test effective_diffusivity(u, sim) ≈
+              effective_diffusivity(c, img; axis=ax, D) rtol = 1e-10
+        @test tortuosity(u, sim) ≈ tortuosity(c, img; axis=ax, D) rtol = 1e-10
+        @test formation_factor(u, sim) ≈
+              formation_factor(c, img; axis=ax, D) rtol = 1e-10
+    end
+end
+
 # --- Scaling laws ---
 
 @testset "D_eff scales linearly with the intrinsic diffusivity" begin
