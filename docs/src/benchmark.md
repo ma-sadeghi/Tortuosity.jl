@@ -154,7 +154,7 @@ Panels (a) and (b) are the GPU: scaling at matched accuracy, and the speedup aga
 
 In the scaling panels a solid segment joins measurements, and a dashed segment with a hollow marker means at least one porosity there was projected rather than measured; the warning under *Against taufactor on the CPU* lists every projected value and how far each one reaches. A series stops where a porosity ran out of memory instead, since no mean over the porosities that remain covers the same images: that is why the assembled operator ends at ``600^3`` on the GPU. The legend carries the exponent of a power law fitted to the measured points, which is the comparison the panel exists for. taufactor comes to ``N^{3.3}`` on the GPU and ``N^{4.6}`` on the CPU, against ``N^{2.5}`` and ``N^{3.1}`` for the matrix-free path. Three is linear in voxel count, so ours is close to a fixed iteration count per solve while taufactor's rises with the edge length — the same effect the preconditioner section measures directly.
 
-An exponent marked **est.** in a legend came from a scaling probe rather than from a fit, and every point on that series above its one measured size is an estimate. PuMA and PoreSpy are the two: neither was swept over the size grid, so their curves rest on the one size that was measured and on an exponent measured separately, in `results/scaling-probes.csv`. Nothing about them is a fit through their own points, because they have only one point to fit. The next section gives the probes and what they imply.
+An exponent marked **est.** in a legend came from a scaling probe rather than from a fit, and every point on that series above its one measured size is an estimate. PuMA and PoreSpy are the two: neither was *timed* over the size grid, so their time curves rest on the one size that was measured and on an exponent measured separately, in `results/scaling-probes.csv`. Nothing about those curves is a fit through their own points, because they have only one point to fit. The next section gives the probes and what they imply. The memory figure is a different matter — both tools were probed at more than one size there, and it is marked accordingly.
 
 ### Against taufactor on the GPU
 
@@ -305,7 +305,9 @@ Applied to a single pass over all fifteen cases — 44.8 minutes for PoreSpy at 
 At ``600^3`` PoreSpy also stops fitting at the open end of the porosity range, so part of that stage could not be bought at any price. Both figures are wall clock on a machine that must not run anything else while it measures.
 
 !!! warning "Which points in the figures are estimates"
-    Every point either tool contributes above ``200^3`` — in the scaling panels, the per-porosity time bars and the memory bars — is projected from these probes and is drawn as an estimate: dashed line and hollow marker on a curve, hatched fill on a bar, and `est.` beside the exponent in the legend. Only the ``200^3`` column is measured, plus the two ``400^3`` PoreSpy memory readings. The projections are worth having because both tools are already an order of magnitude behind at the smallest size and both scale worse than we do, so no plausible error in an exponent changes the ranking; they are not worth reading as predictions of a particular run's wall time.
+    Every point either tool contributes above ``200^3`` — in the scaling panels, the per-porosity time bars and the memory bars — is projected from these probes and is drawn as an estimate: dashed line and hollow marker on a curve, hatched fill on a bar, and `est.` beside the exponent in the legend. The projections are worth having because both tools are already an order of magnitude behind at the smallest size and both scale worse than we do, so no plausible error in an exponent changes the ranking; they are not worth reading as predictions of a particular run's wall time.
+
+    **Time and memory are estimated to different depths.** Every *timing* above ``200^3`` is projected. Memory is not: PuMA was measured at ``200^3``, ``400^3`` and ``600^3``, and PoreSpy at ``200^3`` and two ``400^3`` cases, so only ``800^3`` and ``1000^3`` are projected in the memory figure. A memory probe is affordable where a timing is not, because it solves to the loosest rung on the ladder rather than to the accuracy target — the footprint is set before the iteration count matters — which costs minutes where a timing costs hours.
 
 ### Core occupancy
 
@@ -370,7 +372,10 @@ The two differ because refinement's 20 B/node is charged to *both* operators and
 
 ![Peak host memory on the CPU](assets/benchmark_memory_cpu.png)
 
-On the host the same structure holds with more headroom: at ``1000^3``, ε ≈ 0.95 the assembled path peaks at 163.6 GB above baseline against 53.8 GB matrix-free, a factor of 3.0. taufactor's CPU footprint is a flat 60.0 bytes per voxel across all four sizes it was measured at, which is what the ``1000^3`` projection in the figure rests on; PuMA's is a flat 1.34 GB at ``200^3``, independent of porosity.
+On the host the same structure holds with more headroom: at ``1000^3``, ε ≈ 0.95 the assembled path peaks at 163.6 GB above baseline against 53.8 GB matrix-free, a factor of 3.0. taufactor's CPU footprint is a flat 60.0 bytes per voxel across all four sizes it was measured at, which is what the ``1000^3`` projection in the figure rests on; PuMA's is a flat 164.0 bytes per voxel across the three sizes it was measured at, independent of porosity to every digit recorded.
+
+!!! note "PuMA's footprint is a straight line through the origin"
+    The rate is fitted on the ``400^3`` and ``600^3`` measurements, and both sit on it to within 0.003%: 9.7754 GiB against 9.7754 predicted, and 32.9917 against 32.9920. ``200^3`` is the only size off the line, high by 1.87%, which is a fixed cost of about 24 MB — an interpreter and an image, not a term that grows. That distinction is the reason the rate is fitted on the largest measurements rather than all of them, and it is worth stating because a fixed cost read as a per-voxel one is multiplied by 125 on the way to ``1000^3``. Here it is not: projecting from ``200^3`` alone would have given 155.6 GiB at ``1000^3`` against 152.7 from the three-size fit, an error of 1.9%.
 
 PoreSpy is the heaviest of the four by a wide margin, and unlike taufactor and PuMA its footprint tracks the pore count rather than the grid. Host memory above baseline at ``200^3``, blobiness 1.0:
 
@@ -379,7 +384,7 @@ PoreSpy is the heaviest of the four by a wide margin, and unlike taufactor and P
 | `Tortuosity.jl` (matrix-free) | 0.118 GiB | 0.405 GiB | 57–93 B per pore voxel |
 | `Tortuosity.jl` (assembled) | 0.173 GiB | 1.05 GiB | ≈ 140 B per pore voxel |
 | taufactor | 0.442 GiB | 0.442 GiB | 59.3 B per grid voxel |
-| PuMA | 1.24 GiB | 1.24 GiB | 167 B per grid voxel |
+| PuMA | 1.24 GiB | 1.24 GiB | 164 B per grid voxel |
 | PoreSpy | 1.61 GiB | 8.11 GiB | **≈ 1.19 kB per pore voxel** |
 
 That is about twenty times our matrix-free path at the same porosity, and it is what the OpenPNM network costs: pore coordinates, throat connections and labels, the assembled matrix, and the multigrid hierarchy, all held at once. The single-term model, fitted at ``200^3`` alone, was checked against two ``400^3`` cases it was not fitted on. It predicts 14.0 GB against 13.7 GB measured at ε ≈ 0.18, and 46.0 GB against 43.2 GB at ε ≈ 0.60 — high by 2% and 6%, so a projection from it is a ceiling rather than a hope.
@@ -457,7 +462,7 @@ What remains is narrower: **atomic additions are still used to assemble the Gale
 
 **The CPU comparison is close to core-matched, and the residual asymmetry favors PuMA.** See [Core occupancy](#Core-occupancy): PuMA occupies a median 6.4 of 8 physical cores, our median at the same case is 1.0. This removes a doubt rather than raising one, but it does mean the two tools are not doing the same thing with the machine.
 
-**PuMA appears at one size only.** ``200^3``, by decision — a single case there costs it up to 19 minutes and the larger sizes were prohibitive. The larger images were not attempted and are not reported as failures.
+**PuMA is timed at one size only.** ``200^3``, by decision — a single case there costs it up to 19 minutes and the larger sizes were prohibitive. The larger images were not attempted and are not reported as failures. Its *memory* is measured at ``200^3``, ``400^3`` and ``600^3``, because a memory probe stops at the loosest rung rather than at the accuracy target and so costs minutes rather than hours.
 
 **taufactor's CPU dataset is incomplete** at ``1000^3`` (absent) and at ``800^3``, ε ≈ 0.2 (absent). The GPU dataset is complete over all 74 cases.
 

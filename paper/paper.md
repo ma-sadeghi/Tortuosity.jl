@@ -89,7 +89,7 @@ On the GPU the solver is roughly $21\times$ faster than its own CPU path, rising
 
 # Limitations
 
-The coarse hierarchy is assembled and applied on the host, so every iteration pays a device round trip that will eventually bound scaling. Its coarse operator is accumulated with atomic additions at setup, so bit-for-bit equality across runs is not guaranteed on the GPU, even though repeated solves now agree on $\tau$. Disconnected pore clusters are left at zero rather than trimmed, which inflates $\tau$ by their stagnant volume, and the warning about them is disabled above 50 million voxels. Anisotropy needs one solve per axis, and only CUDA is exercised in continuous integration. The benchmark uses one machine, one image generator, and a reference computed by this package. PuMA and PoreSpy appear at a single size, and the accuracy ladder cannot resolve margins below about $2\times$.
+The coarse hierarchy is assembled and applied on the host, so every iteration pays a device round trip that will eventually bound scaling. Its coarse operator is accumulated with atomic additions at setup, so bit-for-bit equality across runs is not guaranteed on the GPU, even though repeated solves now agree on $\tau$. Disconnected pore clusters are left at zero rather than trimmed, which inflates $\tau$ by their stagnant volume, and the warning about them is disabled above 50 million voxels. Anisotropy needs one solve per axis, and only CUDA is exercised in continuous integration. The benchmark uses one machine, one image generator, and a reference computed by this package. PuMA and PoreSpy are timed at a single size, and the accuracy ladder cannot resolve margins below about $2\times$.
 
 # Research impact statement
 
