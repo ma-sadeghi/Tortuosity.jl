@@ -158,7 +158,7 @@ def out_of_memory(timings, *, device, series, size, porosity, blobiness):
     return bool((cell["stop_reason"] == "error").any())
 
 
-def scaling_points(campaign, device, target, sizes, series):
+def scaling_points(campaign, device, target, sizes, series, *, project_oom=False):
     """Time against size for one series: `(points, projected_sizes, exponent)`.
 
     Averaging over only the porosities a tool happened to reach makes the plotted
@@ -172,16 +172,21 @@ def scaling_points(campaign, device, target, sizes, series):
     So every size here averages over the same five porosities. A porosity the
     tool was never run at, or ran at without reaching the target inside its
     budget, is filled in from its own fitted power law over the sizes it did
-    reach. A porosity that ran out of memory is not filled in, and takes its
-    whole size off the curve: there is no honest mean over a set of images one of
-    which the tool cannot solve at all.
+    reach. A porosity that ran out of memory is not filled in by default, and
+    takes its whole size off the curve. ``project_oom`` permits an explicitly
+    hypothetical timing projection when the caller labels it as such.
     """
     times = fig.target_times(campaign.timings, target, device=device, series=series,
                              sizes=sizes, porosities=campaign.porosities,
                              blobiness=campaign.reference_blobiness)
-    # One power law per porosity rather than one for the series. The exponent
-    # rises steeply as the pore space closes -- taufactor spans 3.1 to 3.9 on the
-    # GPU and 3.2 to 5.0 on the CPU -- so a single exponent would project the
+    nodes = pore_counts(campaign)
+
+    def node_count(size, porosity):
+        return nodes[(size, porosity, campaign.reference_blobiness)]
+
+    # One power law per porosity rather than one for the series. The transporting-
+    # voxel exponent rises as the pore space closes -- taufactor spans 1.0 to 1.3
+    # on the GPU and 1.1 to 1.7 on the CPU -- so one exponent would project the
     # dense images, the ones that are missing, at the open images' rate.
     # A tool swept at one size has no fit of its own, but the campaign measures
     # its size dependence directly in `results/scaling-probes.csv` — a matched
@@ -194,10 +199,13 @@ def scaling_points(campaign, device, target, sizes, series):
     for por in campaign.porosities:
         measured = [n for n in sizes if np.isfinite(times[(n, por)])]
         if len(measured) >= PROJECTION_MIN_SIZES:
-            fits[por] = fig.power_law(measured, [times[(n, por)] for n in measured])
+            counts = [node_count(n, por) for n in measured]
+            fits[por] = fig.power_law(counts, [times[(n, por)] for n in measured])
         elif probe is not None and measured:
             anchor = max(measured)
-            fits[por] = (times[(anchor, por)] / anchor ** probe, probe, np.nan)
+            anchor_voxels = node_count(anchor, por)
+            fits[por] = (times[(anchor, por)] / anchor_voxels ** probe,
+                         probe, np.nan)
 
     # `probed` records that a filled-in value came from the probe rather than
     # from this series' own per-porosity fit, which is what the log below has to
@@ -212,13 +220,15 @@ def scaling_points(campaign, device, target, sizes, series):
                 filled.append(value)
                 continue
             porosity_fit = fits.get(por)
-            if porosity_fit is None or out_of_memory(
-                    campaign.timings, device=device, series=series, size=size,
-                    porosity=por, blobiness=campaign.reference_blobiness):
+            exhausted = out_of_memory(
+                campaign.timings, device=device, series=series, size=size,
+                porosity=por, blobiness=campaign.reference_blobiness
+            )
+            if porosity_fit is None or (exhausted and not project_oom):
                 filled = None
                 break
             a, exponent, _ = porosity_fit
-            filled.append(a * size ** exponent)
+            filled.append(a * node_count(size, por) ** exponent)
             borrowed = True
             probed = probed or (probe is not None and exponent == probe)
         if not filled:
@@ -232,7 +242,10 @@ def scaling_points(campaign, device, target, sizes, series):
     # whether the two agree, which is the one thing a reader should be able to
     # check by eye.
     solid = [(n, t) for n, t in points if n not in projected]
-    fit = fig.power_law([n for n, _ in solid], [t for _, t in solid]) if len(solid) >= 3 else None
+    solid_counts = [fig.geomean([node_count(n, por)
+                                 for por in campaign.porosities])
+                    for n, _ in solid]
+    fit = fig.power_law(solid_counts, [t for _, t in solid]) if len(solid) >= 3 else None
     # Say what was projected and what was dropped. A curve that quietly stops
     # short, or quietly rests on a fit, reads exactly like one that does neither.
     if projected:
@@ -268,7 +281,7 @@ def draw_scaling_panel(ax, campaign, device, target, sizes):
         if not points:
             continue
         marker, color = fig.style_for(series)
-        label = series if fit is None else f"{series} ($N^{{{fit[1]:.1f}}}$)"
+        label = series if fit is None else f"{series} ($n_{{\\rm tr}}^{{{fit[1]:.1f}}}$)"
         if estimated:
             label += ", est."
         measured = [p for p in points if p[0] not in projected]
@@ -294,6 +307,85 @@ def draw_scaling_panel(ax, campaign, device, target, sizes):
     ax.grid(True)
 
 
+def draw_scaling_bar_panel(ax, campaign, device, target, sizes, series_slots):
+    """Show accuracy-matched scaling as grouped bars, one bar per tool and size."""
+    series_data = []
+    values = []
+    for series in campaign.series_on(campaign.timings, device):
+        project_oom = series == fig.series_label("tortuosity", "assembled")
+        points, projected, fit, estimated = scaling_points(
+            campaign, device, target, sizes, series, project_oom=project_oom
+        )
+        if not points:
+            continue
+        label = series if fit is None else f"{series} ($n_{{\\rm tr}}^{{{fit[1]:.1f}}}$)"
+        if estimated:
+            label += ", est."
+        series_data.append((series, dict(points), projected, label))
+        values.extend(value for _, value in points)
+
+    if not series_data:
+        return
+
+    reference = fig.series_label(*fig.REFERENCE_SERIES)
+    assembled = fig.series_label("tortuosity", "assembled")
+    by_series = {series: (points, projected)
+                 for series, points, projected, _ in series_data}
+    if reference in by_series and assembled in by_series:
+        reference_points, reference_projected = by_series[reference]
+        assembled_points, assembled_projected = by_series[assembled]
+        shared = [size for size in sizes
+                  if size in reference_points and size in assembled_points
+                  and size not in reference_projected
+                  and size not in assembled_projected]
+        if shared and assembled_projected:
+            ratio = fig.geomean(
+                [assembled_points[size] / reference_points[size] for size in shared]
+            )
+            for size in assembled_projected:
+                if size in reference_points:
+                    assembled_points[size] = reference_points[size] * ratio
+            logger.info(
+                f"{assembled} projected at {assembled_projected} using its "
+                f"{ratio:.2f}× measured ratio to {reference}"
+            )
+
+    x = np.arange(len(sizes), dtype=float)
+    width = 0.80 / series_slots
+    base = min(values) / 4
+    for i, (series, points, projected, label) in enumerate(series_data):
+        _, color = fig.style_for(series)
+        offset = (i - (len(series_data) - 1) / 2) * width
+        label_pending = True
+        for j, size in enumerate(sizes):
+            value = points.get(size)
+            if value is None:
+                continue
+            is_projected = size in projected
+            ax.bar(
+                x[j] + offset,
+                value - base,
+                width,
+                bottom=base,
+                color=color,
+                alpha=0.55 if is_projected else 1.0,
+                hatch="////" if is_projected else None,
+                edgecolor="white",
+                linewidth=0.4,
+                label=label if label_pending else None,
+                zorder=3,
+            )
+            label_pending = False
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(size) for size in sizes])
+    ax.set_xlabel("Domain size $N$ (voxels per side)")
+    ax.set_ylabel("Solve time (s)")
+    ax.set_yscale("log")
+    ax.set_ylim(bottom=base)
+    ax.grid(True, axis="y", zorder=0)
+
+
 def figure_scaling(campaign):
     for device in campaign.devices(campaign.timings):
         sizes = campaign.sizes(campaign.timings, device, campaign.reference_blobiness)
@@ -315,7 +407,7 @@ def figure_scaling(campaign):
         np.atleast_1d(axes)[0].set_ylabel("Solve time (s), geometric mean")
         figure.suptitle(f"Scaling at matched accuracy on the {device.upper()} "
                         f"(blobiness {campaign.reference_blobiness:g}; solid: measured; "
-                        "dashed and hollow: projected; legend: exponent, "
+                        "dashed and hollow: projected; legend: transporting-voxel exponent, "
                         "\"est.\" where it was probed rather than fitted)", y=1.02)
         figure.tight_layout()
         campaign.save(figure, f"scaling_{device}.png")
@@ -337,7 +429,13 @@ def projected_time(campaign, device, series, times, size, porosity, sizes):
     if not measured or len(measured) >= PROJECTION_MIN_SIZES:
         return None
     anchor = max(measured)
-    return times[(anchor, porosity)] * (size / anchor) ** probe
+    nodes = pore_counts(campaign)
+    anchor_key = (anchor, porosity, campaign.reference_blobiness)
+    target_key = (size, porosity, campaign.reference_blobiness)
+    if nodes.get(anchor_key, 0) <= 0 or nodes.get(target_key, 0) <= 0:
+        return None
+    voxel_ratio = nodes[target_key] / nodes[anchor_key]
+    return times[(anchor, porosity)] * voxel_ratio ** probe
 
 
 def figure_time_bars(campaign):
@@ -957,14 +1055,16 @@ def figure_summary(campaign):
         return
     figure, axes = plt.subplots(len(devices), 2, squeeze=False, layout="constrained",
                                 figsize=(7.6, 3.1 * len(devices)))
+    series_slots = max(len(campaign.series_on(campaign.timings, d)) for d in devices)
     tag = iter("abcdefgh")
     for row, device in enumerate(devices):
         ax_scale, ax_map = axes[row]
         sizes = campaign.sizes(campaign.timings, device, campaign.reference_blobiness)
-        draw_scaling_panel(ax_scale, campaign, device, fig.PAPER_TARGET, sizes)
+        draw_scaling_bar_panel(
+            ax_scale, campaign, device, fig.PAPER_TARGET, sizes, series_slots
+        )
         ax_scale.set_ylabel("Solve time to $\\leq 0.1\\%$ error (s),\ngeometric mean over porosities")
-        # Every curve rises with N, so the large-N/short-time corner holds no data.
-        ax_scale.legend(loc="lower right", framealpha=0.9, fontsize=7)
+        ax_scale.legend(loc="upper left", framealpha=0.9, fontsize=7)
         ax_scale.set_title(f"({next(tag)}) {device.upper()}: scaling at matched accuracy", loc="left")
 
         available = campaign.series_on(campaign.timings, device)

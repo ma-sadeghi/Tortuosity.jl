@@ -115,7 +115,8 @@ def load_probes(resultsdir):
     A tool too slow to sweep over the size grid still has a size dependence, and
     the campaign measures it directly rather than assuming one. Each row is a
     matched pair of solves on the same image at two sizes; the exponent follows
-    from the ratio. Kept out of ``results/timings/`` on purpose: these are single
+    from the timing and transporting-voxel ratios. Kept out of
+    ``results/timings/`` on purpose: these are single
     cases run to calibrate a projection, not campaign rows, and mixing them in
     would make a one-size tool look like a two-size one everywhere.
 
@@ -129,8 +130,15 @@ def load_probes(resultsdir):
     if probes.empty:
         return probes
     probes["series"] = [series_label(t, v) for t, v in zip(probes["tool"], probes["variant"])]
+    references = pd.read_csv(Path(resultsdir) / "references.csv")
+    nodes = references.drop_duplicates("case_id").set_index("case_id")["nnodes"]
+    probes["nodes_lo"] = probes["case_lo"].map(nodes)
+    probes["nodes_hi"] = probes["case_hi"].map(nodes)
+    if probes[["nodes_lo", "nodes_hi"]].isna().any(axis=None):
+        raise ValueError("scaling probe cases are missing from references.csv")
+    voxel_ratio = probes["nodes_hi"] / probes["nodes_lo"]
     probes["exponent"] = (np.log(probes["t_hi_s"] / probes["t_lo_s"])
-                          / np.log(probes["size_hi"] / probes["size_lo"]))
+                          / np.log(voxel_ratio))
     return probes
 
 
@@ -159,28 +167,27 @@ def geomean(values):
     return float(np.exp(np.log(v).mean())) if v.size else np.nan
 
 
-def power_law(sizes, times):
-    """Fit `t = a N^p` by least squares on `log t` against `log N`.
+def power_law(counts, times):
+    """Fit `t = a n^p` against the number of transporting voxels `n`.
 
     Returns `(a, p, r2)`, or `None` from fewer than three sizes, where a
     two-parameter fit would be interpolation with no residual left to judge it by.
 
     A power law is the only form the physics admits. Every solver here does a
-    fixed amount of work per unknown per iteration, the unknown count is a power
-    of the edge length, and the iteration count is itself a power of it, so the
-    product is one too. A polynomial in `N` fitted over a size range spanning a
-    factor of five is free to curve back on itself and put a plateau, or a fall,
-    on a page where the runtime can only rise.
+    fixed amount of work per unknown per iteration, and the iteration count can
+    itself depend on the unknown count. A polynomial fitted over this range is
+    free to curve back on itself and put a plateau, or a fall, on a page where
+    the runtime can only rise.
 
     Fitting a straight line has a closed form, which is exact and reads as the
     definition of the quantity it returns, so there is nothing here for a least
     squares routine to do.
     """
-    n = np.asarray(sizes, dtype=float)
+    voxels = np.asarray(counts, dtype=float)
     t = np.asarray(times, dtype=float)
-    if n.size < 3:
+    if voxels.size < 3:
         return None
-    x, y = np.log(n), np.log(t)
+    x, y = np.log(voxels), np.log(t)
     dx, dy = x - x.mean(), y - y.mean()
     p = float((dx * dy).sum() / (dx * dx).sum())
     a = float(np.exp(y.mean() - p * x.mean()))
