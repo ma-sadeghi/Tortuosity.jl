@@ -314,12 +314,14 @@ def sweep_case(writer, case, entry, img, tau_ref):
 
 
 def probe_case(writer, case, entry, img):
-    """Measure one case's peak resident set at the tightest affordable tolerance.
+    """Measure one case's peak resident set on the loosest rung of the ladder.
 
     PuMA cannot be capped at an iteration count, so the memory probe solves to a
-    fixed tolerance instead. That is sound for this measurement: SciPy's
-    conjugate gradient allocates its working vectors up front and reuses them, so
-    the footprint is set by the problem rather than by how far it iterates.
+    fixed tolerance instead. Which rung it solves to does not matter, and the
+    cheapest one is therefore the right choice: SciPy's conjugate gradient
+    allocates its working vectors up front and reuses them, and PuMA assembles the
+    operator and the preconditioner before the first of them, so the footprint is
+    set by the problem rather than by how far it iterates.
     """
     usage, status, note = None, "ok", ""
     try:
