@@ -200,6 +200,26 @@ def time_to_target(frame, target):
     return float(ok["time_s"].min()) if len(ok) else np.nan
 
 
+def validate_target_status(frame, target):
+    """Reject timing rows whose terminal status disagrees with their error.
+
+    Figures select qualifying rows from ``rel_error`` directly. This check also
+    keeps the campaign's terminal labels honest: every ``target_reached`` row
+    must meet the configured target, and every row that meets it must carry that
+    label.
+    """
+    if frame.empty:
+        return
+    reached = frame["rel_error"].notna() & (frame["rel_error"] <= target)
+    reached &= frame["time_s"] > 0
+    labelled = frame["stop_reason"] == "target_reached"
+    mismatch = frame[reached != labelled]
+    if mismatch.empty:
+        return
+    cases = ", ".join(sorted(mismatch["case_id"].astype(str).unique()))
+    raise ValueError(f"target status disagrees with rel_error for: {cases}")
+
+
 def target_times(data, target, *, device, series, sizes, porosities, blobiness):
     """`{(size, porosity): seconds}` for one series on one device, at one blobiness."""
     sub = data[(data["device"] == device) & (data["series"] == series)

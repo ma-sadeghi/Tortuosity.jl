@@ -79,6 +79,7 @@ class Campaign:
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
         self.timings = fig.load_results(cfg.resultsdir, "timings")
+        fig.validate_target_status(self.timings, float(cfg["sweep"]["target_error"]))
         # How the tools swept at one size scale, measured rather than assumed.
         self.probes = fig.load_probes(cfg.resultsdir)
         self.memory = fig.load_results(cfg.resultsdir, "memory")
@@ -141,20 +142,19 @@ class Campaign:
 PROJECTION_MIN_SIZES = 3
 
 
-def out_of_memory(timings, *, device, series, size, porosity, blobiness):
-    """Whether this case failed on the hardware rather than going unmeasured.
+def case_attempted(timings, *, device, series, size, porosity, blobiness):
+    """Whether a timing sweep contains any row for this case.
 
-    Every `error` row in the campaign is an out-of-memory failure, so a cell
-    holding one is not a measurement someone chose to skip: the tool cannot solve
-    that image on this machine at all. Projecting a time for it would put a
-    number on the page for a run that can never happen, which is a different
-    claim from projecting one that was merely never afforded.
+    A case that was attempted but did not reach the accuracy target is a measured
+    failure, whether it timed out, exhausted its ladder, or ran out of memory.
+    Projecting through that failure would replace an observed result with an
+    estimate and could then admit the estimate into a matched-accuracy average.
     """
     cell = timings[(timings["device"] == device) & (timings["series"] == series)
                    & (timings["size"] == size)
                    & np.isclose(timings["porosity_target"], porosity)
                    & np.isclose(timings["blobiness"], blobiness)]
-    return bool((cell["stop_reason"] == "error").any())
+    return not cell.empty
 
 
 def scaling_points(campaign, device, target, sizes, series):
@@ -169,11 +169,11 @@ def scaling_points(campaign, device, target, sizes, series):
     happens. Both are the average changing underneath the curve.
 
     So every size here averages over the same five porosities. A porosity the
-    tool was never run at, or ran at without reaching the target inside its
-    budget, is filled in from its own fitted power law over the sizes it did
-    reach. A porosity that ran out of memory is not filled in, and takes its
-    whole size off the curve: there is no honest mean over a set of images one of
-    which the tool cannot solve at all.
+    tool was never run at can be filled in from its own fitted power law over the
+    sizes it did reach. An attempted case that timed out, exhausted its ladder,
+    or ran out of memory is not filled in and takes its whole size off the curve:
+    a measured failure cannot be replaced by an estimate in a matched-accuracy
+    average.
     """
     times = fig.target_times(campaign.timings, target, device=device, series=series,
                              sizes=sizes, porosities=campaign.porosities,
@@ -211,9 +211,10 @@ def scaling_points(campaign, device, target, sizes, series):
                 filled.append(value)
                 continue
             porosity_fit = fits.get(por)
-            if porosity_fit is None or out_of_memory(
-                    campaign.timings, device=device, series=series, size=size,
-                    porosity=por, blobiness=campaign.reference_blobiness):
+            attempted = case_attempted(
+                campaign.timings, device=device, series=series, size=size,
+                porosity=por, blobiness=campaign.reference_blobiness)
+            if porosity_fit is None or attempted:
                 filled = None
                 break
             a, exponent, _ = porosity_fit
