@@ -63,6 +63,7 @@ To measure part of the grid, pass the selection through:
 
 ```bash
 ./run/campaign.sh --grid=full --stages=timings --tools=tortuosity --sizes=800,1000
+./run/campaign.sh --grid=full --stages=timings --tools=puma,porespy --sizes=200
 ./run/campaign.sh --grid=full --stages=memory --blobiness=1.0
 ```
 
@@ -89,7 +90,7 @@ Roughly, and worth knowing before renting anything:
 |---|---|---|
 | `images` | the largest sizes | one pass, deterministic, resumable |
 | `references` | `Float64` CPU solves | by far the most expensive; each value is written the moment it is solved |
-| `timings` | the accuracy ladders | seven configurations; the GPU pair first, since the paper needs those most |
+| `timings` | the accuracy ladders | six configurations by default, the GPU pair first since the paper needs those most; PuMA and PoreSpy are opt-in and are run at 200³ alone |
 | `memory` | nothing much | one short fixed-length solve per case |
 
 If the budget is uncertain, run `--stages=references` on its own first: every

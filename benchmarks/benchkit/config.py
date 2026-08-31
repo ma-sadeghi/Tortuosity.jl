@@ -126,9 +126,13 @@ def iteration_ladder(cfg):
     return sorted({int(round(n)) for n in rungs})
 
 
-def tolerance_ladder(cfg):
-    """Log-spaced tolerance ladder, loosest first."""
-    spec = cfg["sweep"]["ladder"]["tolerance"]
+def tolerance_ladder(cfg, key="tolerance"):
+    """Log-spaced tolerance ladder, loosest first.
+
+    `key` selects which ladder in `[sweep.ladder]` to read, for the tools whose
+    solvers converge over a different range than the shared one covers.
+    """
+    spec = cfg["sweep"]["ladder"][key]
     return list(np.logspace(np.log10(spec["min"]), np.log10(spec["max"]), int(spec["count"])))
 
 

@@ -46,6 +46,7 @@ SERIES = {
     ("tortuosity", "assembled-nopc"): ("Tortuosity.jl (assembled, unpreconditioned)", "P", "#c2a5cf"),
     ("taufactor", "sor"): ("taufactor", "s", "#b2182b"),
     ("puma", "fv-cg"): ("PuMA", "D", "#4dac26"),
+    ("porespy", "fd-amg"): ("PoreSpy", "h", "#e08214"),
 }
 
 # The series every speedup on a device is measured against.
@@ -108,6 +109,44 @@ def load_results(resultsdir, kind):
     data = pd.concat(frames, ignore_index=True)
     data["series"] = [series_label(t, v) for t, v in zip(data["tool"], data["variant"])]
     return data
+
+
+def load_probes(resultsdir):
+    """Scaling probes: one measured size step per tool, for the tools swept at one size.
+
+    A tool too slow to sweep over the size grid still has a size dependence, and
+    the campaign measures it directly rather than assuming one. Each row is a
+    matched pair of solves on the same image at two sizes; the exponent follows
+    from the ratio. Kept out of ``results/timings/`` on purpose: these are single
+    cases run to calibrate a projection, not campaign rows, and mixing them in
+    would make a one-size tool look like a two-size one everywhere.
+
+    Empty frame when the file is absent, which is what a campaign that never
+    needed a projection looks like.
+    """
+    path = Path(resultsdir) / "scaling-probes.csv"
+    if not path.is_file() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    probes = pd.read_csv(path)
+    if probes.empty:
+        return probes
+    probes["series"] = [series_label(t, v) for t, v in zip(probes["tool"], probes["variant"])]
+    probes["exponent"] = (np.log(probes["t_hi_s"] / probes["t_lo_s"])
+                          / np.log(probes["size_hi"] / probes["size_lo"]))
+    return probes
+
+
+def probe_exponent(probes, series, device):
+    """Mean measured exponent for one series, or None when nothing probed it.
+
+    Averaged over the porosities probed rather than taken from one, because the
+    exponent moves with porosity for every tool here and a projection resting on
+    a single dense or single open image would inherit that tilt.
+    """
+    if probes.empty:
+        return None
+    rows = probes[(probes["series"] == series) & (probes["device"] == device)]
+    return float(rows["exponent"].mean()) if len(rows) else None
 
 
 def geomean(values):

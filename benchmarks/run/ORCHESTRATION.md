@@ -115,11 +115,21 @@ and the same cores, and concurrency corrupts the very timings this exists to
 measure. `campaign.sh` takes a PID lock and refuses to start beside a live
 campaign, but that only catches the obvious case.
 
-To split the work over several sittings, pass the stage and tool through:
+PuMA and PoreSpy are not in the default tool list. Both are CPU only, both are an
+order of magnitude or more off the pace at the smallest size, and sweeping either
+over the size grid costs days to settle a question already settled at 200³.
+They are run on purpose, at one size:
+
+```bash
+./run/campaign.sh --grid=full --stages=timings --tools=puma,porespy --sizes=200
+```
+
+To split the rest of the work over several sittings, pass the stage and tool
+through:
 
 ```bash
 ./run/campaign.sh --grid=full --stages=timings --tools=tortuosity
-./run/campaign.sh --grid=full --stages=timings --tools=taufactor,puma
+./run/campaign.sh --grid=full --stages=timings --tools=taufactor
 ./run/campaign.sh --grid=full --stages=memory
 ```
 

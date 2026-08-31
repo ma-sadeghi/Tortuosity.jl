@@ -23,7 +23,12 @@ cd "$(dirname "$0")/.."
 
 GRID="full"
 STAGES="images,references,timings,memory"
-TOOLS="tortuosity,taufactor,puma"
+# PuMA and PoreSpy are left out of the default. Both are CPU only and both are
+# slow enough that sweeping them over the size grid costs days for a gap already
+# decided at the smallest size, so they are run deliberately and at one size:
+# `--tools=puma,porespy --sizes=200`. Naming them here instead would make the
+# default campaign the expensive one.
+TOOLS="tortuosity,taufactor"
 # Which devices the timing and memory stages cover. Sweeping the sizes on the GPU
 # first and returning for the CPU later is a normal way to run this: the GPU
 # stages carry the headline numbers and cost hours where the CPU ones cost days.
@@ -153,6 +158,9 @@ if has_stage timings; then
   if has_tool puma && has_device cpu; then
     step timings_puma $PIXI run python bench_puma.py --measure=time $SELECT
   fi
+  if has_tool porespy && has_device cpu; then
+    step timings_porespy $PIXI run -e porespy python bench_porespy.py --measure=time $SELECT
+  fi
 fi
 
 # ── Memory ───────────────────────────────────────────────────────────
@@ -241,6 +249,9 @@ if has_stage memory; then
   fi
   if has_tool puma && has_device cpu; then
     isolated memory_puma $PIXI run python bench_puma.py --measure=memory
+  fi
+  if has_tool porespy && has_device cpu; then
+    isolated memory_porespy $PIXI run -e porespy python bench_porespy.py --measure=memory
   fi
 fi
 

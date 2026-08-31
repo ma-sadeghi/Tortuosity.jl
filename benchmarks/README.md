@@ -1,6 +1,6 @@
 # Benchmarks
 
-A reproducible comparison of Tortuosity.jl against [taufactor](https://github.com/tldr-group/taufactor) (Python/PyTorch) and [PuMA](https://github.com/nasa/puma) (Python/C++), over domain size, porosity and microstructure, on both the CPU and the GPU, measuring both time-to-accuracy and peak memory.
+A reproducible comparison of Tortuosity.jl against [taufactor](https://github.com/tldr-group/taufactor) (Python/PyTorch), [PuMA](https://github.com/nasa/puma) (Python/C++) and [PoreSpy](https://github.com/PMEAL/porespy) (Python), over domain size, porosity and microstructure, on both the CPU and the GPU, measuring both time-to-accuracy and peak memory.
 
 Every tool solves the same images, against the same ground truth, at the same accuracy targets, with the same thread budget. Anything that differs between them is meant to be a property of the tool.
 
@@ -16,11 +16,12 @@ compute_references.jl  ground truth: Float64 CPU solves
 bench_tortuosity.jl    Tortuosity.jl, either device, either operator, time or memory
 bench_taufactor.py     taufactor, either device, time or memory
 bench_puma.py          PuMA (CPU only), time or memory
+bench_porespy.py       PoreSpy (CPU only, own pixi environment), time or memory
 make_figures.py        post-processing: figures from the CSVs, nothing else
 
 run/                   orchestration; see run/README.md for the rented-machine flow
 data/images/           the image store and its manifest (regenerable; not in git)
-results/               the measured dataset: timings/, memory/, references.csv
+results/               the measured dataset: timings/, memory/, references.csv, scaling-probes.csv
 results/legacy/        the superseded pre-2026-08 dataset, kept unmodified
 results/archive/       datasets a later change made incomparable; see its README
 figures/               output of make_figures.py
@@ -35,7 +36,7 @@ cd benchmarks/
 ./run/setup.sh
 ```
 
-That resolves the Julia project, installs the Python environment with [pixi](https://pixi.sh), checks out the vendored taufactor fork at its pinned commit, and checks that the GPU and all three tools actually work before anything is measured.
+That resolves the Julia project, installs the Python environment with [pixi](https://pixi.sh), checks out the vendored taufactor fork at its pinned commit, and checks that the GPU and all four tools actually work before anything is measured.
 
 Two things about the environments are deliberate and easy to undo by accident:
 
@@ -65,6 +66,7 @@ julia --project=. -t 1 bench_tortuosity.jl --device=gpu --operator=matrixfree --
 julia --project=. -t 1,1 bench_tortuosity.jl --device=cpu --operator=assembled --measure=memory
 pixi run python bench_taufactor.py --device=cpu --measure=time
 pixi run python bench_puma.py --measure=memory
+pixi run -e porespy python bench_porespy.py --sizes=200 --measure=time
 pixi run python make_figures.py --only=memory,summary
 ```
 
@@ -111,26 +113,31 @@ Each tool is swept over the knob that best traces *its own* accuracy–time fron
 | Tortuosity.jl | CG iteration count | 18 log-spaced, 1 … 20000 |
 | taufactor | SOR iteration count | 18 log-spaced, 1 … 20000 |
 | PuMA | CG iteration count | 18 log-spaced, 1 … 20000 |
+| PoreSpy | multigrid tolerance | 18 log-spaced, 0.5 … 1e-10 |
 
-Iteration count rather than tolerance, for all three. Tolerance samples the frontier badly at both ends — the loosest settings return τ ≈ 0 and the tightest can step straight past the target in one rung — and taufactor evaluates its own `conv_crit` only every 100 iterations, which puts the entire coarse-accuracy regime out of reach through that knob. PuMA needs two workarounds to reach the same axis, both in `bench_puma.py`: its `PropertySolver.solve` raises rather than returning a partial result when SciPy stops on `maxiter`, and it passes only `atol` to SciPy and never `tol`, leaving that at its 1e-5 default so that every tolerance rung below `1e-5·‖b‖` was a duplicate of the one above it. Driving SciPy's conjugate gradient directly, over PuMA's own operator and preconditioner, fixes both. Nothing about PuMA's algorithm changes, only the stopping rule, which is the thing being swept.
+Iteration count rather than tolerance, wherever the solver allows one. Tolerance samples a Krylov or SOR frontier badly at both ends — the loosest settings return τ ≈ 0 and the tightest can step straight past the target in one rung — and taufactor evaluates its own `conv_crit` only every 100 iterations, which puts the entire coarse-accuracy regime out of reach through that knob. PuMA needs two workarounds to reach the same axis, both in `bench_puma.py`: its `PropertySolver.solve` raises rather than returning a partial result when SciPy stops on `maxiter`, and it passes only `atol` to SciPy and never `tol`, leaving that at its 1e-5 default so that every tolerance rung below `1e-5·‖b‖` was a duplicate of the one above it. Driving SciPy's conjugate gradient directly, over PuMA's own operator and preconditioner, fixes both. Nothing about PuMA's algorithm changes, only the stopping rule, which is the thing being swept.
+
+PoreSpy is the exception, and tolerance is the right knob for it: PyAMG's multigrid takes a tolerance and returns only once it has met it, so there is no iteration cap to trace a frontier with, and its convergence rate barely changes from one rung to the next, so the rungs land evenly instead of piling up at one end. Its ladder runs tighter than the shared one because its own default is 1e-8 and the most tortuous images need below that to reach the 0.1% target.
 
 ### Warm-up
 
 Every stage solves a throwaway image before it measures anything, on a case that is not in the grid. No reported number includes a first-call cost: Julia compiles on first execution, PyTorch pays CUDA context creation on its first kernel launch, and SciPy and PuMA's compiled `compute_flux` each pay one of their own. Warming on a measured case instead would double that case's cost for nothing.
 
-The warm-up has to exercise the same code as the measurement, not merely the same package. Julia specialises on types rather than array sizes, so a 64³ image compiles what a 1000³ one runs — but a timing run traces its ladder through a different path than a plain solve, and warming only the latter leaves the first measured case carrying the trace path's compilation. Both paths are warmed in all three harnesses. taufactor shows why most plainly: a run shorter than 100 iterations never reaches a convergence check and so never calls `compute_metrics`, which is the one thing every checkpoint calls. 64³ is also the smallest size that clears the pore count below which `precond=:auto` declines to build a coarse space, so the preconditioner is warmed too.
+The warm-up has to exercise the same code as the measurement, not merely the same package. Julia specialises on types rather than array sizes, so a 64³ image compiles what a 1000³ one runs — but a timing run traces its ladder through a different path than a plain solve, and warming only the latter leaves the first measured case carrying the trace path's compilation. Both paths are warmed in every harness. taufactor shows why most plainly: a run shorter than 100 iterations never reaches a convergence check and so never calls `compute_metrics`, which is the one thing every checkpoint calls. 64³ is also the smallest size that clears the pore count below which `precond=:auto` declines to build a coarse space, so the preconditioner is warmed too.
 
 ### One solve per case, not one per rung
 
-Each tool's whole ladder is traced from a **single** solve. A Krylov or SOR iterate is deterministic — iterate *k* is the same vector whether the run stopped there or carried on — so reading tortuosity off at each rung reports exactly what one solve per rung reported, for a fraction of the cost. The time recorded against a rung has the cost of the readings taken so far subtracted back out, so it stays comparable with a plain run that stopped at that iteration.
+Each iteration-swept tool's whole ladder is traced from a **single** solve. A Krylov or SOR iterate is deterministic — iterate *k* is the same vector whether the run stopped there or carried on — so reading tortuosity off at each rung reports exactly what one solve per rung reported, for a fraction of the cost. The time recorded against a rung has the cost of the readings taken so far subtracted back out, so it stays comparable with a plain run that stopped at that iteration.
 
-Verified rather than assumed, on both devices and all three tools: τ comes back **bit-identical** at every rung, and the traced time lands within a few percent of one-solve-per-rung, converging on it as the rung grows. This is what makes the campaign affordable — the CPU stages were 6.5 of the 7 hours of the previous 200³ run.
+PoreSpy is swept on tolerance and so needs a solve per rung, but everything the tolerance does not change is shared: trimming, the network, the assembly and the multigrid hierarchy are built once and their measured cost is added to every rung. That is what the tool charges a user who asks for that tolerance directly. Rebuilding them per rung would charge one fixed cost eighteen times and measure the ladder rather than the solver.
+
+Verified rather than assumed, on both devices and all three iteration-swept tools: τ comes back **bit-identical** at every rung, and the traced time lands within a few percent of one-solve-per-rung, converging on it as the rung grows. This is what makes the campaign affordable — the CPU stages were 6.5 of the 7 hours of the previous 200³ run.
 
 Two things this required. `abstol = 0` for Tortuosity.jl, because LinearSolve otherwise defaults it to `sqrt(eps(T))` — 3.4e-4 in `Float32` — which ends the solve long before the iteration cap and leaves most of the ladder unreachable. And a `checkpoints` argument on the vendored taufactor fork, listed with its other patches below.
 
 Each rung is run three times and the **median** reported, with the spread recorded alongside. The median rather than one sample because wall time varies between launches, and because the preconditioner's restriction once scattered with atomic float adds whose order is not fixed. Those adds moved τ between runs by roughly the size of the accuracy target, and made whether a case "reached" the target partly luck. That scatter is now a gather over a fixed coarse-to-fine adjacency, and every three-repeat GPU row in the current results reports a τ spread of exactly zero. The coarse operator's own assembly still uses atomics, so bit-for-bit equality across runs is not guaranteed even though it is what we now measure. A first repeat slower than `repeat_threshold_s` abandons the remaining repeats, and those rows carry `repeats = 1` and a NaN spread — a spread of zero is the claim that three runs agreed exactly, which is not the same thing.
 
-**Every tool is clocked from the moment it receives the image to the moment tortuosity can be read.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all three. Only the image itself, and the tortuosity read-off at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work a user does.
+**Every tool is clocked from the moment it receives the image to the moment tortuosity can be read.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all four. Only the image itself, and the tortuosity read-off at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work a user does.
 
 This replaces an earlier convention that excluded setup for taufactor and PuMA on the grounds that their users "pay it before solving", and described the result as conservative. It was not conservative by a little. taufactor's `Solver` constructor builds the SOR checkerboard from an N³ float64 array and a three-way N³ meshgrid. Measured at 200³ on a GPU it costs **0.415 s against a 0.48 s solve — 45% of the total**, and it grows as N³. Charging Tortuosity.jl for its assembly and coarse space while charging taufactor nothing skewed the GPU comparison by about the whole margin being measured, and it inverted the ranking at the loose end of the accuracy ladder.
 
@@ -164,8 +171,11 @@ results/references.csv          ground truth, one row per case
 results/timings/<tool>-<device>[-<variant>].csv
 results/memory/<tool>-<device>[-<variant>].csv
 results/environment.csv         what produced each batch of rows
+results/scaling-probes.csv      one measured size step per tool swept at a single size
 results/archive/<change>/       datasets superseded by that change
 ```
+
+`scaling-probes.csv` is what lets a tool measured at one size still appear across the whole size axis. PuMA and PoreSpy are too slow to sweep, so each was run once at 400³ beside its 200³ counterpart, and the ratio of the two gives an exponent. The figures project from that and mark every projected point: dashed line, hollow marker, and `est.` beside the exponent in the legend. The probes are kept out of `results/timings/` on purpose — they are single cases run to calibrate a projection, not campaign rows, and mixing them in would make a one-size tool look like a two-size one everywhere and would put an unpaired case into aggregates that assume the full porosity set.
 
 The identifying columns — tool, device, variant, case, thread count, host, timestamp — are repeated on every row rather than encoded only in the filename, so post-processing concatenates the whole directory without parsing a name to know what it is reading. `environment.csv` exists because timings are only comparable within one machine and one software stack, and this campaign spans a laptop and a rented host by design.
 

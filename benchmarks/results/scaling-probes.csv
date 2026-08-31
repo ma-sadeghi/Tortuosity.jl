@@ -1,0 +1,4 @@
+tool,device,variant,case_lo,case_hi,size_lo,size_hi,porosity_target,blobiness,t_lo_s,t_hi_s,basis,host,measured_at,note
+porespy,cpu,fd-amg,n200_b100_p020,n400_b100_p020,200,400,0.2,1.0,31.18,902.91,fixed-tolerance,pmeal-hpc,2026-08-30T13:53:40,"one solve to PoreSpy's own 1e-8 default; taken from the memory probe"
+porespy,cpu,fd-amg,n200_b100_p060,n400_b100_p060,200,400,0.6,1.0,79.03,1713.60,fixed-tolerance,pmeal-hpc,2026-08-30T14:22:18,"one solve to PoreSpy's own 1e-8 default; taken from the memory probe"
+puma,cpu,fv-cg,n200_b100_p060,n400_b100_p060,200,400,0.6,1.0,198.50,2484.05,time-to-target,pmeal-hpc,2026-08-30T15:45:28,"the ladder rung first reaching 0.1% relative error; 339 iterations at 200 cubed and 607 at 400 cubed"

@@ -79,6 +79,13 @@ iters = { min = 1, max = 20000, count = 18 }
 # tolerance it was given.
 tolerance = { min = 0.5, max = 1e-7, count = 15 }
 puma_maxiter = 100000
+# PoreSpy is swept on tolerance for the same reason PuMA is — its multigrid
+# solver takes a tolerance and returns only once it has met it — but over a
+# longer ladder. Its own default is 1e-8, tighter than the ladder above stops
+# at, and on the most tortuous images the 0.1% target is not reached until below
+# that. Sharing the ladder would record "never reached the target" for cases the
+# tool in fact solves.
+porespy_tolerance = { min = 0.5, max = 1e-10, count = 18 }
 # Pinned small enough that the Krylov solver never exits on the residual, which
 # leaves the iteration cap as the only stopping rule. This alone does not achieve
 # that: LinearSolve defaults `abstol` to `sqrt(eps(T))` — 3.4e-4 in Float32 — and

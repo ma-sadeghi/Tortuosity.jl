@@ -41,6 +41,33 @@ matplotlib = "*"
 # nothing.
 psutil = "*"
 
+# PoreSpy gets an environment to itself. It pulls OpenPNM, numba and
+# scikit-image, none of which the other stages want, and the default environment
+# already carries torch and PuMA, which cannot share a process with each other
+# either. Isolation here is the same rule the harnesses follow: one tool, one
+# process, one set of libraries.
+#
+# Linux only, because the benchmark machine is. Solving it for win-64 as well
+# would pin a set of packages nothing ever installs, and a lockfile that has to
+# satisfy a platform nobody runs on is a lockfile that can fail to solve for a
+# reason that does not matter.
+[tool.pixi.feature.porespy]
+platforms = ["linux-64"]
+
+[tool.pixi.feature.porespy.dependencies]
+python = "3.11.*"
+porespy = ">=3.0"
+pyamg = "*"
+h5py = "*"
+numpy = "<2"
+scipy = "*"
+loguru = "*"
+psutil = "*"
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+porespy = { features = ["porespy"], no-default-feature = true }
+
 [tool.pixi.tasks]
 
 # torch is installed from the PyTorch wheel index rather than from conda-forge,

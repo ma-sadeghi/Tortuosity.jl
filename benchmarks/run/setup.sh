@@ -85,6 +85,20 @@ sys.exit(0 if ok else 1)"
 $PIXI run python -c "
 import pumapy, scipy
 print('pumapy ok, scipy', scipy.__version__)"
+# PoreSpy lives in an environment of its own, so this both resolves that
+# environment and checks what the harness imports. `bench_porespy.py` follows
+# `tortuosity_fd` step by step rather than calling it, so the pieces it reaches
+# for directly — the trimming filters, OpenPNM's solver defaults, and PyAMG,
+# which is a transitive dependency nothing else here would notice going missing —
+# are what have to be there.
+$PIXI run -e porespy python -c "
+import porespy, openpnm, pyamg
+from porespy.filters import trim_nonpercolating_paths
+from porespy.generators import faces
+assert callable(porespy.simulations.tortuosity_fd)
+assert openpnm.solvers.PyamgRugeStubenSolver().maxiter
+print('porespy ok', porespy.__version__, '/ openpnm', openpnm.__version__,
+      '/ pyamg', pyamg.__version__)"
 
 echo
 echo "ready. Validate the machinery before paying for a large machine:"

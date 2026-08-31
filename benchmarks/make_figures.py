@@ -63,7 +63,7 @@ PUBLISH = {
     "time_bars_cpu.png": ("benchmark_time_bars_cpu.png", ["docs/src/assets"]),
     "speedup_taufactor_gpu.png": ("benchmark_speedup_taufactor.png", ["docs/src/assets"]),
     "speedup_taufactor_cpu.png": ("benchmark_speedup_taufactor_cpu.png", ["docs/src/assets"]),
-    "speedup_puma_cpu.png": ("benchmark_speedup_puma_cpu.png", ["docs/src/assets"]),
+    "single_size_cpu.png": ("benchmark_single_size_cpu.png", ["docs/src/assets"]),
     "pareto_gpu.png": ("benchmark_pareto.png", ["docs/src/assets"]),
     "pareto_cpu.png": ("benchmark_pareto_cpu.png", ["docs/src/assets"]),
 }
@@ -79,6 +79,8 @@ class Campaign:
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
         self.timings = fig.load_results(cfg.resultsdir, "timings")
+        # How the tools swept at one size scale, measured rather than assumed.
+        self.probes = fig.load_probes(cfg.resultsdir)
         self.memory = fig.load_results(cfg.resultsdir, "memory")
         if self.timings.empty and self.memory.empty:
             raise SystemExit(f"no results under {cfg.resultsdir} — run the benchmarks first")
@@ -88,6 +90,10 @@ class Campaign:
         # the structure panel can be drawn before any tool has been benchmarked.
         refpath = cfg.resultsdir / "references.csv"
         self.references = pd.read_csv(refpath) if refpath.is_file() else pd.DataFrame()
+        # Filled on first use by `pore_counts` and `footprint_rate`. Both are
+        # asked once per projected bar and both walk a whole frame to answer.
+        self.nodes = None
+        self.rates = {}
 
         configured = [float(b) for b in cfg["image"]["blobinesses"]]
         # Everything except the blobiness figure is drawn at one structure, so
@@ -176,13 +182,27 @@ def scaling_points(campaign, device, target, sizes, series):
     # rises steeply as the pore space closes -- taufactor spans 3.1 to 3.9 on the
     # GPU and 3.2 to 5.0 on the CPU -- so a single exponent would project the
     # dense images, the ones that are missing, at the open images' rate.
+    # A tool swept at one size has no fit of its own, but the campaign measures
+    # its size dependence directly in `results/scaling-probes.csv` — a matched
+    # pair of solves on one image at two sizes. Given that exponent, the one
+    # measured size fixes the constant and the whole curve follows. The result is
+    # an estimate and is drawn as one, dashed and hollow at every projected size,
+    # exactly as a projected porosity is.
+    probe = fig.probe_exponent(campaign.probes, series, device)
     fits = {}
     for por in campaign.porosities:
         measured = [n for n in sizes if np.isfinite(times[(n, por)])]
         if len(measured) >= PROJECTION_MIN_SIZES:
             fits[por] = fig.power_law(measured, [times[(n, por)] for n in measured])
+        elif probe is not None and measured:
+            anchor = max(measured)
+            fits[por] = (times[(anchor, por)] / anchor ** probe, probe, np.nan)
 
-    points, projected = [], []
+    # `probed` records that a filled-in value came from the probe rather than
+    # from this series' own per-porosity fit, which is what the log below has to
+    # distinguish. Named apart from `fit` so the series-level fit computed after
+    # the loop is not read back through a name the loop also binds.
+    points, projected, probed = [], [], False
     for size in sizes:
         filled, borrowed = [], False
         for por in campaign.porosities:
@@ -190,15 +210,16 @@ def scaling_points(campaign, device, target, sizes, series):
             if np.isfinite(value):
                 filled.append(value)
                 continue
-            fit = fits.get(por)
-            if fit is None or out_of_memory(campaign.timings, device=device, series=series,
-                                            size=size, porosity=por,
-                                            blobiness=campaign.reference_blobiness):
+            porosity_fit = fits.get(por)
+            if porosity_fit is None or out_of_memory(
+                    campaign.timings, device=device, series=series, size=size,
+                    porosity=por, blobiness=campaign.reference_blobiness):
                 filled = None
                 break
-            a, exponent, _ = fit
+            a, exponent, _ = porosity_fit
             filled.append(a * size ** exponent)
             borrowed = True
+            probed = probed or (probe is not None and exponent == probe)
         if not filled:
             continue
         points.append((size, fig.geomean(filled)))
@@ -214,13 +235,20 @@ def scaling_points(campaign, device, target, sizes, series):
     # Say what was projected and what was dropped. A curve that quietly stops
     # short, or quietly rests on a fit, reads exactly like one that does neither.
     if projected:
-        logger.info(f"{series} on the {device} at {target:g}: projected {projected} "
-                    f"from a per-porosity power law")
+        source = (f"a probed exponent of {probe:.2f}" if probed
+                  else "a per-porosity power law")
+        logger.info(f"{series} on the {device} at {target:g}: projected {projected} from {source}")
     dropped = [n for n in sizes if n not in [p for p, _ in points]]
     if dropped:
         logger.info(f"{series} on the {device} at {target:g}: left {dropped} off, where a "
                     "porosity was neither measured nor projectable")
-    return points, projected, fit
+    # `estimated` says where the exponent in the legend came from: a fit through
+    # this series' own measured means, or a probe run to calibrate a projection.
+    # They deserve different labels, and only the caller knows how to draw them.
+    estimated = fit is None and probe is not None
+    if estimated:
+        fit = (np.nan, probe, np.nan)
+    return points, projected, fit, estimated
 
 
 def draw_scaling_panel(ax, campaign, device, target, sizes):
@@ -235,11 +263,13 @@ def draw_scaling_panel(ax, campaign, device, target, sizes):
     where the data is fine.
     """
     for series in campaign.series_on(campaign.timings, device):
-        points, projected, fit = scaling_points(campaign, device, target, sizes, series)
+        points, projected, fit, estimated = scaling_points(campaign, device, target, sizes, series)
         if not points:
             continue
         marker, color = fig.style_for(series)
         label = series if fit is None else f"{series} ($N^{{{fit[1]:.1f}}}$)"
+        if estimated:
+            label += ", est."
         measured = [p for p in points if p[0] not in projected]
         # Where the solid line hands over to the dashed one. With nothing measured
         # the smallest size takes that role, which leaves the solid span a single
@@ -284,12 +314,30 @@ def figure_scaling(campaign):
         np.atleast_1d(axes)[0].set_ylabel("Solve time (s), geometric mean")
         figure.suptitle(f"Scaling at matched accuracy on the {device.upper()} "
                         f"(blobiness {campaign.reference_blobiness:g}; solid: measured; "
-                        "dashed and hollow: projected; legend: fitted exponent)", y=1.02)
+                        "dashed and hollow: projected; legend: exponent, "
+                        "\"est.\" where it was probed rather than fitted)", y=1.02)
         figure.tight_layout()
         campaign.save(figure, f"scaling_{device}.png")
 
 
 # ── Per-porosity solve time ──────────────────────────────────────────
+
+def projected_time(campaign, device, series, times, size, porosity, sizes):
+    """Time for a cell nobody ran, from this series' probed exponent, or None.
+
+    Only for the tools swept at a single size: everything else either has the
+    cell or has enough of its own sizes to be fitted, and a projection laid over
+    either would be drawing a model where a measurement already sits.
+    """
+    probe = fig.probe_exponent(campaign.probes, series, device)
+    if probe is None:
+        return None
+    measured = [n for n in sizes if np.isfinite(times[(n, porosity)])]
+    if not measured or len(measured) >= PROJECTION_MIN_SIZES:
+        return None
+    anchor = max(measured)
+    return times[(anchor, porosity)] * (size / anchor) ** probe
+
 
 def figure_time_bars(campaign):
     """Grouped bars rather than a curve through an average.
@@ -297,6 +345,11 @@ def figure_time_bars(campaign):
     Collapsing five porosities into one number hides that the ranking flips
     between a dense medium, where the solve dominates, and a nearly-open one,
     where startup does.
+
+    A tool swept at one size gets a hatched bar at the sizes it was never run at,
+    carrying its probed exponent forward from the size it was. The hatch and the
+    legend say that the bar is an estimate; leaving the slot blank instead said
+    the tool had failed there, which is a different and untrue claim.
     """
     for device in campaign.devices(campaign.timings):
         sizes = campaign.sizes(campaign.timings, device, campaign.reference_blobiness)
@@ -308,7 +361,7 @@ def figure_time_bars(campaign):
                                     figsize=(3.0 * cols, 2.4 * rows))
         x = np.arange(len(campaign.porosities))
         width = 0.80 / len(series)
-        blanks = []
+        blanks, estimated_any = [], False
 
         for r, (target, label) in enumerate(zip(fig.THRESHOLDS, fig.THRESHOLD_LABELS)):
             for k, name in enumerate(series):
@@ -324,6 +377,12 @@ def figure_time_bars(campaign):
                         if np.isfinite(value):
                             ax.bar(x[i] + offset, value, width, color=color,
                                    edgecolor="white", linewidth=0.4, zorder=3)
+                            continue
+                        guess = projected_time(campaign, device, name, times, size, por, sizes)
+                        if guess is not None:
+                            estimated_any = True
+                            ax.bar(x[i] + offset, guess, width, color=color, alpha=0.55,
+                                   hatch="////", edgecolor="white", linewidth=0.4, zorder=3)
                         else:
                             blanks.append((ax, x[i] + offset))
             for c, size in enumerate(sizes):
@@ -351,6 +410,9 @@ def figure_time_bars(campaign):
                     markersize=3.5, markeredgewidth=0.8, linestyle="none", zorder=4)
 
         handles = [Patch(facecolor=fig.style_for(name)[1], label=name) for name in series]
+        if estimated_any:
+            handles.append(Patch(facecolor="0.75", alpha=0.55, hatch="////",
+                                 label="projected, not measured"))
         if blanks:
             handles.append(Line2D([], [], marker=MISSING_MARKER, color="0.55", linestyle="none",
                                   markeredgewidth=0.8, label="target never reached"))
@@ -359,6 +421,140 @@ def figure_time_bars(campaign):
         figure.suptitle(f"Solve time per porosity on the {device.upper()}", y=1.0)
         figure.tight_layout()
         campaign.save(figure, f"time_bars_{device}.png")
+
+
+# ── Tools measured at a single size ──────────────────────────────────
+
+def single_size_series(campaign, device):
+    """`{series: size}` for the tools on `device` measured at exactly one size.
+
+    Some tools are too slow to sweep over the size grid: one 200³ case can cost
+    PuMA nineteen minutes, and the campaign stops rather than spending days
+    proving a gap already visible at the smallest size. Drawing them on a
+    scaling curve or a size-by-porosity map leaves a figure that is almost all
+    blank, and a blank cell reads as a tool that failed rather than as a
+    measurement nobody could afford. They get a bar chart at their one size
+    instead. Nothing here is hardcoded: a tool later run at a second size rejoins
+    the size figures on its own.
+
+    Counted at the reference blobiness, because that is the slice every figure
+    this decision routes between is drawn at. Counting over all three would let a
+    second size measured at another structure send a tool to a size figure that
+    still has only one column of it to draw.
+    """
+    limited = {}
+    for name in campaign.series_on(campaign.timings, device):
+        rows = campaign.timings[campaign.timings["series"] == name]
+        sizes = campaign.sizes(rows, device, campaign.reference_blobiness)
+        if len(sizes) == 1:
+            limited[name] = sizes[0]
+    return limited
+
+
+def draw_single_size_panel(ax, campaign, device, size, names, *, fontsize=6.5):
+    """Grouped bars of wall time at one size, ours first, with the ratio over each.
+
+    The ratio is written above the bar rather than left to the reader's eye,
+    because the axis is logarithmic and a log axis flattens exactly the quantity
+    the panel exists to report. Returns the legend handles.
+    """
+    reference = names[0]
+    times = {n: fig.target_times(campaign.timings, fig.PAPER_TARGET, device=device,
+                                 series=n, sizes=[size], porosities=campaign.porosities,
+                                 blobiness=campaign.reference_blobiness)
+             for n in names}
+    x = np.arange(len(campaign.porosities))
+    width = 0.80 / len(names)
+    blanks = []
+    for k, name in enumerate(names):
+        _, color = fig.style_for(name)
+        offset = (k - (len(names) - 1) / 2) * width
+        for i, por in enumerate(campaign.porosities):
+            value = times[name][(size, por)]
+            if np.isfinite(value):
+                ax.bar(x[i] + offset, value, width, color=color,
+                       edgecolor="white", linewidth=0.4, zorder=3)
+            else:
+                blanks.append(x[i] + offset)
+    ax.set_yscale("log")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{p:.2f}" for p in campaign.porosities])
+    ax.set_xlabel("Porosity $\\varepsilon$")
+    ax.set_ylabel("Solve time (s)")
+    ax.grid(True, axis="y", zorder=0)
+
+    # Headroom for the ratio labels, set before they are placed so that the
+    # tallest bar's annotation is not clipped by the axis. Nothing to scale to
+    # when no tool reached the target anywhere in the panel, which leaves the
+    # default limits and the whole row of "never reached" marks.
+    heights = [p.get_height() for p in ax.patches if p.get_height() > 0]
+    if heights:
+        ax.set_ylim(10 ** np.floor(np.log10(min(heights))),
+                    10 ** (np.log10(max(heights)) + 0.55))
+    for k, name in enumerate(names[1:], start=1):
+        offset = (k - (len(names) - 1) / 2) * width
+        for i, por in enumerate(campaign.porosities):
+            mine, theirs = times[reference][(size, por)], times[name][(size, por)]
+            if np.isfinite(mine) and np.isfinite(theirs) and mine > 0:
+                ratio = theirs / mine
+                # A decimal below ten, none above: "3x" for 3.5 rounds away the
+                # part of a small margin a reader cares about, while "236.4x"
+                # claims a precision the ladder cannot resolve.
+                ax.text(x[i] + offset, theirs * 1.12,
+                        f"{ratio:.0f}×" if ratio >= 10 else f"{ratio:.1f}×",
+                        ha="center", va="bottom", fontsize=fontsize, color="0.25")
+    for xpos in blanks:
+        ax.plot(xpos, ax.get_ylim()[0] * 1.25, marker=MISSING_MARKER, color="0.55",
+                markersize=3.5, markeredgewidth=0.8, linestyle="none", zorder=4)
+
+    handles = [Patch(facecolor=fig.style_for(n)[1], label=n) for n in names]
+    if blanks:
+        handles.append(Line2D([], [], marker=MISSING_MARKER, color="0.55", linestyle="none",
+                              markeredgewidth=0.8, label="target never reached"))
+    return handles
+
+
+def single_size_panel_series(campaign, device, size):
+    """`[reference] + the tools measured only at `size`, in style-table order."""
+    reference = fig.series_label(*fig.REFERENCE_SERIES)
+    limited = single_size_series(campaign, device)
+    limited.pop(reference, None)
+    return [reference] + [n for n in campaign.series_on(campaign.timings, device)
+                          if limited.get(n) == size]
+
+
+def figure_single_size(campaign):
+    """Ours against the tools that were run at one size only, at that size.
+
+    Drawn at the paper's accuracy target rather than at all three: the point is
+    the size of the gap, and three panels of the same five comparisons is the
+    sprawl this figure exists to avoid.
+    """
+    reference = fig.series_label(*fig.REFERENCE_SERIES)
+    for device in campaign.devices(campaign.timings):
+        limited = single_size_series(campaign, device)
+        limited.pop(reference, None)
+        if not limited or reference not in campaign.series_on(campaign.timings, device):
+            continue
+        # One figure per size the single-size tools were run at. The unsuffixed
+        # name is kept for the usual case of one such size, because that is the
+        # name `PUBLISH` and the documentation already reference; a second size
+        # takes a name of its own rather than overwriting the first.
+        measured_sizes = sorted(set(limited.values()))
+        for size in measured_sizes:
+            figure, ax = plt.subplots(figsize=(6.4, 3.4), layout="constrained")
+            handles = draw_single_size_panel(ax, campaign, device, size,
+                                             single_size_panel_series(campaign, device, size))
+            # Below the axes rather than inside them: the tallest bar is the
+            # densest image, which is the left of the group, and that is exactly
+            # where a legend in the usual corner would sit on its ratio label.
+            figure.legend(handles=handles, loc="outside lower center", ncol=len(handles),
+                          frameon=False, fontsize=8)
+            ax.set_title(f"Wall time at $N = {size}$ on the {device.upper()}, "
+                         f"target $\\leq {fig.THRESHOLD_LABELS[-1]}$\n"
+                         "labels give the factor over Tortuosity.jl", fontsize=9)
+            suffix = "" if len(measured_sizes) == 1 else f"_{size}"
+            campaign.save(figure, f"single_size_{device}{suffix}.png")
 
 
 # ── Speedup regime maps ──────────────────────────────────────────────
@@ -392,8 +588,13 @@ def figure_speedups(campaign):
             logger.warning(f"{reference} missing on the {device} — no speedups there")
             continue
         sizes = campaign.sizes(campaign.timings, device, campaign.reference_blobiness)
+        one_size = single_size_series(campaign, device)
         for competitor in campaign.series_on(campaign.timings, device):
             if competitor == reference:
+                continue
+            if competitor in one_size:
+                logger.info(f"{competitor} on the {device} was measured at "
+                            f"{one_size[competitor]}³ only — bar chart instead of a size map")
                 continue
             matrices = [speedup_matrix(campaign, device, competitor, t, sizes)
                         for t in fig.THRESHOLDS]
@@ -427,25 +628,79 @@ def figure_speedups(campaign):
 PROJECTION_TOLERANCE = 0.05
 
 
-def project_per_voxel(values, target):
-    """Project `values` -- {size: GiB} -- to `target`, if the footprint is flat.
+def pore_counts(campaign):
+    """`{(size, porosity, blobiness): pore voxels}` from the reference table.
 
-    Returns `(gib, per_voxel_spread)` or `(None, spread)` when the series does not
-    scale cleanly with voxel count. Extrapolating anything else would put a number
-    on the page that no measurement supports.
+    Built once per campaign and cached: every projected memory bar asks for it,
+    and the table is walked row by row.
     """
-    if len(values) < 3 or target in values:
-        return None, None
-    per_voxel = {n: gib / n ** 3 for n, gib in values.items()}
-    lo, hi = min(per_voxel.values()), max(per_voxel.values())
-    spread = (hi - lo) / lo if lo else float("inf")
-    if spread > PROJECTION_TOLERANCE:
-        return None, spread
-    # Weight the largest measured sizes: the small ones carry a fixed overhead
-    # that is a real part of their footprint and a vanishing part of the target.
-    largest = sorted(per_voxel)[-2:]
-    rate = sum(per_voxel[n] for n in largest) / len(largest)
-    return rate * target ** 3, spread
+    if campaign.nodes is None:
+        campaign.nodes = {} if campaign.references.empty else {
+            (int(r["size"]), float(r.porosity_target), float(r.blobiness)): int(r.nnodes)
+            for _, r in campaign.references.iterrows()}
+    return campaign.nodes
+
+
+def footprint_rate(campaign, device, series, blobiness):
+    """What one series' memory scales with: `("voxel" | "pore", rate)` or `(None, None)`.
+
+    Decided from the measurements rather than declared. A footprint that is the
+    same per grid voxel wherever it was measured is holding the grid; one that is
+    the same per pore voxel is holding the pore space. Testing across porosity as
+    well as across size is what lets a tool measured at a single size be projected
+    at all: five porosities at one size separate the two shapes as sharply as
+    three sizes at one porosity do, because the pore count moves by a factor of
+    five across that range while the grid does not move at all.
+
+    Rate and spread are both taken over the largest half of the measurements. The
+    small ones carry a fixed interpreter and image overhead that is a real part of
+    their own footprint and a vanishing part of the target's, and including them
+    would fail a series that scales perfectly well.
+
+    "Largest" is by the denominator being tested, and every measurement tied with
+    the one at the cut is kept. Ordering the ties by their rate instead would pick
+    the half whose rates already agree, which is the very thing the spread below
+    is asking about: the gate would then pass on a series it should reject, and
+    average a rate biased to one end of the spread it just ignored.
+    """
+    cached = campaign.rates.get((device, series, blobiness))
+    if cached is not None:
+        return cached
+    nodes = pore_counts(campaign)
+    rows = []
+    for _, r in campaign.memory[(campaign.memory["device"] == device)
+                                & (campaign.memory["series"] == series)
+                                & np.isclose(campaign.memory["blobiness"], blobiness)
+                                & (campaign.memory["status"] == "ok")].iterrows():
+        gib = r[MEMORY_COLUMN[device]] / 2 ** 30
+        n = nodes.get((int(r["size"]), float(r.porosity_target), float(r.blobiness)))
+        if np.isfinite(gib) and gib > 0 and n:
+            rows.append((gib, int(r["size"]) ** 3, n))
+
+    answer = (None, None)
+    if len(rows) >= 3:
+        for kind, index in (("voxel", 1), ("pore", 2)):
+            pairs = sorted(((row[index], row[0] / row[index]) for row in rows),
+                           key=lambda pair: pair[0])
+            cut = pairs[len(pairs) // 2][0]
+            largest = [rate for key, rate in pairs if key >= cut]
+            lo, hi = min(largest), max(largest)
+            if lo > 0 and (hi - lo) / lo <= PROJECTION_TOLERANCE:
+                answer = (kind, sum(largest) / len(largest))
+                break
+    campaign.rates[(device, series, blobiness)] = answer
+    return answer
+
+
+def project_footprint(campaign, device, series, size, porosity, blobiness):
+    """Projected GiB for a cell that was never run, or None when nothing supports one."""
+    kind, rate = footprint_rate(campaign, device, series, blobiness)
+    if kind is None:
+        return None
+    if kind == "voxel":
+        return rate * size ** 3
+    n = pore_counts(campaign).get((int(size), float(porosity), float(blobiness)))
+    return rate * n if n else None
 
 
 def exhausted_memory(memory, *, device, series, size, porosity, blobiness):
@@ -527,7 +782,8 @@ def figure_memory(campaign):
                         # Ran, and did not fit. That is the measurement.
                         oom_slots.append((index[j] + offset, color))
                         continue
-                    gib, _ = project_per_voxel(values, size)
+                    gib = project_footprint(campaign, device, name, size, por,
+                                            campaign.reference_blobiness)
                     if gib is not None:
                         proj_x.append(index[j] + offset)
                         proj_h.append(gib)
@@ -716,13 +972,31 @@ def figure_summary(campaign):
         if not rivals:
             ax_map.axis("off")
             continue
+
+        # A size-by-porosity map of a tool measured at one size is one filled
+        # column and twenty blank cells, and a blank cell reads as a tool that
+        # tried and failed rather than one nobody could afford to sweep. When the
+        # device's headline competitor is of that kind, the panel becomes bars at
+        # the size it was run at, against every other rival measured only there.
+        # Nothing is lost: the tools that were swept over the sizes are already
+        # the subject of the scaling panel beside it.
+        limited = single_size_series(campaign, device)
+        if preferred in limited:
+            size = limited[preferred]
+            names = single_size_panel_series(campaign, device, size)
+            handles = draw_single_size_panel(ax_map, campaign, device, size, names, fontsize=6)
+            ax_map.legend(handles=handles, loc="upper right", fontsize=6, framealpha=0.9)
+            ax_map.set_title(f"({next(tag)}) vs the {device.upper()}-only tools at "
+                             f"$N = {size}$, with the factor over ours", loc="left")
+            continue
+
         competitor = preferred if preferred in rivals else rivals[0]
         matrix = speedup_matrix(campaign, device, competitor, fig.PAPER_TARGET, sizes)
         fig.draw_speedup_heatmap(ax_map, matrix, sizes, campaign.porosities)
         ax_map.set_title(f"({next(tag)}) vs {competitor}, both on the {device.upper()}", loc="left")
 
     figure.suptitle("Benchmark summary at $\\leq 0.1\\%$ relative error in $\\tau$ "
-                    "(solid: measured; dashed and hollow: projected; legend: fitted exponent)")
+                    "(solid: measured; dashed and hollow: projected; legend: exponent, \"est.\" where probed rather than fitted)")
     campaign.save(figure, "summary.png")
 
 
@@ -734,6 +1008,7 @@ FIGURES = {
     "blobiness": figure_blobiness,
     "pareto": figure_pareto,
     "summary": figure_summary,
+    "single_size": figure_single_size,
 }
 
 

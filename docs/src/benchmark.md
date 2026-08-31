@@ -2,10 +2,11 @@
 
 This page documents the benchmark campaign that backs the performance claims in the JOSS paper. It carries the detail the paper had to cut for length: the full protocol, the patches each tool needed, the per-case numbers behind every aggregate, and the gaps in the data.
 
-We compare `Tortuosity.jl` against two established image-based tortuosity tools:
+We compare `Tortuosity.jl` against three established image-based tortuosity tools:
 
 - [taufactor](https://github.com/tldr-group/taufactor) — Python/PyTorch, successive over-relaxation (SOR) on the full image grid, CPU and GPU.
 - [PuMA](https://github.com/nasa/puma) — C++ with Python bindings (`pumapy`), finite volume with SciPy's conjugate gradient on the full grid, CPU only.
+- [PoreSpy](https://github.com/PMEAL/porespy) — Python, `tortuosity_fd`: the image becomes an OpenPNM cubic network over the pore voxels alone, and Fickian diffusion on it is solved by Ruge-Stuben algebraic multigrid from PyAMG. CPU only.
 
 Every number below is traceable to a file under [`benchmarks/results/`](https://github.com/ma-sadeghi/Tortuosity.jl/tree/main/benchmarks/results). Where something is not recorded, this page says so rather than filling the gap.
 
@@ -13,7 +14,7 @@ Every number below is traceable to a file under [`benchmarks/results/`](https://
 
 ### The image grid
 
-All three tools read the same images. The `Imaginator` submodule generates them once and caches them as one HDF5 file per case under `benchmarks/data/images/`. Each file carries a SHA-256 in `manifest.csv` that every stage verifies before it loads.
+All four tools read the same images. The `Imaginator` submodule generates them once and caches them as one HDF5 file per case under `benchmarks/data/images/`. Each file carries a SHA-256 in `manifest.csv` that every stage verifies before it loads.
 
 | axis | values |
 |---|---|
@@ -29,7 +30,7 @@ Every image is trimmed to the pore space that percolates along the transport axi
 
 ### Matched-accuracy protocol
 
-The three tools' convergence parameters measure different quantities, so setting all three to a common value does not produce comparable accuracy: a single-tolerance comparison measures the choice of parameter rather than the solver.
+The tools' convergence parameters measure different quantities, so setting them all to a common value does not produce comparable accuracy: a single-tolerance comparison measures the choice of parameter rather than the solver.
 
 Instead we sweep each tool over the knob that best traces *its own* accuracy–time frontier, and compare the frontiers. We report the wall time of the **fastest measured run that reaches a given relative error in ``\tau``**, at three targets — 10%, 1% and 0.1% — because the margin depends on which one you ask for. Every rung is written to the CSV, so the time to reach any looser target is answerable from the same data without re-measuring.
 
@@ -38,30 +39,36 @@ Instead we sweep each tool over the knob that best traces *its own* accuracy–t
 | Tortuosity.jl | CG iteration count | 18 log-spaced, 1 … 20 000 |
 | taufactor | SOR iteration count | 18 log-spaced, 1 … 20 000 |
 | PuMA | CG iteration count | 18 log-spaced, 1 … 20 000 |
+| PoreSpy | multigrid tolerance | 18 log-spaced, 0.5 … ``10^{-10}`` |
 
-**Iteration count rather than tolerance, for all three.** `knob_name` is `iters` in every row of every file in `results/timings/`, PuMA included. Tolerance samples the frontier badly at both ends: the loosest settings return ``\tau \approx 0``, and the tightest can step straight past the target in a single rung. And taufactor evaluates its own `conv_crit` only every 100 iterations, which puts the entire coarse-accuracy regime out of reach through that knob.
+**Iteration count rather than tolerance, wherever the solver allows one.** `knob_name` is `iters` in every row of every Krylov and SOR file in `results/timings/`, PuMA included. Tolerance samples those frontiers badly at both ends: the loosest settings return ``\tau \approx 0``, and the tightest can step straight past the target in a single rung. And taufactor evaluates its own `conv_crit` only every 100 iterations, which puts the entire coarse-accuracy regime out of reach through that knob.
+
+!!! note "Why PoreSpy is swept on tolerance instead"
+    PyAMG's multigrid takes a tolerance and returns only once it has met it, so there is no iteration cap to trace a frontier with. Tolerance is also a better knob there than it would be for the others: multigrid converges at a rate that barely changes from one rung to the next, so the rungs land evenly rather than piling up at one end. The ladder runs tighter than the shared one because PoreSpy's own default is ``10^{-8}``, and on the most tortuous images the 0.1% target is not reached until below that.
 
 !!! note "What PuMA needed to reach the same axis"
     Two workarounds, both in `bench_puma.py`. `PropertySolver.solve` raises rather than returning a partial result when SciPy stops on `maxiter`. It also passes only `atol` to SciPy and never `tol`, which leaves that at its `1e-5` default, so every tolerance rung below ``10^{-5}\|b\|`` was a duplicate of the one above it. Driving SciPy's conjugate gradient directly, over PuMA's own operator and preconditioner, fixes both. Nothing about PuMA's algorithm changes — only the stopping rule, which is the thing being swept.
 
 ### One solve per case, not one per rung
 
-Each tool's whole ladder is traced from a **single** solve. A Krylov or SOR iterate is deterministic — iterate ``k`` is the same vector whether the run stopped there or carried on — so reading tortuosity off at each rung reports exactly what one solve per rung reported, at a fraction of the cost. The time recorded against a rung has the cost of the readings taken so far subtracted back out, so it stays comparable with a plain run that stopped at that iteration.
+Each iteration-swept tool's whole ladder is traced from a **single** solve. A Krylov or SOR iterate is deterministic — iterate ``k`` is the same vector whether the run stopped there or carried on — so reading tortuosity off at each rung reports exactly what one solve per rung reported, at a fraction of the cost. The time recorded against a rung has the cost of the readings taken so far subtracted back out, so it stays comparable with a plain run that stopped at that iteration.
 
-This was verified rather than assumed, on both devices and all three tools: ``\tau`` comes back bit-identical at every rung, and the traced time lands within a few percent of one-solve-per-rung, converging on it as the rung grows.
+This was verified rather than assumed, on both devices and all three iteration-swept tools: ``\tau`` comes back bit-identical at every rung, and the traced time lands within a few percent of one-solve-per-rung, converging on it as the rung grows.
 
 This required two things. `abstol = 0` for `Tortuosity.jl`, because LinearSolve otherwise defaults it to ``\sqrt{\varepsilon_\text{machine}}`` — 3.4e-4 in `Float32` — which ends the solve long before the iteration cap and leaves most of the ladder unreachable. And a `checkpoints` argument on the vendored taufactor fork.
 
+PoreSpy is the exception. It is swept on tolerance and so needs a solve per rung, but everything the tolerance does not change is shared: trimming, the network, the assembly and the multigrid hierarchy are built once, and their measured cost is added to every rung, which is what the tool charges a user who asks for that tolerance directly. Rebuilding them per rung would charge one fixed cost eighteen times and measure the ladder rather than the solver. That setup is the larger half of the call — 36.6 s of 68.9 s at ``200^3``, ε ≈ 0.60.
+
 ### What the clock covers
 
-**Every tool is clocked from the moment it receives the image to the moment tortuosity can be read.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all three. Only the image itself, and the tortuosity read-off at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work a user does.
+**Every tool is clocked from the moment it receives the image to the moment tortuosity can be read.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all four. Only the image itself, and the tortuosity read-off at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work a user does.
 
 !!! note "This replaces an earlier, less even convention"
     An earlier version of this benchmark excluded setup for taufactor and PuMA on the grounds that their users pay it before solving, and called the result conservative. It was not conservative by a small margin. taufactor's `Solver` constructor builds the SOR checkerboard from an ``N^3`` `float64` array and a three-way ``N^3`` meshgrid; measured at ``200^3`` on the GPU it cost **0.415 s against a 0.48 s solve — 45% of the total**, and it grows as ``N^3``. Charging `Tortuosity.jl` for its assembly and coarse space while charging taufactor nothing skewed the GPU comparison by about the whole margin being measured, and inverted the ranking at the loose end of the accuracy ladder.
 
 Each rung is run three times and the **median** reported, with the spread recorded in a `tau_spread` column. A first repeat slower than `repeat_threshold_s` (60 s) abandons the remaining repeats. Those rows carry `repeats = 1` and a NaN spread, because a spread of zero is the claim that three runs agreed exactly, which is not the same thing as not having looked.
 
-Both competitors start from a supplied initial guess — taufactor's `init_field` seeds SOR with an exact linear concentration profile — while `Tortuosity.jl`'s CG starts from a zero vector. For a nearly open medium that profile is already close to the answer, so taufactor begins nearly converged and we do not. The current harness has no warm-start option. An earlier experiment that gave CG the same linear start is not reproducible against this code, so its result is not reported here.
+The two full-grid competitors start from a supplied initial guess — taufactor's `init_field` seeds SOR with an exact linear concentration profile — while `Tortuosity.jl`'s CG starts from a zero vector. PoreSpy is on our side of this one: it passes no `x0`, and PyAMG then starts from `np.zeros_like(b)`. For a nearly open medium that profile is already close to the answer, so taufactor begins nearly converged and we do not. The current harness has no warm-start option. An earlier experiment that gave CG the same linear start is not reproducible against this code, so its result is not reported here.
 
 ### Reference solution
 
@@ -129,9 +136,10 @@ The whole dataset comes from one host. `results/environment.csv` records the hos
 | GPU | NVIDIA Quadro RTX 8000, 48 GB (the runtime reports 47.268 GiB usable) |
 | CPU | 8 physical cores, 16 logical threads |
 | Julia | 1.12.6 |
-| Python | 3.11.15 |
+| Python | 3.11.15 (3.11.16 in the PoreSpy environment, which is solved separately) |
 | PyTorch | 2.10.0+cu128 |
 | PuMA (`pumapy`) | 3.2.2 |
+| PoreSpy | 3.0.4, with OpenPNM 3.6.3 |
 | taufactor | fork of v1.2.1, pinned at `a4bc5f9` |
 
 The GPU model comes from the `accelerator` column of `environment.csv`, and the core counts from `results/core-occupancy*.json`, which record `host_physical_cores` and `host_logical_cores` directly. **The operating system, the exact CPU model and the host RAM are not recorded anywhere in `results/`.** The largest CPU run in the campaign peaked at 165.4 GB resident, so the machine has at least that much memory, but the campaign does not record the figure itself. The `torch` build recorded (`2.10.0+cu128`) is the Linux wheel from `pixi.lock`; the Windows wheel pinned in the same lockfile is 2.11.0+cu128 and was not used.
@@ -142,9 +150,11 @@ The GPU model comes from the `accelerator` column of `environment.csv`, and the 
 
 ![Scaling at matched accuracy and the Tortuosity.jl-vs-competitor regime maps](assets/benchmark_summary.png)
 
-Panels (a) and (b) are the GPU: scaling at matched accuracy, and the speedup against taufactor resolved by size and porosity. Panels (c) and (d) are the CPU, where the headline competitor is PuMA. Every panel is drawn at blobiness 1.0, and a blank heatmap cell means one or both tools never reached the target — the CSV carries a `stop_reason` for each.
+Panels (a) and (b) are the GPU: scaling at matched accuracy, and the speedup against taufactor resolved by size and porosity. Panels (c) and (d) are the CPU. Panel (d) is bars rather than a second regime map because the two CPU-only tools were run at ``200^3`` alone, and a size-by-porosity map of one measured column is four-fifths blank — which reads as a tool that tried and failed rather than as a sweep nobody could afford. Every panel is drawn at blobiness 1.0, and a blank heatmap cell means one or both tools never reached the target — the CSV carries a `stop_reason` for each.
 
 In the scaling panels a solid segment joins measurements, and a dashed segment with a hollow marker means at least one porosity there was projected rather than measured; the warning under *Against taufactor on the CPU* lists every projected value and how far each one reaches. A series stops where a porosity ran out of memory instead, since no mean over the porosities that remain covers the same images: that is why the assembled operator ends at ``600^3`` on the GPU. The legend carries the exponent of a power law fitted to the measured points, which is the comparison the panel exists for. taufactor comes to ``N^{3.3}`` on the GPU and ``N^{4.6}`` on the CPU, against ``N^{2.5}`` and ``N^{3.1}`` for the matrix-free path. Three is linear in voxel count, so ours is close to a fixed iteration count per solve while taufactor's rises with the edge length — the same effect the preconditioner section measures directly.
+
+An exponent marked **est.** in a legend came from a scaling probe rather than from a fit, and every point on that series above its one measured size is an estimate. PuMA and PoreSpy are the two: neither was swept over the size grid, so their curves rest on the one size that was measured and on an exponent measured separately, in `results/scaling-probes.csv`. Nothing about them is a fit through their own points, because they have only one point to fit. The next section gives the probes and what they imply.
 
 ### Against taufactor on the GPU
 
@@ -249,25 +259,57 @@ On the GPU the solver is **20.6× faster than its own CPU path**, geometric mean
 
 The ratio rises with size and then holds near 27×, which is what a device with a fixed launch overhead and a large bandwidth advantage should do.
 
-### Against PuMA
+### Against the CPU-only tools
 
-![Tortuosity.jl vs PuMA, both on CPU](assets/benchmark_speedup_puma_cpu.png)
+![Tortuosity.jl against PuMA and PoreSpy at N = 200 on the CPU](assets/benchmark_single_size_cpu.png)
 
-PuMA's finite-volume solver is CPU-only, so it is compared against the `Tortuosity.jl` CPU path. Where both reach the target — **all 15 cases at ``N = 200``** — `Tortuosity.jl` is faster in every one, by a geometric mean of **31.1×**, ranging 2.1× to 388×. At blobiness 1.0:
+PuMA's finite-volume solver and PoreSpy's `tortuosity_fd` have no GPU path, so both are compared against the `Tortuosity.jl` CPU path, and both were run at ``200^3`` and no further.
 
-| Porosity | `Tortuosity.jl` (CPU) | PuMA | speedup |
+`Tortuosity.jl` is faster than both in all 15 cases at ``N = 200``: by a geometric mean of **31.1×** against PuMA, ranging 2.1× to 388×, and of **10.2×** against PoreSpy, ranging 4.2× to 17.8×. At blobiness 1.0:
+
+| Porosity | `Tortuosity.jl` (CPU) | PoreSpy | speedup | PuMA | speedup |
+|---|---|---|---|---|---|
+| ε ≈ 0.19 | 4.84 s | 29.2 s | **6.0×** | 1141.3 s | **236×** |
+| ε ≈ 0.40 | 3.14 s | 40.9 s | **13.0×** | 351.4 s | **112×** |
+| ε ≈ 0.60 | 7.36 s | 68.6 s | **9.3×** | 198.5 s | **27.0×** |
+| ε ≈ 0.80 | 5.32 s | 94.7 s | **17.8×** | 112.5 s | **21.1×** |
+| ε ≈ 0.95 | 10.4 s | 137.2 s | **13.1×** | 36.3 s | **3.5×** |
+
+The two fail in opposite regimes, which is the useful part of running both. PuMA's margin is worst on the densest image and nearly closes on the most open one — 236× down to 3.5× — because its conjugate gradient has the hardest system to solve where the pore space is most tortuous. PoreSpy's runs the other way, 6.0× at the densest and 13.1× at the most open, because its cost is set by how many pore voxels there are rather than by how hard they are to connect: the network and the multigrid hierarchy are both built over the pore space before any iteration runs. So the pore-only design that PoreSpy shares with us is not by itself what produces the margin.
+
+PoreSpy also reached the 0.1% target in all 15 cases, and its ``\tau`` at the rung it stopped on lands within 9.9e-4 of our reference everywhere, median 4.7e-4. It is the third independent code the accuracy section leans on.
+
+**Neither tool was run above ``200^3``, by decision rather than by failure.** `results/timings/puma-cpu.csv` and `results/timings/porespy-cpu.csv` contain ``200^3`` only. That is why this comparison is drawn as bars at one size rather than as the size-by-porosity map the taufactor comparisons get: the map would be four-fifths blank, and a blank cell there reads as a tool that tried and missed, which is not what happened.
+
+#### Scaling probes, and what the larger sizes would have cost
+
+Neither tool is guessed at. Each was run once at ``400^3``, blobiness 1.0, beside its ``200^3`` counterpart, and the ratio of the pair is a measured exponent. The probes live in [`results/scaling-probes.csv`](https://github.com/ma-sadeghi/Tortuosity.jl/tree/main/benchmarks/results) and are what the projected curves in every figure rest on.
+
+| tool | probe | ``400^3`` / ``200^3`` | exponent |
 |---|---|---|---|
-| ε ≈ 0.19 | 4.84 s | 1141.3 s | **236×** |
-| ε ≈ 0.40 | 3.14 s | 351.4 s | **112×** |
-| ε ≈ 0.60 | 7.36 s | 198.5 s | **27.0×** |
-| ε ≈ 0.80 | 5.32 s | 112.5 s | **21.1×** |
-| ε ≈ 0.95 | 10.4 s | 36.3 s | **3.5×** |
+| PoreSpy | one solve to its own 1e-8 default, ε ≈ 0.18 | 902.9 s / 31.2 s = **29.0×** | ``N^{4.86}`` |
+| PoreSpy | the same, ε ≈ 0.60 | 1713.6 s / 79.0 s = **21.7×** | ``N^{4.44}`` |
+| PuMA | time to the 0.1% target, ε ≈ 0.60 | 2484.0 s / 198.5 s = **12.5×** | ``N^{3.65}`` |
 
-**PuMA was not run above ``200^3``, by decision rather than by failure.** A single ``200^3`` case costs it up to 19 minutes, and the larger sizes were prohibitive. `results/timings/puma-cpu.csv` contains ``200^3`` only; the blanks in the PuMA panels are cases nobody attempted, and this page does not present them as a solver that tried and missed.
+PuMA's cost splits cleanly into the two things that make a full-grid Krylov method expensive, and the probe measures both. Its work per iteration rose 7.0× for a doubling, which is the voxel count and nothing more — at matched rungs, 0.577 s per iteration at ``200^3`` against 4.02 s at ``400^3``. What the extra factor buys is iterations: the same case met the target at 339 iterations at ``200^3`` and needed 607 at ``400^3``, so the iteration count grows with the edge length as well. Together those give ``N^{3.65}``.
+
+PoreSpy scales worse, not better, which is the opposite of what algebraic multigrid is supposed to do: a doubling costs it 22–29× where the pore count grows only 8×, so its hierarchy is not staying mesh-independent on these pore networks. Its two probes disagree by more than PuMA's single one can be checked against, and that spread of 4.44 to 4.86 is the honest uncertainty on its curve — over the 5× span from ``200^3`` to ``1000^3`` it is a factor of 1.4 either way.
+
+Applied to a single pass over all fifteen cases — 44.8 minutes for PoreSpy at ``200^3``, 97.9 for PuMA, with the repeats stripped out because at these sizes every case exceeds the repeat threshold and runs once:
+
+| stage | PoreSpy | PuMA | both |
+|---|---|---|---|
+| ``400^3`` | 19 h (16–22) | 20 h | **~1.6 days** |
+| ``600^3`` | 124 h (98–155) | 90 h | **~9 days** |
+
+At ``600^3`` PoreSpy also stops fitting at the open end of the porosity range, so part of that stage could not be bought at any price. Both figures are wall clock on a machine that must not run anything else while it measures.
+
+!!! warning "Which points in the figures are estimates"
+    Every point either tool contributes above ``200^3`` — in the scaling panels, the per-porosity time bars and the memory bars — is projected from these probes and is drawn as an estimate: dashed line and hollow marker on a curve, hatched fill on a bar, and `est.` beside the exponent in the legend. Only the ``200^3`` column is measured, plus the two ``400^3`` PoreSpy memory readings. The projections are worth having because both tools are already an order of magnitude behind at the smallest size and both scale worse than we do, so no plausible error in an exponent changes the ranking; they are not worth reading as predictions of a particular run's wall time.
 
 ### Core occupancy
 
-Neither CPU tool saturates the machine, and the margin above is not won by taking more of it. Occupancy was sampled on the benchmark host with `psutil.cpu_percent` over the process tree, with the first and last 20% of samples trimmed so that compilation and teardown are excluded. Raw data in `results/core-occupancy.json` and `results/core-occupancy-ours.json`.
+Neither PuMA nor `Tortuosity.jl` saturates the machine, and the margin above is not won by taking more of it. Occupancy was sampled on the benchmark host with `psutil.cpu_percent` over the process tree, with the first and last 20% of samples trimmed so that compilation and teardown are excluded. Raw data in `results/core-occupancy.json` and `results/core-occupancy-ours.json`. **PoreSpy was not sampled**, so nothing here says how much of the machine it takes.
 
 | tool | case | median cores | mean | peak | usable samples |
 |---|---|---|---|---|---|
@@ -329,6 +371,30 @@ The two differ because refinement's 20 B/node is charged to *both* operators and
 ![Peak host memory on the CPU](assets/benchmark_memory_cpu.png)
 
 On the host the same structure holds with more headroom: at ``1000^3``, ε ≈ 0.95 the assembled path peaks at 163.6 GB above baseline against 53.8 GB matrix-free, a factor of 3.0. taufactor's CPU footprint is a flat 60.0 bytes per voxel across all four sizes it was measured at, which is what the ``1000^3`` projection in the figure rests on; PuMA's is a flat 1.34 GB at ``200^3``, independent of porosity.
+
+PoreSpy is the heaviest of the four by a wide margin, and unlike taufactor and PuMA its footprint tracks the pore count rather than the grid. Host memory above baseline at ``200^3``, blobiness 1.0:
+
+| tool | ε ≈ 0.19 | ε ≈ 0.95 | scales with |
+|---|---|---|---|
+| `Tortuosity.jl` (matrix-free) | 0.118 GiB | 0.405 GiB | 57–93 B per pore voxel |
+| `Tortuosity.jl` (assembled) | 0.173 GiB | 1.05 GiB | ≈ 140 B per pore voxel |
+| taufactor | 0.442 GiB | 0.442 GiB | 59.3 B per grid voxel |
+| PuMA | 1.24 GiB | 1.24 GiB | 167 B per grid voxel |
+| PoreSpy | 1.61 GiB | 8.11 GiB | **≈ 1.19 kB per pore voxel** |
+
+That is about twenty times our matrix-free path at the same porosity, and it is what the OpenPNM network costs: pore coordinates, throat connections and labels, the assembled matrix, and the multigrid hierarchy, all held at once. The single-term model, fitted at ``200^3`` alone, was checked against two ``400^3`` cases it was not fitted on. It predicts 14.0 GB against 13.7 GB measured at ε ≈ 0.18, and 46.0 GB against 43.2 GB at ε ≈ 0.60 — high by 2% and 6%, so a projection from it is a ceiling rather than a hope.
+
+That model, not the clock, is what ends PoreSpy's size sweep. Projected peak host memory, blobiness 1.0:
+
+| ε | ``400^3`` | ``600^3`` | ``800^3`` |
+|---|---|---|---|
+| 0.20 | 13 GB | 46 GB | 109 GB |
+| 0.40 | 29 GB | 99 GB | 231 GB |
+| 0.60 | 44 GB | 149 GB | 351 GB |
+| 0.80 | 59 GB | 198 GB | 471 GB |
+| 0.95 | 70 GB | 235 GB | 558 GB |
+
+Against the 250 GB this host holds, ``400^3`` fits everywhere, ``600^3`` fits up to ε ≈ 0.80 and not at ε ≈ 0.95, and ``800^3`` fits only at the densest porosity. Our own matrix-free path completes every one of those cases, and every ``1000^3`` case, on a 48 GB card.
 
 ### What the operator and the preconditioner are worth
 
