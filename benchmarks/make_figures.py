@@ -986,8 +986,8 @@ def figure_summary(campaign):
             names = single_size_panel_series(campaign, device, size)
             handles = draw_single_size_panel(ax_map, campaign, device, size, names, fontsize=6)
             ax_map.legend(handles=handles, loc="upper right", fontsize=6, framealpha=0.9)
-            ax_map.set_title(f"({next(tag)}) vs the {device.upper()}-only tools at "
-                             f"$N = {size}$, with the factor over ours", loc="left")
+            ax_map.set_title(f"({next(tag)}) {device.upper()} time at $N = {size}$; "
+                             "labels show slowdown vs Tortuosity.jl", loc="left")
             continue
 
         competitor = preferred if preferred in rivals else rivals[0]
@@ -995,8 +995,6 @@ def figure_summary(campaign):
         fig.draw_speedup_heatmap(ax_map, matrix, sizes, campaign.porosities)
         ax_map.set_title(f"({next(tag)}) vs {competitor}, both on the {device.upper()}", loc="left")
 
-    figure.suptitle("Benchmark summary at $\\leq 0.1\\%$ relative error in $\\tau$ "
-                    "(solid: measured; dashed and hollow: projected; legend: exponent, \"est.\" where probed rather than fitted)")
     campaign.save(figure, "summary.png")
 
 

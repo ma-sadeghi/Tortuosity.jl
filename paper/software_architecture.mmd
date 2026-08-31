@@ -1,28 +1,43 @@
 %% High-level architecture of Tortuosity.jl and its principal numerical dependencies.
 %% Render with: mmdc -i software_architecture.mmd -o software_architecture.png -b white -w 1500 -s 2
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#eef4fb","primaryTextColor":"#1f2937","primaryBorderColor":"#5b7da5","lineColor":"#4b5563","secondaryColor":"#f4f5f7","tertiaryColor":"#ffffff","clusterBkg":"#fafafa","clusterBorder":"#9ca3af","fontSize":"18px"}}}%%
+%%{init: {"theme":"base","flowchart":{"curve":"basis","nodeSpacing":42,"rankSpacing":58},"themeVariables":{"primaryTextColor":"#172033","lineColor":"#536273","clusterBkg":"#f8fafc","clusterBorder":"#94a3b8","fontSize":"18px"}}}%%
 flowchart TB
-    inputs["Inputs<br/>segmented image · diffusivity · boundary conditions · axis"] --> build
+    inputs["<div style='width:250px'><b>Simulation inputs</b><hr/>Segmented image<hr/>Diffusivity<hr/>Boundary conditions<hr/>Transport axis</div>"] --> build
 
     subgraph package["Tortuosity.jl"]
         direction TB
-        build["Problem construction<br/>geometry · pore indexing · backend"]
+        build["<div style='width:270px'><b>Problem construction</b><hr/>Validate geometry<hr/>Index pore space<hr/>Apply boundary conditions<hr/>Select compute backend</div>"]
         build --> steady["SteadyDiffusionProblem"]
         build --> transient["TransientDiffusionProblem"]
         steady --> operator{"Operator representation"}
-        operator --> assembled["Assembled sparse matrix"]
-        operator --> matrixfree["Matrix-free stencil"]
-        assembled --> linear["Preconditioned Krylov solve"]
+        operator --> assembled["Assembled<br/>sparse matrix"]
+        operator --> matrixfree["Matrix-free<br/>stencil operator"]
+        assembled --> linear["Preconditioned<br/>Krylov solve"]
         matrixfree --> linear
-        transient --> rhs["Sparse diffusion right-hand side"]
-        rhs --> ode["Stabilized ODE solve and callbacks"]
-        linear --> analysis["Analysis and post-processing"]
+        transient --> rhs["Diffusion<br/>right-hand side"]
+        rhs --> ode["Stabilized ODE integration<br/>with callbacks"]
+        linear --> analysis["Transport analysis<br/>and post-processing"]
         ode --> analysis
     end
 
-    analysis --> outputs["Outputs<br/>concentration fields · τ · D_eff · formation factor · fluxes · fits"]
-    gpu["Backend extensions<br/>CUDA.jl · AMDGPU.jl · Metal.jl"] -.-> build
+    analysis --> outputs["<div style='width:270px'><b>Simulation outputs</b><hr/>Concentration field<hr/>τ · D<sub>eff</sub> · formation factor<hr/>Fluxes</div>"]
+    gpu["<div style='width:245px'><b>GPU backends</b><hr/>CUDA.jl<hr/>AMDGPU.jl<hr/>Metal.jl</div>"] -.-> build
     ka["KernelAbstractions.jl<br/>portable kernels"] -.-> operator
     ka -.-> rhs
-    ls["LinearSolve.jl<br/>Krylov interface"] -.-> linear
-    od["OrdinaryDiffEq.jl · DiffEqCallbacks.jl<br/>integration and callbacks"] -.-> ode
+    ls["LinearSolve.jl<br/>linear-solver interface"] -.-> linear
+    od["OrdinaryDiffEq.jl · DiffEqCallbacks.jl<br/>time integration · callbacks"] -.-> ode
+
+    classDef io fill:#e0f2fe,stroke:#0369a1,stroke-width:2px,color:#0c4a6e
+    classDef core fill:#e8eef8,stroke:#315b8a,stroke-width:1.8px,color:#172033
+    classDef steadyPath fill:#e7f4ef,stroke:#28765b,stroke-width:1.8px,color:#164e3d
+    classDef transientPath fill:#f5eddf,stroke:#9a6724,stroke-width:1.8px,color:#5f3d12
+    classDef decision fill:#f0eafa,stroke:#7655a6,stroke-width:1.8px,color:#3f2b63
+    classDef dependency fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#334155
+
+    class inputs,outputs io
+    class build,analysis core
+    class steady,assembled,matrixfree,linear steadyPath
+    class transient,rhs,ode transientPath
+    class operator decision
+    class gpu,ka,ls,od dependency
+    style package fill:#fbfcfe,stroke:#94a3b8,stroke-width:1.5px

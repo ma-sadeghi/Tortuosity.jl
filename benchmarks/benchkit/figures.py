@@ -52,11 +52,9 @@ SERIES = {
 # The series every speedup on a device is measured against.
 REFERENCE_SERIES = ("tortuosity", "matrixfree")
 
-# The external tool the headline comparison targets on each device. taufactor
-# runs on both, but on the CPU the established point of comparison is PuMA,
-# whose finite-volume conjugate gradient is the closest counterpart to what
-# Tortuosity.jl does there.
-HEADLINE_COMPETITOR = {"gpu": ("taufactor", "sor"), "cpu": ("puma", "fv-cg")}
+# The external tool the headline comparison targets on each device. Using
+# taufactor for both makes the GPU and CPU summary rows directly comparable.
+HEADLINE_COMPETITOR = {"gpu": ("taufactor", "sor"), "cpu": ("taufactor", "sor")}
 
 # Accuracy targets every figure is resolved over. No extra measurement is needed:
 # each sweep holds a full ladder per case, so the time to reach any target is
