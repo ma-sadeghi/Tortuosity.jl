@@ -311,18 +311,21 @@ At ``600^3`` PoreSpy also stops fitting at the open end of the porosity range, s
 
 ### Core occupancy
 
-Neither PuMA nor `Tortuosity.jl` saturates the machine, and the margin above is not won by taking more of it. Occupancy was sampled on the benchmark host with `psutil.cpu_percent` over the process tree, with the first and last 20% of samples trimmed so that compilation and teardown are excluded. Raw data in `results/core-occupancy.json` and `results/core-occupancy-ours.json`. **PoreSpy was not sampled**, so nothing here says how much of the machine it takes.
+None of the three CPU tools saturates the machine, and the margin above is not won by taking more of it. Occupancy was sampled on the benchmark host with `psutil.cpu_percent` over the process tree, with the first and last 20% of samples trimmed so that compilation and teardown are excluded. Raw data in `results/core-occupancy.json` and `results/core-occupancy-ours.json`.
 
 | tool | case | median cores | mean | peak | usable samples |
 |---|---|---|---|---|---|
-| PuMA | `n200_b100_p040` | **6.39** | 5.82 | 6.86 | 429 |
+| PuMA | `n200_b100_p040` | **6.23** | 5.79 | 6.89 | 426 |
+| PoreSpy | `n200_b100_p040` | **2.27** | 2.88 | 8.78 | 258 |
 | Tortuosity.jl (CPU, matrix-free) | `n200_b100_p040` | **1.00** | 2.64 | 15.97 | 279 |
 | Tortuosity.jl (CPU, matrix-free) | `n600_b100_p040` | **5.48** | 6.79 | 15.78 | 168 |
 
-Of 8 physical cores (16 logical). PuMA occupies most of the machine throughout its solve. Our own occupancy is size-dependent: at ``200^3`` a solve finishes in seconds and the median sample catches serial setup rather than the threaded apply, while at ``600^3``, where the solve dominates, the median rises to 5.5 cores with peaks using every logical thread. So the PuMA comparison at ``200^3`` is won on **less** of the machine, not more.
+Of 8 physical cores (16 logical). PuMA occupies most of the machine throughout its solve, PoreSpy a little over two cores, and the ordering matches the speed ordering rather than reversing it. Our own occupancy is size-dependent: at ``200^3`` a solve finishes in seconds and the median sample catches serial setup rather than the threaded apply, while at ``600^3``, where the solve dominates, the median rises to 5.5 cores with peaks using every logical thread. So both comparisons at ``200^3`` are won on **less** of the machine, not more.
 
-!!! warning "The paired run does not measure our side, and its number is not used"
-    `core-occupancy.json` ran both tools in one pass, but our process there recorded `"exit": -11` (SIGSEGV during exit cleanup, after the solve completed and the row was written) with only **6 usable samples**. Six samples is not a measurement, and the 1.39 median it reports for `tortuosity-cpu-matrixfree` must not be quoted. The `Tortuosity.jl` figures above come from the separate `core-occupancy-ours.json` run, which sampled ten times a second at ``200^3`` and added a ``600^3`` case where the solve dominates outright. Both scripts back up the published result files, restore them afterwards, and verify the restore by SHA-256 — `published_results_unchanged: true` in each JSON.
+!!! note "Why our side is sampled by a second script"
+    `core-occupancy.json` covers the two external tools, sampled in one pass so that they are directly comparable. It does not cover ours: `julia` is not on the benchmark host's path inside a `pixi run` environment, and an earlier paired run that did reach it recorded `"exit": -11` — a SIGSEGV during exit cleanup, after the solve had completed and the row had been written — with only 6 usable samples. Six samples is not a measurement. The `Tortuosity.jl` figures above come from `core-occupancy-ours.json`, which sampled ten times a second at ``200^3`` and added a ``600^3`` case where the solve dominates outright. Both scripts back up the published result files, restore them afterwards, and verify the restore by SHA-256 — `published_results_unchanged: true` in each JSON.
+
+    PoreSpy is launched through `pixi run`, because it resolves in an environment of its own, so its solve runs one level below the process the sampler starts. An occupancy sampler must therefore hold on to the child processes it discovers and reuse them: `cpu_percent` reports the share used since *that object's* previous call, so rebuilding the objects each interval makes every call a first call, and every first call returns 0.0. Before that was fixed this sampler reported a 227-second PoreSpy solve as using no CPU at all, with a clean exit code. PuMA's number is unaffected — its work happens in the process the sampler launches directly — and re-measuring it after the fix moved the median from 6.39 to 6.23, which is run-to-run variation rather than a correction.
 
 ### Memory
 

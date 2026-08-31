@@ -1,13 +1,13 @@
 """Sample how many CPU cores each tool actually occupies while solving.
 
     pixi run python measure_occupancy.py
+    pixi run python measure_occupancy.py --tools=porespy-cpu --out=results/x.json
 
-The paper claims our CPU path occupies about two cores and PuMA about one. That
-number was sampled on a different machine from every other number in the
-campaign, which is exactly the kind of detail a reviewer asks about. This
-re-samples it on the benchmark host under the campaign's own settings --
-`threads = "auto"`, so each tool takes the machine the way its own defaults let
-it.
+The paper argues that the CPU margin is won on less of the machine rather than
+more, which is only worth saying if the occupancy behind it was sampled on the
+same host as everything else. This samples it there, under the campaign's own
+settings -- `threads = "auto"`, so each tool takes the machine the way its own
+defaults let it.
 
 Occupancy is `psutil.cpu_percent` over the process *and its children*, divided by
 100, sampled twice a second. Startup and teardown are trimmed before the summary:
@@ -16,12 +16,13 @@ spends its first seconds building a workspace, and neither is the solve. What is
 reported is the median over the trimmed middle, which is the quantity the
 sentence in the paper is about.
 
-Neither harness takes an output path, so both write into the published results
+No harness here takes an output path, so each writes into the published results
 files. This backs those files up, runs, restores them, and verifies the restore
 by SHA-256 -- an occupancy sample must not perturb a single published number.
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import shutil
@@ -41,11 +42,24 @@ INTERVAL_S = 0.5
 TOUCHED = [
     Path("results/timings/tortuosity-cpu-matrixfree.csv"),
     Path("results/timings/puma-cpu.csv"),
+    Path("results/timings/porespy-cpu.csv"),
 ]
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def pixi_binary():
+    """Where `pixi` is, for a child that needs a different environment than ours.
+
+    A `pixi run` environment does not carry pixi itself on `PATH`, so a tool
+    launched from inside one cannot simply name it.
+    """
+    found = shutil.which("pixi") or Path.home() / ".pixi" / "bin" / "pixi"
+    if not Path(found).is_file():
+        raise SystemExit(f"cannot find the pixi executable (looked at {found})")
+    return str(found)
 
 
 def sample(cmd, logpath):
@@ -54,25 +68,38 @@ def sample(cmd, logpath):
     The child's output goes to a file rather than to /dev/null: a tool that dies
     on a signal reports only its exit code, and without its stderr there is
     nothing to diagnose from.
+
+    Every process is kept and reused between samples. `cpu_percent` reports the
+    share used since that same object's previous call, so its first call always
+    returns 0.0; building the child objects afresh each iteration would make
+    every call a first call and report a solve that used no CPU at all. This
+    matters only when the work happens below the process we launched — a tool run
+    through `pixi run` — which is why it went unnoticed while every tool here was
+    launched directly.
     """
     log = open(logpath, "wb")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
     parent = psutil.Process(proc.pid)
+    tracked = {parent.pid: parent}
     parent.cpu_percent(None)  # prime; the first call always returns 0.0
     samples = []
     started = time.perf_counter()
     while proc.poll() is None:
         time.sleep(INTERVAL_S)
-        total = 0.0
         try:
-            total += parent.cpu_percent(None)
             for child in parent.children(recursive=True):
-                try:
-                    total += child.cpu_percent(None)
-                except psutil.Error:
-                    pass
+                if child.pid not in tracked:
+                    tracked[child.pid] = child
+                    with contextlib.suppress(psutil.Error):
+                        child.cpu_percent(None)  # prime it too
         except psutil.Error:
-            break
+            pass
+        total = 0.0
+        for pid, process in list(tracked.items()):
+            try:
+                total += process.cpu_percent(None)
+            except psutil.Error:
+                del tracked[pid]  # exited between one sample and the next
         samples.append(total / 100.0)
     log.close()
     return proc.returncode, time.perf_counter() - started, samples
@@ -97,6 +124,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--case", default="n200_b100_p040")
     ap.add_argument("--out", default="results/core-occupancy.json")
+    # Sampling one tool must not cost the others their numbers. `julia` is not on
+    # the benchmark host's path under `pixi run`, so a full run replaces a good
+    # Julia measurement with a crashed one; ours is sampled by
+    # `measure_occupancy_ours.py` instead. Pair this with `--out`.
+    ap.add_argument("--tools", help="comma-separated subset to sample (default: all)")
     args = ap.parse_args()
 
     before = {p: digest(p) for p in TOUCHED}
@@ -122,7 +154,25 @@ def main():
             sys.executable, "bench_puma.py", "--measure=time",
             f"--cases={args.case}", "--overwrite",
         ],
+        # PoreSpy resolves in an environment of its own, so it cannot be launched
+        # with this process's interpreter the way the other two are. `pixi run`
+        # adds a parent process, which costs nothing here: the sampler already
+        # walks the tree recursively, and pixi itself is idle while the child
+        # solves. `pixi` is resolved by absolute path because a `pixi run`
+        # environment does not put pixi itself on `PATH`.
+        "porespy-cpu": [
+            pixi_binary(), "run", "-e", "porespy", "python", "bench_porespy.py",
+            "--measure=time", f"--cases={args.case}", "--overwrite",
+        ],
     }
+
+    if args.tools:
+        wanted = [name.strip() for name in args.tools.split(",")]
+        unknown = [name for name in wanted if name not in runs]
+        if unknown:
+            raise SystemExit(f"unknown tool(s) {', '.join(unknown)}; "
+                             f"this script runs {', '.join(runs)}")
+        runs = {name: cmd for name, cmd in runs.items() if name in wanted}
 
     out = {
         "case": args.case,

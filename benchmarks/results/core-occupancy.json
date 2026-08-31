@@ -3,23 +3,25 @@
   "host_physical_cores": 8,
   "host_logical_cores": 16,
   "tools": {
-    "tortuosity-cpu-matrixfree": {
-      "exit": -11,
-      "elapsed_s": 5.2,
-      "n_samples": 10,
-      "n_used": 6,
-      "median_cores": 1.39,
-      "mean_cores": 1.59,
-      "peak_cores": 2.8
-    },
     "puma-cpu": {
       "exit": 0,
-      "elapsed_s": 373.7,
-      "n_samples": 716,
-      "n_used": 429,
-      "median_cores": 6.39,
-      "mean_cores": 5.82,
-      "peak_cores": 6.86
+      "elapsed_s": 370.4,
+      "child_log": "results/occupancy-puma-cpu.log",
+      "n_samples": 710,
+      "n_used": 426,
+      "median_cores": 6.23,
+      "mean_cores": 5.79,
+      "peak_cores": 6.89
+    },
+    "porespy-cpu": {
+      "exit": 0,
+      "elapsed_s": 224.7,
+      "child_log": "results/occupancy-porespy-cpu.log",
+      "n_samples": 431,
+      "n_used": 258,
+      "median_cores": 2.27,
+      "mean_cores": 2.88,
+      "peak_cores": 8.78
     }
   },
   "published_results_unchanged": true
