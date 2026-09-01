@@ -666,8 +666,9 @@ fixes the order, and the ordering is paid once here rather than on every CG
 iteration.
 
 The pore nodes of coarse cell `a` are `fine[offsets[a]:(offsets[a + 1] - 1)]`,
-ascending. Only the device path builds one; the host `_restrict!` is a serial
-loop and is already reproducible.
+ascending. Device restriction needs it to avoid nondeterministic atomics;
+multithreaded host restriction uses the same map to gather coarse cells in
+parallel without changing the serial summation order within any cell.
 """
 struct Aggregation{Vf<:AbstractVector,Vo<:AbstractVector}
     fwd::Vf                 # fine -> coarse, 0 where the block was dropped
@@ -699,7 +700,7 @@ cell. So every cell's slice comes out ascending, whichever thread got there
 first, and no sort is needed to make it so.
 """
 function _invert_aggregates(agg, nc; max_scratch_bytes=256 * 1024 * 1024)
-    fwd = Array(agg)
+    fwd = agg isa Array ? agg : Array(agg)
     n = length(fwd)
     # One entry per pore node, so the same index wall the fine numbering faces.
     Tf = n <= typemax(Int32) ? Int32 : Int64
@@ -816,13 +817,17 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse
     on_gpu && _free!(remap_dev)
 
     # Inverted after the remap, so the adjacency is indexed by the coarse
-    # numbering that survived rather than the one the blocks started with. Only
-    # the device path needs it; see [`Aggregation`](@ref).
-    agg = if on_gpu
+    # numbering that survived rather than the one the blocks started with.
+    # Device arrays are adapted back to their backend; multithreaded host arrays
+    # use the same representation directly so restriction can gather in
+    # parallel. A one-thread host keeps the serial scatter and its lower setup
+    # and storage cost.
+    use_host_gather = Threads.nthreads() > 1 && n >= PROLONG_MIN_THREADED
+    if on_gpu || use_host_gather
         offsets, fine = _invert_aggregates(agg, nc)
-        Aggregation(agg, _gpu_adapt[](offsets), _gpu_adapt[](fine))
-    else
-        agg
+        agg = on_gpu ?
+            Aggregation(agg, _gpu_adapt[](offsets), _gpu_adapt[](fine)) :
+            Aggregation(agg, offsets, fine)
     end
 
     # Gershgorin: every column of this Laplacian has |offdiagonals| summing to

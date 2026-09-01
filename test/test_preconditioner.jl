@@ -77,6 +77,8 @@ const PRECOND_IMAGES = precond_fixtures()
     # each one `COARSE_RATIO` coarser per edge, down to a direct solve that fits.
     P = two_level_preconditioner(sim; block=2, max_coarse=8)
     @test P.block == 2
+    uses_gather = Threads.nthreads() > 1 && size(sim.prob.A, 1) >= Tortuosity.PROLONG_MIN_THREADED
+    @test (P.agg isa Tortuosity.Aggregation) == uses_gather
     @test P.nc > 8                                  # the coarse space itself is not shrunk
     @test !isempty(P.levels)
     sizes = [size(L.A, 1) for L in P.levels]
