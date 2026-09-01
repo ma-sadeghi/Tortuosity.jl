@@ -26,6 +26,14 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruc
     sim = SteadyDiffusionProblem(img; axis=:x, matrixfree=true, warn_nonpercolating=false)
     @test count(img) >= threshold
     @test _on_gpu(sim.prob.b)
+    @test !isnothing(Tortuosity._resolve_precond(:auto, sim, false))
+
+    thin = ones(Bool, 8, 50, 50)
+    thin_sim = SteadyDiffusionProblem(
+        thin; axis=:x, gpu=true, matrixfree=true, warn_nonpercolating=false,
+    )
+    @test _on_gpu(thin_sim.prob.b)
+    @test isnothing(Tortuosity._resolve_precond(:auto, thin_sim, false))
 end
 
 # The small sizes are a regression guard, not padding: small-box GPU runs once

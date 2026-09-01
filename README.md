@@ -73,7 +73,7 @@ There is also a package-owned `solve` that picks the preconditioner and the tole
 
 ```julia
 sim = SteadyDiffusionProblem(img; axis=:x, matrixfree=true)
-sol = solve(sim)          # coarse-space preconditioner above 100k pore voxels; reltol from the element type
+sol = solve(sim)          # automatic coarse-space preconditioner and element-type tolerance
 ```
 
 `solve(sim.prob, alg; ...)` stays exactly as it was — the unopinionated form that takes LinearSolve's defaults.

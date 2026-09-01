@@ -41,12 +41,14 @@ Rather than make those choices yourself, you can hand the whole problem to the
 package and let it decide the preconditioner and the tolerance:
 
 ```julia
-sol = solve(sim)                    # two-level coarse space above 100k pore voxels
+sol = solve(sim)                    # automatic two-level coarse space and tolerance
 sol = solve(sim; precond=:none)     # or opt out
 ```
 
 `solve(sim.prob, alg; ...)` is unaffected by this and remains the unopinionated
 form that takes LinearSolve's defaults.
+
+The automatic coarse space starts at 3,000 pore nodes on CUDA and 100,000 on CPU, Metal, or AMDGPU. CUDA domains with at most 16 voxels along the transport axis retain the 100,000-node threshold because their unpreconditioned solve is already short. These thresholds reflect where setup plus refinement becomes cheaper than the unpreconditioned iteration count on each measured path.
 
 ### Matrix-free operator
 

@@ -538,11 +538,19 @@ end
 # Below this the coarse solve costs more than the iterations it removes, and it
 # is also the size at which a system stops fitting comfortably in cache.
 const _PRECOND_MIN_NODES = 100_000
+_precond_min_nodes(::AbstractArray) = _PRECOND_MIN_NODES
+
+function _precond_min_nodes(sim::SteadyDiffusionProblem)
+    threshold = _precond_min_nodes(sim.prob.b)
+    axis_length = size(sim.img, axis_dim(sim.axis))
+    short_axis = axis_length <= 2 * DEFAULT_COARSE_BLOCK
+    return short_axis ? max(threshold, _PRECOND_MIN_NODES) : threshold
+end
 
 function _resolve_precond(precond, sim, verbose)
     precond === :none && return nothing
     precond === :auto || return precond
-    size(sim.prob.A, 1) < _PRECOND_MIN_NODES && return nothing
+    size(sim.prob.A, 1) < _precond_min_nodes(sim) && return nothing
     Pl = two_level_preconditioner(sim)
     # `two_level_preconditioner` returns `nothing` when there is no usable coarse
     # space — an empty system, every block dropped, or a coarse factorization

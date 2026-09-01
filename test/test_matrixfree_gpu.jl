@@ -267,6 +267,7 @@ end
     @test Tortuosity._steady_workgroup(op.idx) == (32, 2, 2)
     @test Tortuosity._steady_workgroup(CUDA.ones(Bool, 4, 4, 1)) == (64, 4, 1)
     @test Tortuosity._gpu_min_nodes(CUDABackend()) == 20_000
+    @test Tortuosity._precond_min_nodes(b) == 3_000
     @test size(op) == (nnodes, nnodes)
     @test size(op.idx) == size(img)
     @test _resolve_max_coarse(op, nothing, (25, 25, 25)) == DEFAULT_GPU_MAX_COARSE
