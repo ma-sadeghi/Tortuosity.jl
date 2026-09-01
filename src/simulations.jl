@@ -136,8 +136,9 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
   the physical units. Pass the same value to that and to [`tortuosity`](@ref),
   whose reference diffusivity divides it back out.
 - `gpu`: `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect
-  (uses GPU when a backend package is loaded *and* the image has ≥100k pore
-  voxels). See [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
+  (uses GPU when a backend package is loaded and the image clears that backend's
+  crossover: 20k pore voxels for CUDA and 100k for Metal or AMDGPU). See
+  [GPU backends](@ref) for how to activate each backend.
 - `warn_nonpercolating`: warn when part of the pore space does not span the
   domain along `axis`. Nothing is changed either way — such voxels carry no
   steady flux but still count toward porosity, so `τ` includes stagnant volume.
@@ -203,6 +204,7 @@ function SteadyDiffusionProblem(
     # where the caller thinks they're getting GPU performance but aren't.
     if isnothing(gpu)
         has_backend = !isnothing(_preferred_gpu_backend[])
+        gpu_min_nodes = has_backend ? _gpu_min_nodes(_preferred_gpu_backend[]) : 100_000
         if !has_backend && nnodes >= 100_000
             @warn "Image has $(nnodes) pore voxels but no GPU backend is loaded; \
                    running on CPU. To enable GPU kernels, load a backend package \
@@ -210,7 +212,7 @@ function SteadyDiffusionProblem(
                    constructing the simulation. Pass `gpu=false` explicitly to \
                    silence this message." maxlog = 1
         end
-        gpu = has_backend && nnodes >= 100_000
+        gpu = has_backend && nnodes >= gpu_min_nodes
     elseif gpu && isnothing(_preferred_gpu_backend[])
         error("`gpu=true` was requested but no GPU backend is registered. \
                Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")

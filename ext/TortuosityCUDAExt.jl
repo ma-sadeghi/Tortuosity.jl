@@ -25,6 +25,7 @@ Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrix) = true
 end
 Tortuosity._steady_workgroup(a::CuArray) =
     size(a, 3) == 1 ? (64, 4, 1) : (32, 2, 2)
+Tortuosity._gpu_min_nodes(::CUDABackend) = 20_000
 
 Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
 

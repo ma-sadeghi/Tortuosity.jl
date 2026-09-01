@@ -19,6 +19,15 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruc
 # Steady-state
 # ---------------------------------------------------------------------------
 
+@testset "automatic GPU selection follows the registered backend crossover" begin
+    threshold = Tortuosity._gpu_min_nodes(Tortuosity._preferred_gpu_backend[])
+    n = ceil(Int, cbrt(threshold))
+    img = ones(Bool, n, n, n)
+    sim = SteadyDiffusionProblem(img; axis=:x, matrixfree=true, warn_nonpercolating=false)
+    @test count(img) >= threshold
+    @test _on_gpu(sim.prob.b)
+end
+
 # The small sizes are a regression guard, not padding: small-box GPU runs once
 # produced τ ≈ 0.73 instead of 1.0 on Metal because histogram_connections_kernel!
 # interleaved a per-bucket atomic with a shared-counter atomic, and the latter

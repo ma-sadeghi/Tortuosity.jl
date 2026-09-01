@@ -22,6 +22,9 @@ _async_return_safe(::AbstractArray) = false
 """Workgroup shape for steady grid kernels; backend extensions may tune it."""
 _steady_workgroup(::AbstractArray) = (64, 4, 1)
 
+"""Pore-node count above which steady construction selects an available GPU."""
+_gpu_min_nodes(::Any) = 100_000
+
 _device_backend(x) = _on_gpu(x) ? get_backend(x) : nothing
 _device_backend(x::SubArray) = _device_backend(parent(x))
 _device_backend(x::Base.ReshapedArray) = _device_backend(parent(x))

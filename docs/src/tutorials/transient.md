@@ -48,7 +48,7 @@ Key parameters of `TransientDiffusionProblem`:
 - **`axis`** — transport direction.
 - **`D`** — diffusivity (scalar or array, default `1.0`).
 - **`voxel_size`** — physical voxel spacing. If `nothing`, set to `1/(N_axis - 1)` so the domain spans `[0, 1]`.
-- **`gpu`** — same auto-detection as steady-state; see [GPU backends](@ref) for how to activate CUDA, Metal, or AMDGPU.
+- **`gpu`** — `nothing` (default) uses a loaded GPU backend from 100,000 pore voxels up, `true` forces GPU, and `false` forces CPU. See [GPU backends](@ref) for activation details.
 
 Key keyword arguments to `solve`:
 - **`saveat`** — snapshot interval in diffusion time units (`length²/D`). **Not** the internal ODE timestep, which is adaptive.
