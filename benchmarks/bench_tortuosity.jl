@@ -1,7 +1,7 @@
 # Benchmark Tortuosity.jl on the shared image store.
 #
-#   julia --project=. bench_tortuosity.jl --device=gpu --operator=matrixfree
-#   julia -t 1,1 --project=. bench_tortuosity.jl --device=cpu --measure=memory
+#   julia -t auto --project=. bench_tortuosity.jl --device=gpu --operator=matrixfree
+#   julia -t auto,1 --project=. bench_tortuosity.jl --device=cpu --measure=memory
 #
 # One device and one solver configuration per invocation, each writing its own
 # CSV. Splitting them is not tidiness: a process that has already run large
@@ -95,7 +95,8 @@ if flag(args, "dry-run")
     exit(0)
 end
 
-measure == "time" && BH.check_threads(cfg)
+threads_ok = measure != "time" || BH.check_threads(cfg)
+threads_ok || error("timing runs must use the configured thread count")
 isempty(no_reference) || @warn "skipping cases with no ground truth — run compute_references.jl" cases = no_reference
 
 """Solve with warnings silenced.

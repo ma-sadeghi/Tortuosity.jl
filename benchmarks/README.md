@@ -62,8 +62,8 @@ A stage can run for hours, so every one of them logs as it goes — through `log
 ```bash
 julia --project=. generate_images.jl --grid=full
 julia --project=. -t auto compute_references.jl --grid=full
-julia --project=. -t 1 bench_tortuosity.jl --device=gpu --operator=matrixfree --measure=time
-julia --project=. -t 1,1 bench_tortuosity.jl --device=cpu --operator=assembled --measure=memory
+julia --project=. -t auto bench_tortuosity.jl --device=gpu --operator=matrixfree --measure=time
+julia --project=. -t auto,1 bench_tortuosity.jl --device=cpu --operator=assembled --measure=memory
 pixi run python bench_taufactor.py --device=cpu --measure=time
 pixi run python bench_puma.py --measure=memory
 pixi run -e porespy python bench_porespy.py --sizes=200 --measure=time
