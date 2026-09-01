@@ -263,6 +263,7 @@ end
     @test eltype(op.idx) === Int32
     @test eltype(op) === Float32
     @test eltype(b) === Float32
+    @test Tortuosity._async_return_safe(op.idx) == (pkgversion(CUDA) >= v"5.4")
     @test size(op) == (nnodes, nnodes)
     @test size(op.idx) == size(img)
     @test _resolve_max_coarse(op, nothing, (25, 25, 25)) == DEFAULT_GPU_MAX_COARSE

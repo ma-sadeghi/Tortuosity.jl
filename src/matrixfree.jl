@@ -200,7 +200,7 @@ function LinearAlgebra.mul!(
         y, x, A.idx, A.D, nx, ny, nz, A.bcdim, A.nbc, A.D0,
         convert(Ty, alpha), convert(Ty, beta); ndrange=(nx, ny, nz),
     )
-    KernelAbstractions.synchronize(backend)
+    _async_return_safe(A.idx) || KernelAbstractions.synchronize(backend)
     return y
 end
 

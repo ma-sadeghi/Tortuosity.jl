@@ -20,6 +20,9 @@ end
 
 Tortuosity._on_gpu(::CuArray) = true
 Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrix) = true
+@static if pkgversion(CUDA) >= v"5.4"
+    Tortuosity._async_return_safe(::CuArray) = true
+end
 
 Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
 

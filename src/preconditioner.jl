@@ -676,6 +676,7 @@ end
 Base.length(a::Aggregation) = length(a.fwd)
 Base.Array(a::Aggregation) = Array(a.fwd)
 _on_gpu(a::Aggregation) = _on_gpu(a.fwd)
+_async_return_safe(a::Aggregation) = _async_return_safe(a.fwd)
 KernelAbstractions.get_backend(a::Aggregation) = get_backend(a.fwd)
 _free!(a::Aggregation) = (_free!(a.fwd); _free!(a.offsets); _free!(a.fine); nothing)
 
@@ -1014,7 +1015,7 @@ function _restrict!(rc, agg::Aggregation, x)
     _restrict_kernel!(backend, _RESTRICT_GROUP)(
         rc, agg.offsets, agg.fine, x, nc; ndrange=nc,
     )
-    KernelAbstractions.synchronize(backend)
+    _async_return_safe(agg) || KernelAbstractions.synchronize(backend)
     return rc
 end
 
@@ -1030,7 +1031,7 @@ function _prolong!(y, agg, xc, x, inv_lambda)
     backend = get_backend(agg)
     n = length(agg)
     _prolong_kernel!(backend)(y, agg, xc, x, inv_lambda, n; ndrange=n)
-    KernelAbstractions.synchronize(backend)
+    _async_return_safe(agg) || KernelAbstractions.synchronize(backend)
     return y
 end
 

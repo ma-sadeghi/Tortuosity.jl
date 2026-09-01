@@ -16,6 +16,9 @@ const _gpu_adapt = Ref{Any}(identity)
 """True for GPU arrays; extensions override for CuArray, MtlArray, etc."""
 _on_gpu(::AbstractArray) = false
 
+"""True when a backend tracks cross-task dependencies for asynchronously returned arrays."""
+_async_return_safe(::AbstractArray) = false
+
 _device_backend(x) = _on_gpu(x) ? get_backend(x) : nothing
 _device_backend(x::SubArray) = _device_backend(parent(x))
 _device_backend(x::Base.ReshapedArray) = _device_backend(parent(x))
