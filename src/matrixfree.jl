@@ -165,6 +165,146 @@ already had, which is what [`_steady_fill_kernel!`](@ref) writes.
     end
 end
 
+@inline function _cpu_uniform_apply_range!(
+    y, x, idx, nx, ny, nz, nbc, D0, alpha, beta, j, k, ilo, ihi,
+    ::Val{B}, ::Val{Z},
+) where {B,Z}
+    Ty = eltype(y)
+    Tv = typeof(D0)
+
+    @inbounds for i in ilo:ihi
+        c0 = idx[i, j, k]
+        c0 > 0 || continue
+
+        self_bc = _is_bc(_face_coord(i, j, k, B), nbc)
+        deg = zero(Tv)
+        acc_lo = zero(Ty)
+        acc_hi = zero(Ty)
+
+        if k > 1
+            q = idx[i, j, k - 1]
+            if q > 0
+                deg += D0
+                (self_bc || _is_bc(_face_coord(i, j, k - 1, B), nbc)) ||
+                    (acc_lo += Ty(-D0 * x[q]))
+            end
+        end
+        if j > 1
+            q = idx[i, j - 1, k]
+            if q > 0
+                deg += D0
+                (self_bc || _is_bc(_face_coord(i, j - 1, k, B), nbc)) ||
+                    (acc_lo += Ty(-D0 * x[q]))
+            end
+        end
+        if i > 1
+            q = idx[i - 1, j, k]
+            if q > 0
+                deg += D0
+                (self_bc || _is_bc(_face_coord(i - 1, j, k, B), nbc)) ||
+                    (acc_lo += Ty(-D0 * x[q]))
+            end
+        end
+        if i < nx
+            q = idx[i + 1, j, k]
+            if q > 0
+                deg += D0
+                (self_bc || _is_bc(_face_coord(i + 1, j, k, B), nbc)) ||
+                    (acc_hi += Ty(-D0 * x[q]))
+            end
+        end
+        if j < ny
+            q = idx[i, j + 1, k]
+            if q > 0
+                deg += D0
+                (self_bc || _is_bc(_face_coord(i, j + 1, k, B), nbc)) ||
+                    (acc_hi += Ty(-D0 * x[q]))
+            end
+        end
+        if k < nz
+            q = idx[i, j, k + 1]
+            if q > 0
+                deg += D0
+                (self_bc || _is_bc(_face_coord(i, j, k + 1, B), nbc)) ||
+                    (acc_hi += Ty(-D0 * x[q]))
+            end
+        end
+
+        val = zero(Ty)
+        if self_bc
+            d = iszero(deg) ? one(Tv) : deg
+            val = Ty(d * x[c0])
+        elseif !iszero(deg)
+            val = Ty((acc_lo + deg * x[c0]) + acc_hi)
+        end
+        y[c0] = Z ? alpha * val : alpha * val + beta * y[c0]
+    end
+    return y
+end
+
+function _cpu_uniform_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
+    nx, ny, nz = size(A.idx)
+    nthreads = Threads.nthreads()
+    if nz >= nthreads
+        Threads.@threads :dynamic for k in 1:nz
+            for j in 1:ny
+                _cpu_uniform_apply_range!(
+                    y, x, A.idx, nx, ny, nz, A.nbc, A.D0, α, β,
+                    j, k, 1, nx, Val(B), Val(Z),
+                )
+            end
+        end
+        return y
+    end
+
+    nlines = ny * nz
+    if nlines >= nthreads
+        Threads.@threads :dynamic for line in 1:nlines
+            j = (line - 1) % ny + 1
+            k = (line - 1) ÷ ny + 1
+            _cpu_uniform_apply_range!(
+                y, x, A.idx, nx, ny, nz, A.nbc, A.D0, α, β,
+                j, k, 1, nx, Val(B), Val(Z),
+            )
+        end
+        return y
+    end
+
+    xchunks = min(nx, max(1, cld(2 * nthreads, nlines)))
+    chunk_size = cld(nx, xchunks)
+    Threads.@threads :dynamic for work in 1:(nlines * xchunks)
+        line = (work - 1) ÷ xchunks + 1
+        chunk = (work - 1) % xchunks
+        ilo = chunk * chunk_size + 1
+        ihi = min(ilo + chunk_size - 1, nx)
+        j = (line - 1) % ny + 1
+        k = (line - 1) ÷ ny + 1
+        _cpu_uniform_apply_range!(
+            y, x, A.idx, nx, ny, nz, A.nbc, A.D0, α, β,
+            j, k, ilo, ihi, Val(B), Val(Z),
+        )
+    end
+    return y
+end
+
+function LinearAlgebra.mul!(
+    y::Vector, A::MaskedLaplacian{T,Ti,AI,Nothing}, x::Vector,
+    alpha::Number, beta::Number,
+) where {T,Ti,AI<:Array{Ti,3}}
+    if length(y) != A.nnodes || length(x) != A.nnodes
+        throw(DimensionMismatch(
+            "operator is $(A.nnodes)×$(A.nnodes) but y has length $(length(y)) \
+             and x has length $(length(x))"
+        ))
+    end
+    A.nnodes == 0 && return y
+
+    Ty = eltype(y)
+    α = convert(Ty, alpha)
+    β = convert(Ty, beta)
+    return _cpu_uniform_mul!(y, A, x, α, β, Val(A.bcdim), Val(iszero(β)))
+end
+
 function LinearAlgebra.mul!(
     y::AbstractVector, A::MaskedLaplacian, x::AbstractVector
 )
