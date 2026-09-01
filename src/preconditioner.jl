@@ -58,6 +58,10 @@ const COARSE_SMOOTH_OMEGA = 0.8
 # 4096 rows and ~40 µs at 15 625 — so this is the measured crossover, and the
 # levels below it are the ones where the startup would be the whole cost.
 const COARSE_MUL_MIN_THREADED = 4096
+# Prolongation does less work per element than a sparse row product, so thread
+# startup pays back later: 100k entries is the measured crossover. At 319k it
+# is 4.6× faster, and at 49k it is still slower than the serial loop.
+const PROLONG_MIN_THREADED = 100_000
 
 # Relative diagonal shift applied to the coarse operator before factorisation.
 # `WᵀAW` is only positive *semi*-definite — a pore cluster that reaches neither
@@ -1020,9 +1024,16 @@ function _restrict!(rc, agg::Aggregation, x)
 end
 
 function _prolong!(y::Vector, agg::Vector, xc::Vector, x::Vector, inv_lambda)
-    @inbounds for i in eachindex(agg)
-        a = agg[i]
-        y[i] = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+    if Threads.nthreads() > 1 && length(agg) >= PROLONG_MIN_THREADED
+        Threads.@threads for i in eachindex(agg)
+            @inbounds a = agg[i]
+            @inbounds y[i] = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+        end
+    else
+        @inbounds for i in eachindex(agg)
+            a = agg[i]
+            y[i] = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+        end
     end
     return y
 end
