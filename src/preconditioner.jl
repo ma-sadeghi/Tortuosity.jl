@@ -325,7 +325,7 @@ function _coarse_stencil!(stencil, A::MaskedLaplacian, agg, nbx, nbxy)
     nx, ny, nz = size(A.idx)
     backend = get_backend(A.idx)
     dmax = fill!(similar(A.idx, T, 1), zero(T))
-    _coarse_grid_stencil_kernel!(backend, (64, 4, 1))(
+    _coarse_grid_stencil_kernel!(backend, _steady_workgroup(A.idx))(
         stencil, dmax, A.idx, agg, A.D, nx, ny, nz, A.bcdim, A.nbc, A.D0, nbx, nbxy;
         ndrange=(nx, ny, nz),
     )
@@ -644,7 +644,7 @@ function _aggregate(idx, n, nc0, bs, nbx, nby)
     Ta = nc0 <= typemax(Int16) ? Int16 : Int32
     agg = similar(idx, Ta, n)
     backend = get_backend(idx)
-    _aggregate_kernel!(backend, (64, 4, 1))(
+    _aggregate_kernel!(backend, _steady_workgroup(idx))(
         agg, idx, bs, nbx, nby; ndrange=size(idx),
     )
     KernelAbstractions.synchronize(backend)

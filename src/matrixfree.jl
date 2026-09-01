@@ -194,9 +194,7 @@ function LinearAlgebra.mul!(
     Ty = eltype(y)
     nx, ny, nz = size(A.idx)
     backend = get_backend(A.idx)
-    # 256 threads laid out along the contiguous dimension, the same shape the
-    # assembly kernels launch with.
-    _steady_apply_kernel!(backend, (64, 4, 1))(
+    _steady_apply_kernel!(backend, _steady_workgroup(A.idx))(
         y, x, A.idx, A.D, nx, ny, nz, A.bcdim, A.nbc, A.D0,
         convert(Ty, alpha), convert(Ty, beta); ndrange=(nx, ny, nz),
     )
@@ -348,9 +346,8 @@ function build_steady_operator(
     idx .*= img
     backend = get_backend(idx)
     inlet_flux = return_flux ? _build_inlet_flux(idx, D, bcdim, D0) : nothing
-    # 256 threads laid out along the contiguous dimension, so a warp reads one
-    # run of `idx` and its two in-plane neighbour rows coalesced.
-    wg = (64, 4, 1)
+    # The backend-selected shape is shared with assembly and operator applies.
+    wg = _steady_workgroup(idx)
 
     b = similar(idx, T, nnodes)
     _steady_rhs_kernel!(backend, wg)(

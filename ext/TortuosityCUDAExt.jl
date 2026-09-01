@@ -23,6 +23,8 @@ Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrix) = true
 @static if pkgversion(CUDA) >= v"5.4"
     Tortuosity._async_return_safe(::CuArray) = true
 end
+Tortuosity._steady_workgroup(a::CuArray) =
+    size(a, 3) == 1 ? (64, 4, 1) : (32, 2, 2)
 
 Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
 

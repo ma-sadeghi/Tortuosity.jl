@@ -19,6 +19,9 @@ _on_gpu(::AbstractArray) = false
 """True when a backend tracks cross-task dependencies for asynchronously returned arrays."""
 _async_return_safe(::AbstractArray) = false
 
+"""Workgroup shape for steady grid kernels; backend extensions may tune it."""
+_steady_workgroup(::AbstractArray) = (64, 4, 1)
+
 _device_backend(x) = _on_gpu(x) ? get_backend(x) : nothing
 _device_backend(x::SubArray) = _device_backend(parent(x))
 _device_backend(x::Base.ReshapedArray) = _device_backend(parent(x))

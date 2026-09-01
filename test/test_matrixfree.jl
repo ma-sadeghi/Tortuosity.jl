@@ -201,6 +201,7 @@ end
     @test size(op, 2) == nnodes
     @test eltype(op) === Float64
     @test !Tortuosity._async_return_safe(op.idx)
+    @test Tortuosity._steady_workgroup(op.idx) == (64, 4, 1)
     @test length(b) == nnodes
     @test op.nnodes == nnodes
     @test size(op.idx) == size(img)

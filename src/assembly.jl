@@ -399,9 +399,9 @@ function build_steady_system(
     idx .*= img
     backend = get_backend(idx)
     inlet_flux = return_flux ? _build_inlet_flux(idx, D, bcdim, D0) : nothing
-    # 256 threads laid out along the contiguous dimension, so a warp reads one
-    # run of `idx` and its two in-plane neighbour rows coalesced.
-    wg = (64, 4, 1)
+    # The backend-selected shape keeps the first dimension contiguous while
+    # balancing occupancy against locality.
+    wg = _steady_workgroup(idx)
 
     counts = similar(idx, Ti, nnodes)
     b = similar(idx, T, nnodes)
