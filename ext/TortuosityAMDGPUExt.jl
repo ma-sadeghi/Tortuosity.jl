@@ -14,7 +14,6 @@ function __init__()
 end
 
 Tortuosity._on_gpu(::ROCArray) = true
-Tortuosity._async_return_safe(::ROCArray) = true
 
 # Mirror the CPU precompile workload in src/Tortuosity.jl for the ROCm GPU path.
 # Only runs when an AMDGPU device is actually present at extension-precompile
