@@ -365,6 +365,12 @@ _refines_by_default(::Type{T}) where {T} = false
 # code serves the host and every device backend.
 _as(::Type{T}, v) where {T} = (w = similar(v, T); w .= v; w)
 
+# Iterative refinement needs each correction to reduce the residual, not solve
+# the correction equation accurately. At 0.1 those inner solves were
+# over-resolved: raising this to 0.5 cut refinement by 2.8-9.0× on 600³
+# low/mid/high-porosity probes while every true residual stayed below 1e-6.
+const REFINEMENT_CORRECTION_RELTOL = 5.0f-1
+
 """
     _refine(sol, sim, alg)
 
@@ -387,7 +393,10 @@ noise amplified by the conditioning.
 Rounds stop when the true residual meets `reltol`, or when a round fails to
 shrink it — past that point there is no signal left to correct.
 """
-function _refine(sol, sim, alg; rounds=8, shrink=0.5, correction_reltol=1.0f-1)
+function _refine(
+    sol, sim, alg;
+    rounds=8, shrink=0.5, correction_reltol=REFINEMENT_CORRECTION_RELTOL,
+)
     A, b = sim.prob.A, sim.prob.b
     # Reuse the cache the main solve already built: `cache.b = r; solve!(cache)`
     # runs the correction on the Krylov vectors and the preconditioner that are
