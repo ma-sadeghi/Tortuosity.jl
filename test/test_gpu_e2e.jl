@@ -152,6 +152,24 @@ end
     @test prec.iters < plain.iters
 end
 
+@testset "loose refinement corrections meet the true-residual contract" begin
+    img = Imaginator.blobs(
+        ; shape=(20, 20, 20), porosity=0.5f0, blobiness=1, seed=42,
+    )
+    img = Array{Bool}(Imaginator.trim_nonpercolating_paths(img; axis=:x))
+    D = ones(Float32, size(img))
+    D[2:2:end, :, :] .= 0.1f0
+    D[.!img] .= 0.0f0
+    sim = SteadyDiffusionProblem(
+        img; axis=:x, D=D, gpu=true, warn_nonpercolating=false,
+    )
+    P = Tortuosity.two_level_preconditioner(sim)
+    sol = solve(sim; precond=P)
+
+    @test Symbol(sol.retcode) === :Success
+    @test sol.resid[] <= 1.0f-6
+end
+
 @testset "a scalar D narrows to the device element type" begin
     # `_gpu_adapt` narrows a diffusivity array to Float32 on the way to the
     # device; a scalar has to take the same narrowing, or `D0` stays Float64 and

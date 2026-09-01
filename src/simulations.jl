@@ -370,7 +370,8 @@ _as(::Type{T}, v) where {T} = (w = similar(v, T); w .= v; w)
 # Iterative refinement needs each correction to reduce the residual, not solve
 # the correction equation accurately. At 0.1 those inner solves were
 # over-resolved: raising this to 0.5 cut refinement by 2.8-9.0× on 600³
-# low/mid/high-porosity probes while every true residual stayed below 1e-6.
+# low/mid/high-porosity probes. The outer loop still owns the true-residual
+# contract and continues while a loose correction makes useful progress.
 const REFINEMENT_CORRECTION_RELTOL = 5.0f-1
 
 """
@@ -392,8 +393,10 @@ it and recovers nothing. A `Float32` residual is not enough either: it reaches
 3e-5 and then degrades, because by then the correction it feeds on is rounding
 noise amplified by the conditioning.
 
-Rounds stop when the true residual meets `reltol`, or when a round fails to
-shrink it — past that point there is no signal left to correct.
+Once a round misses the preferred shrink factor, refinement stops only if the
+requested residual has been reached or the correction made no improvement.
+This lets deliberately loose correction solves continue until the outer
+true-residual contract is satisfied without chasing rounding noise afterwards.
 """
 function _refine(
     sol, sim, alg;
@@ -408,7 +411,7 @@ function _refine(
     # `cache.u` is the same array as `sol.u`, so the first correction overwrites
     # it. `sol.u` is therefore read once, here, before any of that happens.
     cache = sol.cache
-    b_before, reltol_before = cache.b, cache.reltol
+    b_before, reltol_before, abstol_before = cache.b, cache.reltol, cache.abstol
     # Every residual below is measured relative to `‖b‖`, so a zero right-hand side
     # would make each of them `NaN` — and `NaN` compares false against the shrink
     # test, so the rounds would all run and report a `NaN` residual for an answer
@@ -416,6 +419,7 @@ function _refine(
     # solution and nothing to refine.
     nb = Float64(norm(b))
     iszero(nb) && return sol
+    converged(resid) = resid * nb <= abstol_before + reltol_before * nb
     # Refinement needs 20 bytes per pore node on top of the solve: two `Float64`
     # vectors and one `Float32`. Measured, the base solve itself costs 32 B per pore
     # node plus 4 B per voxel of the full grid, so a 950M-node image already holds
@@ -468,8 +472,12 @@ function _refine(
             # below — so undoing it costs no buffer and keeps the promise the
             # function is built on: refinement never returns a worse answer than
             # the solve it repairs.
-            resid > prev && (x64 .-= sol.u)
-            break
+            if resid >= prev
+                resid > prev && (x64 .-= sol.u)
+                break
+            elseif converged(resid)
+                break
+            end
         end
         prev = resid
         correction_rhs .= r64
@@ -479,6 +487,7 @@ function _refine(
         # only shows up when a caller asks for refinement on a `Float64` system,
         # which the default never does.
         cache.reltol = oftype(cache.reltol, correction_reltol)
+        cache.abstol = zero(cache.abstol)
         correction = LinearSolve.solve!(cache)
         corrections_ok &= correction.retcode == LinearSolve.SciMLBase.ReturnCode.Success
         x64 .+= correction.u
@@ -503,7 +512,7 @@ function _refine(
     # Hand the cache back as it was found. The rounds above pointed its right-hand
     # side at a scratch vector and loosened its tolerance, and a caller who reuses
     # the cache should not inherit either.
-    cache.b, cache.reltol = b_before, reltol_before
+    cache.b, cache.reltol, cache.abstol = b_before, reltol_before, abstol_before
     # `retcode` describes the vector returned, for the same reason `resid` does.
     # A base solve that stopped at its iteration cap and was then refined below
     # the requested tolerance did reach that tolerance, and reporting `MaxIters`
@@ -513,8 +522,10 @@ function _refine(
     # worse than the fields claim, so it is the one that forces a failure.
     retcode = if !corrections_ok
         LinearSolve.SciMLBase.ReturnCode.Failure
-    elseif resid <= reltol_before
+    elseif converged(resid)
         LinearSolve.SciMLBase.ReturnCode.Success
+    elseif sol.retcode == LinearSolve.SciMLBase.ReturnCode.Success
+        LinearSolve.SciMLBase.ReturnCode.Failure
     else
         sol.retcode
     end
