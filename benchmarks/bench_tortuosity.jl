@@ -116,13 +116,16 @@ coarse space for the preconditioner is a cost a user pays on every `solve(sim)`,
 so charging it here is what keeps the comparison against another package honest.
 """
 function solve_case(img, maxiters)
-    sim = SteadyDiffusionProblem(img; axis=axis, gpu=gpu, matrixfree=matrixfree)
+    sim = SteadyDiffusionProblem(
+        img; axis=axis, gpu=gpu, matrixfree=matrixfree, warn_nonpercolating=false,
+    )
     sol = quiet_solve(sim, KrylovJL_CG(); precond=precond, verbose=false,
                       maxiters=maxiters, reltol=cap_reltol)
     # Krylov methods read the residual norm back to the host every iteration, so
     # the device is very nearly synchronised already — but "very nearly" is not a
     # measurement, and the final update is not covered by it.
     gpu && CUDA.synchronize()
+    tortuosity(sol.u, sim)
     return sim, sol
 end
 
@@ -162,6 +165,13 @@ function trace_case(img, tau_ref; rungs=ladder)
     gpu && CUDA.synchronize()
     t0 = now_s()
 
+    sim = SteadyDiffusionProblem(
+        img; axis=axis, gpu=gpu, matrixfree=matrixfree, warn_nonpercolating=false,
+    )
+    # Construction is charged to every rung, so the padded rows below have to
+    # carry it too — they re-solve, but they do not rebuild.
+    setup_s = now_s() - t0
+
     cb = function (ws)
         k[] += 1
         (isempty(pending) || k[] != first(pending)) && return false
@@ -170,7 +180,7 @@ function trace_case(img, tau_ref; rungs=ladder)
         # nearly synchronised already — but "nearly" is not a measurement.
         gpu && CUDA.synchronize()
         mark = now_s()
-        tau = tortuosity(reconstruct_field(copy(ws.x), img), img; axis=axis)
+        tau = tortuosity(ws.x, sim)
         elapsed = mark - t0 - excluded[]
         push!(rows, (; iters=k[], tau, time_s=elapsed))
         excluded[] += now_s() - mark
@@ -179,10 +189,6 @@ function trace_case(img, tau_ref; rungs=ladder)
         return asked_to_stop[]
     end
 
-    sim = SteadyDiffusionProblem(img; axis=axis, gpu=gpu, matrixfree=matrixfree)
-    # Construction is charged to every rung, so the padded rows below have to
-    # carry it too — they re-solve, but they do not rebuild.
-    setup_s = now_s() - t0
     # `abstol=0` because the iteration count has to be the only stopping rule for
     # the trace to reach the rungs it was asked for. LinearSolve otherwise
     # defaults it to `sqrt(eps(T))`, which on `Float32` is 3.4e-4 — loose enough
@@ -223,16 +229,17 @@ function trace_case(img, tau_ref; rungs=ladder)
             refined = quiet_solve(sim, KrylovJL_CG(); precond=precond, verbose=false,
                                   maxiters=last(rungs), reltol=cap_reltol, abstol=0.0)
             CUDA.synchronize()
+            mark = now_s()
+            tau = tortuosity(refined.u, sim)
             # `setup_s` because every checkpointed rung's time is setup plus the
             # iterations up to it, and a padded rung has to be comparable with
             # them. The re-solve is timed on its own, but the problem it solves
             # was still built.
-            elapsed = setup_s + (now_s() - t1)
-            tau = tortuosity(reconstruct_field(refined.u, img), img; axis=axis)
+            elapsed = setup_s + (mark - t1)
             refined = nothing
         else
             mark = now_s()
-            tau = tortuosity(reconstruct_field(sol.u, img), img; axis=axis)
+            tau = tortuosity(sol.u, sim)
             elapsed = mark - t0 - excluded[]
         end
         for iters in pending

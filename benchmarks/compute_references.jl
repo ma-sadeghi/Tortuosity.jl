@@ -56,11 +56,13 @@ for (i, case) in enumerate(pending)
     # sizes from a job of hours into one of minutes. What makes this ground
     # truth is `Float64` and the tolerance, and both are untouched.
     elapsed = @elapsed begin
-        sim = SteadyDiffusionProblem(img; axis=axis, gpu=false, matrixfree=true)
+        sim = SteadyDiffusionProblem(
+            img; axis=axis, gpu=false, matrixfree=true, warn_nonpercolating=false,
+        )
         sol = with_logger(ConsoleLogger(stderr, Logging.Error)) do
             solve(sim, KrylovJL_CG(); verbose=false, reltol=reltol, precond=:auto)
         end
-        tau_ref = tortuosity(reconstruct_field(sol.u, img), img; axis=axis)
+        tau_ref = tortuosity(sol.u, sim)
     end
     record_reference(cfg, case, entry, tau_ref, reltol, elapsed)
     @info @sprintf("      tau_ref = %.6f  (%.1fs)", tau_ref, elapsed)
