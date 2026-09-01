@@ -10,13 +10,24 @@
 # host-side symmetrisation a single indexed lookup.
 const _COARSE_SLOTS = 7
 
-# Default ceiling on the number of unknowns solved *directly*. The direct solve
-# runs once per CG iteration, so its cost has to stay well under one fine SpMV:
+# Default CPU ceiling on the number of unknowns solved *directly*. The direct
+# solve runs once per CG iteration, so its cost has to stay well under one fine SpMV:
 # measured on a 3-D 7-point operator, a 25³ coarse grid factorises in 0.44 s and
 # solves in 1.9 ms, where a 50³ one takes 1.7 s and 47 ms. A coarse grid larger
 # than this gets a hierarchy of coarser grids built under it, ending in a direct
 # solve that does fit — see [`_coarse_hierarchy`](@ref).
 const DEFAULT_MAX_COARSE = 32_000
+
+# GPU fine-grid applies are much cheaper relative to the host sparse triangular
+# solve, so the crossover is lower. At 200³ the old 32k ceiling left a dense
+# 15.6k-cell coarse factor on the host; one solve cost 2.6-4.4 ms. Putting one
+# more grid under it cut that to 0.5-1.3 ms and made the complete automatic
+# solve 1.44× faster geometrically over all 15 benchmark images. At 400³ the
+# same choice cut matched-accuracy time by 19-32% from ε=0.6 through 0.95.
+const DEFAULT_GPU_MAX_COARSE = 14_000
+# Thin coarse grids have banded factors whose host solve stays cheap; keep the
+# CPU ceiling until all three directions are large enough to create 3-D fill.
+const MIN_GPU_COARSE_EDGE = 8
 
 # Edge length in voxels of a coarse block. Fixed, and deliberately so: the ratio
 # between the fine and coarse grids is what decides whether the method is
@@ -611,6 +622,12 @@ end
 _precond_template(A) = nonzeros(A)
 _precond_template(A::MaskedLaplacian) = A.idx
 
+function _resolve_max_coarse(A, max_coarse, dims)
+    isnothing(max_coarse) || return max_coarse
+    use_gpu_ceiling = _on_gpu(_precond_template(A)) && minimum(dims) >= MIN_GPU_COARSE_EDGE
+    return use_gpu_ceiling ? DEFAULT_GPU_MAX_COARSE : DEFAULT_MAX_COARSE
+end
+
 """
 Coarse index of every pore voxel: the cubic block its grid position falls in.
 
@@ -866,10 +883,11 @@ residuals. They agree on `tortuosity` to solver tolerance — verified to 1e-9 a
 - `block`: edge length in voxels of a coarse block. `nothing` (default) is
   `DEFAULT_COARSE_BLOCK`, the same edge at every image size — see above for why
   it does not grow with the image.
-- `max_coarse`: ceiling on the number of unknowns solved *directly*. The direct
-  solve runs once per iteration, so a larger one stops paying for itself; a
-  coarse space above the ceiling gets coarser grids built under it instead of
-  being made coarser itself.
+- `max_coarse`: ceiling on the number of unknowns solved *directly*. `nothing`
+  (default) selects 14,000 for a genuinely three-dimensional GPU coarse grid and
+  32,000 for a CPU or thin grid. The direct solve runs once per iteration, so a
+  larger one stops paying for itself; a coarse space above the ceiling gets
+  coarser grids built under it instead of being made coarser itself.
 - `shift`: relative diagonal shift applied before factorisation. `WᵀAW` is
   positive semi-definite, not definite — a pore cluster reaching neither
   Dirichlet face spans blocks whose coarse rows sum to zero — so the shift is
@@ -881,7 +899,7 @@ residuals. They agree on `tortuosity` to solver tolerance — verified to 1e-9 a
 """
 function two_level_preconditioner(
     A, img;
-    block=nothing, max_coarse=DEFAULT_MAX_COARSE, shift=DEFAULT_COARSE_SHIFT,
+    block=nothing, max_coarse=nothing, shift=DEFAULT_COARSE_SHIFT,
     verbose=false,
 )
     @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
@@ -897,6 +915,7 @@ function two_level_preconditioner(
     nx, ny, nz = size(img)
     bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
     nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
+    max_coarse = _resolve_max_coarse(A, max_coarse, (nbx, nby, nbz))
 
     # Pore ordinals are the prefix sum of the mask, exactly as in
     # `build_steady_system`; both scratch arrays go before the coarse operator
@@ -914,7 +933,7 @@ end
 
 function two_level_preconditioner(
     A::MaskedLaplacian, img;
-    block=nothing, max_coarse=DEFAULT_MAX_COARSE, shift=DEFAULT_COARSE_SHIFT,
+    block=nothing, max_coarse=nothing, shift=DEFAULT_COARSE_SHIFT,
     verbose=false,
 )
     @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
@@ -928,6 +947,7 @@ function two_level_preconditioner(
     nx, ny, nz = size(img)
     bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
     nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
+    max_coarse = _resolve_max_coarse(A, max_coarse, (nbx, nby, nbz))
 
     # The operator's index array is the pore numbering the aggregation needs, so
     # it stands in for the scratch array the assembled path builds here. It is

@@ -14,8 +14,10 @@ using CUDA
 using Tortuosity
 using Tortuosity: Imaginator,
     MaskedLaplacian,
+    DEFAULT_GPU_MAX_COARSE,
     build_steady_operator,
     build_steady_system,
+    _resolve_max_coarse,
     _free!
 
 # The sizes `test_gpu_e2e.jl` runs: several workgroups deep in every dimension,
@@ -263,6 +265,9 @@ end
     @test eltype(b) === Float32
     @test size(op) == (nnodes, nnodes)
     @test size(op.idx) == size(img)
+    @test _resolve_max_coarse(op, nothing, (25, 25, 25)) == DEFAULT_GPU_MAX_COARSE
+    @test _resolve_max_coarse(op, nothing, (1, 1, 14_001)) == Tortuosity.DEFAULT_MAX_COARSE
+    @test _resolve_max_coarse(op, 321, (1, 1, 14_001)) == 321
 
     @test op.owns_D === false
     @test _free!(op) === nothing
