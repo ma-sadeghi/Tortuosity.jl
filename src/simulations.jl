@@ -181,15 +181,15 @@ function SteadyDiffusionProblem(
     # turn it into a 1x1x1 array and the shape check below would then reject it
     # with a message about matching the image.
     D = (isnothing(D) || D isa Number) ? D : atleast_3d(D)
+    nnodes = sum(img)
 
     # Deal with variable diffusivity
     if D isa AbstractArray
         @assert size(D) == size(img) "Diffusivity matrix D must match image size"
-        @assert count(D .> 0) == count(img) "Diffusivity matrix D must have the same \
+        @assert count(>(0), D) == nnodes "Diffusivity matrix D must have the same \
             number of non-zero elements as the image"
     end
 
-    nnodes = sum(img)
     @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
     # With one voxel along the transport axis the inlet and outlet faces are the
     # same voxels, so both Dirichlet values land on the same nodes and the
