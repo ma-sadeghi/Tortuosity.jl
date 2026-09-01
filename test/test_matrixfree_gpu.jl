@@ -18,6 +18,7 @@ using Tortuosity: Imaginator,
     build_steady_operator,
     build_steady_system,
     _gpu_max_coarse,
+    _refinement_correction_reltol,
     _resolve_max_coarse,
     _free!
 
@@ -273,6 +274,11 @@ end
     @test _gpu_max_coarse(250_000_000) == 16_000
     @test _gpu_max_coarse(499_999_999) == 16_000
     @test _gpu_max_coarse(500_000_000) == 32_000
+    @test _refinement_correction_reltol(CUDABackend(), 249_999_999, 400_000_000) == 0.5f0
+    @test _refinement_correction_reltol(CUDABackend(), 250_000_000, 500_000_000) == 0.6f0
+    @test _refinement_correction_reltol(CUDABackend(), 350_000_000, 500_000_000) == 0.5f0
+    @test _refinement_correction_reltol(CUDABackend(), 450_000_000, 500_000_000) == 0.55f0
+    @test _refinement_correction_reltol(nothing, 300_000_000, 500_000_000) == 0.5f0
     @test size(op) == (nnodes, nnodes)
     @test size(op.idx) == size(img)
     @test _resolve_max_coarse(op, nothing, (25, 25, 25)) == DEFAULT_GPU_MAX_COARSE

@@ -27,6 +27,14 @@ Tortuosity._steady_workgroup(a::CuArray) =
     size(a, 3) == 1 ? (64, 4, 1) : (32, 2, 2)
 Tortuosity._gpu_min_nodes(::CUDABackend) = 20_000
 Tortuosity._precond_min_nodes(::CuArray) = 3_000
+function Tortuosity._refinement_correction_reltol(::CUDABackend, n, nvoxels)
+    small = n < Tortuosity.LOOSE_CORRECTION_MIN_NODES
+    small && return Tortuosity.REFINEMENT_CORRECTION_RELTOL
+    ε = n / nvoxels
+    0.5 <= ε < 0.7 && return Tortuosity.MID_GPU_CORRECTION_RELTOL
+    ε >= 0.9 && return Tortuosity.HIGH_GPU_CORRECTION_RELTOL
+    return Tortuosity.REFINEMENT_CORRECTION_RELTOL
+end
 
 Tortuosity._free!(x::CuArray) = CUDA.unsafe_free!(x)
 

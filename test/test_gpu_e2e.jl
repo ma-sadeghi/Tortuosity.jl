@@ -176,6 +176,25 @@ end
     @test sol.resid[] <= 1.0f-6
 end
 
+@testset "loose refinement checks the narrowed vector before skipping fallback" begin
+    img = Imaginator.blobs(
+        ; shape=(32, 32, 32), porosity=0.5, blobiness=1, seed=1,
+    )
+    img = Array{Bool}(Imaginator.trim_nonpercolating_paths(img; axis=:x))
+    sim = SteadyDiffusionProblem(
+        img; axis=:x, gpu=true, matrixfree=true, warn_nonpercolating=false,
+    )
+    base = solve(sim.prob, KrylovJL_CG(); reltol=1.0f-6, abstol=0.0f0)
+    base.cache.reltol = 2.7f-7
+    refined = Tortuosity._refine(
+        base, sim, KrylovJL_CG();
+        rounds=3, correction_reltol=0.6f0, fallback_reltol=0.5f0,
+    )
+
+    @test Symbol(refined.retcode) === :Success
+    @test refined.resid[] <= base.cache.reltol
+end
+
 @testset "a scalar D narrows to the device element type" begin
     # `_gpu_adapt` narrows a diffusivity array to Float32 on the way to the
     # device; a scalar has to take the same narrowing, or `D0` stays Float64 and

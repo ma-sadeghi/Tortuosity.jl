@@ -17,7 +17,11 @@ using Test
 using LinearAlgebra
 using SparseArrays
 using Tortuosity
-using Tortuosity: Imaginator, LinearSolve, _refine, _refines_by_default
+using Tortuosity:
+    Imaginator,
+    LinearSolve,
+    _refine,
+    _refines_by_default
 
 # A Float32 system on the host. `SteadyDiffusionProblem` reaches for Float32 on
 # the GPU path alone, so the element type is imposed after assembly; every other
@@ -166,6 +170,26 @@ end
     @test continued.resid[] <= target
     @test continued.iters > stopped.iters
     @test Symbol(continued.retcode) === :Success
+end
+
+@testset "a stalled loose correction falls back to the conservative tolerance" begin
+    failed_sim = float32_host_problem(REFINE_IMAGE)
+    failed = base_solve(failed_sim)
+    without_fallback = _refine(
+        failed, failed_sim, KrylovJL_CG(); correction_reltol=1.0f0,
+    )
+
+    recovered_sim = float32_host_problem(REFINE_IMAGE)
+    recovered = base_solve(recovered_sim)
+    with_fallback = _refine(
+        recovered, recovered_sim, KrylovJL_CG();
+        correction_reltol=1.0f0, fallback_reltol=0.5f0,
+    )
+
+    @test Symbol(without_fallback.retcode) === :Failure
+    @test Symbol(with_fallback.retcode) === :Success
+    @test with_fallback.resid[] <= recovered.cache.reltol
+    @test with_fallback.iters > without_fallback.iters
 end
 
 @testset "absolute tolerance can satisfy the solver contract" begin

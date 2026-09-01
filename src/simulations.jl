@@ -351,7 +351,10 @@ function LinearSolve.solve(
     verbose && @info "Solving" alg reltol precond = isnothing(Pl) ? :none : :two_level
     sol = solve(sim.prob, alg; opts..., kwargs...)
     (isnothing(refine) ? _refines_by_default(T) : refine) || return sol
-    return _refine(sol, sim, alg)
+    correction_reltol = _refinement_correction_reltol(sim)
+    fallback_reltol = correction_reltol > REFINEMENT_CORRECTION_RELTOL ?
+        REFINEMENT_CORRECTION_RELTOL : nothing
+    return _refine(sol, sim, alg; correction_reltol, fallback_reltol)
 end
 
 # `Float32` CG cannot drive the relative residual much below `1e-6`; asking it to
@@ -377,6 +380,21 @@ _as(::Type{T}, v) where {T} = (w = similar(v, T); w .= v; w)
 # low/mid/high-porosity probes. The outer loop still owns the true-residual
 # contract and continues while a loose correction makes useful progress.
 const REFINEMENT_CORRECTION_RELTOL = 5.0f-1
+# On large CUDA systems, slightly looser corrections avoid dozens to hundreds
+# of inner iterations at the porosities where they were verified across all
+# three benchmark microstructures. Other backends retain the conservative
+# default through the dispatch hook below.
+const MID_GPU_CORRECTION_RELTOL = 6.0f-1
+const HIGH_GPU_CORRECTION_RELTOL = 5.5f-1
+const LOOSE_CORRECTION_MIN_NODES = 250_000_000
+
+_refinement_correction_reltol(::Any, n, nvoxels) = REFINEMENT_CORRECTION_RELTOL
+
+function _refinement_correction_reltol(sim::SteadyDiffusionProblem)
+    n = length(sim.prob.b)
+    backend = _device_backend(sim.prob.b)
+    return _refinement_correction_reltol(backend, n, length(sim.img))
+end
 
 """
     _refine(sol, sim, alg)
@@ -399,12 +417,15 @@ noise amplified by the conditioning.
 
 Once a round misses the preferred shrink factor, refinement stops only if the
 requested residual has been reached or the correction made no improvement.
-This lets deliberately loose correction solves continue until the outer
-true-residual contract is satisfied without chasing rounding noise afterwards.
+When `fallback_reltol` is provided, an unimproving primary stage retries from
+the current iterate at that tighter correction tolerance. This lets deliberately
+loose correction solves retain an outer true-residual contract without making
+the common successful path pay for tighter inner solves.
 """
 function _refine(
     sol, sim, alg;
     rounds=8, shrink=0.5, correction_reltol=REFINEMENT_CORRECTION_RELTOL,
+    fallback_reltol=nothing,
 )
     A, b = sim.prob.A, sim.prob.b
     # Reuse the cache the main solve already built: `cache.b = r; solve!(cache)`
@@ -455,47 +476,73 @@ function _refine(
     # the same kind of lie in a different field.
     base_stats = sol.stats === nothing ? nothing : deepcopy(sol.stats)
     corrections_ok = true
-    prev = Inf
     iters = sol.iters
     resid = nothing
-    for k in 1:rounds
-        mul!(r64, A, x64)
-        # `b` is `Float32` and widens exactly here, so it never needs a `Float64`
-        # copy of its own.
-        r64 .= b .- r64
-        resid = norm(r64) / nb
-        # Deliberately not stopping at `reltol`. The error in tortuosity is the
-        # residual times the conditioning, and that factor reaches ~760 on a
-        # low-porosity image: stopping at `reltol=1e-6` leaves 4e-4, which clears
-        # the 1e-3 benchmark target by only 2x. Refining until the residual stops
-        # improving costs one or two more rounds and leaves ~1e-6.
-        if k > 1 && resid > shrink * prev
-            # Stopping here leaves the last correction applied, and a correction
-            # that failed to shrink the residual may have grown it. `sol.u` still
-            # holds that correction — nothing overwrites it until the narrowing
-            # below — so undoing it costs no buffer and keeps the promise the
-            # function is built on: refinement never returns a worse answer than
-            # the solve it repairs.
-            if resid >= prev
-                resid > prev && (x64 .-= sol.u)
-                break
-            elseif converged(resid)
-                break
+    use_fallback = !isnothing(fallback_reltol) && fallback_reltol < correction_reltol
+    correction_reltols = use_fallback ?
+        (correction_reltol, fallback_reltol) : (correction_reltol,)
+    finished = false
+    for (stage, active_reltol) in enumerate(correction_reltols)
+        prev = Inf
+        for k in 1:rounds
+            mul!(r64, A, x64)
+            # `b` is `Float32` and widens exactly here, so it never needs a
+            # `Float64` copy of its own.
+            r64 .= b .- r64
+            resid = norm(r64) / nb
+            # A fallback stage exists only to recover a primary correction that
+            # stalled above tolerance. If the last primary correction reached
+            # the contract at its round limit, do not tighten and oversolve it.
+            if stage > 1 && k == 1
+                correction_rhs .= x64
+                x64 .= correction_rhs
+                mul!(r64, A, x64)
+                r64 .= b .- r64
+                resid = norm(r64) / nb
+                if converged(resid)
+                    finished = true
+                    break
+                end
             end
+            # Deliberately not stopping at `reltol`. The error in tortuosity is
+            # the residual times the conditioning, and that factor reaches ~760
+            # on a low-porosity image. Continue until improvement weakens so the
+            # benchmark target keeps a useful margin.
+            if k > 1 && resid > shrink * prev
+                # The last correction is still in `sol.u`, so undo it if it made
+                # the true residual worse. A tighter fallback can then continue
+                # from the better iterate without another solution buffer.
+                if resid >= prev
+                    if resid > prev
+                        x64 .-= sol.u
+                        resid = prev
+                    end
+                    finished = converged(resid)
+                    break
+                elseif converged(resid)
+                    finished = true
+                    break
+                end
+            end
+            prev = resid
+            correction_rhs .= r64
+            cache.b = correction_rhs
+            # `oftype` because the cache's tolerance field is typed to the
+            # problem's, and a `Float32` literal into a `Float64` field is a
+            # `TypeError`.
+            cache.reltol = oftype(cache.reltol, active_reltol)
+            cache.abstol = zero(cache.abstol)
+            correction = LinearSolve.solve!(cache)
+            corrections_ok &= correction.retcode == LinearSolve.SciMLBase.ReturnCode.Success
+            x64 .+= correction.u
+            iters += correction.iters
         end
-        prev = resid
-        correction_rhs .= r64
-        cache.b = correction_rhs
-        # `oftype` because the cache's tolerance field is typed to the problem's,
-        # and a `Float32` literal into a `Float64` field is a `TypeError`. That
-        # only shows up when a caller asks for refinement on a `Float64` system,
-        # which the default never does.
-        cache.reltol = oftype(cache.reltol, correction_reltol)
-        cache.abstol = zero(cache.abstol)
-        correction = LinearSolve.solve!(cache)
-        corrections_ok &= correction.retcode == LinearSolve.SciMLBase.ReturnCode.Success
-        x64 .+= correction.u
-        iters += correction.iters
+        if finished && stage < length(correction_reltols)
+            # Enter the fallback once so its first-iteration guard can validate
+            # the exact working-precision candidate before deciding it is done.
+            finished = false
+        end
+        finished && break
     end
     # Report the residual of the vector actually returned, which is narrowed back
     # to the working precision and so is slightly worse than the `Float64` iterate
