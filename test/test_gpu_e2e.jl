@@ -21,14 +21,14 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruc
 
 @testset "automatic GPU selection follows the registered backend crossover" begin
     threshold = Tortuosity._gpu_min_nodes(Tortuosity._preferred_gpu_backend[])
-    n = ceil(Int, cbrt(threshold))
+    n = max(ceil(Int, cbrt(threshold)), 4 * Tortuosity.DEFAULT_COARSE_BLOCK + 1)
     img = ones(Bool, n, n, n)
     sim = SteadyDiffusionProblem(img; axis=:x, matrixfree=true, warn_nonpercolating=false)
     @test count(img) >= threshold
     @test _on_gpu(sim.prob.b)
     @test !isnothing(Tortuosity._resolve_precond(:auto, sim, false))
 
-    thin = ones(Bool, 8, 50, 50)
+    thin = ones(Bool, 17, 50, 50)
     thin_sim = SteadyDiffusionProblem(
         thin; axis=:x, gpu=true, matrixfree=true, warn_nonpercolating=false,
     )

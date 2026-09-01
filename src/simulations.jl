@@ -560,7 +560,7 @@ _precond_min_nodes(::Array) = _CPU_PRECOND_MIN_NODES
 function _precond_min_nodes(sim::SteadyDiffusionProblem)
     threshold = _precond_min_nodes(sim.prob.b)
     axis_length = size(sim.img, axis_dim(sim.axis))
-    short_axis = axis_length <= 2 * DEFAULT_COARSE_BLOCK
+    short_axis = axis_length <= 4 * DEFAULT_COARSE_BLOCK
     return short_axis ? max(threshold, _PRECOND_MIN_NODES) : threshold
 end
 

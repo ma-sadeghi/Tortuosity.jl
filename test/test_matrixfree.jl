@@ -540,6 +540,13 @@ end
         @test count(img) < Tortuosity._PRECOND_MIN_NODES
         sentinel = Tortuosity.two_level_preconditioner(sim; block=4)
         @test Tortuosity._resolve_precond(sentinel, sim, false) === sentinel
+
+        thin = ones(Bool, 17, 40, 40)
+        thin_sim = SteadyDiffusionProblem(
+            thin; axis=:x, gpu=false, matrixfree=true, warn_nonpercolating=false,
+        )
+        @test count(thin) > Tortuosity._precond_min_nodes(thin_sim.prob.b)
+        @test Tortuosity._resolve_precond(:auto, thin_sim, false) === nothing
     end
 
     @testset "drives the preconditioner on a problem large enough to want one" begin
