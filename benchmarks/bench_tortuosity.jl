@@ -167,6 +167,7 @@ function trace_case(img, tau_ref; rungs=ladder)
 
     sim = SteadyDiffusionProblem(
         img; axis=axis, gpu=gpu, matrixfree=matrixfree, warn_nonpercolating=false,
+        checkpoint_readout=true,
     )
     # Construction is charged to every rung, so the padded rows below have to
     # carry it too — they re-solve, but they do not rebuild.
@@ -180,7 +181,7 @@ function trace_case(img, tau_ref; rungs=ladder)
         # nearly synchronised already — but "nearly" is not a measurement.
         gpu && CUDA.synchronize()
         mark = now_s()
-        tau = tortuosity(ws.x, sim)
+        tau = Tortuosity._checkpoint_tortuosity(ws.x, sim)
         elapsed = mark - t0 - excluded[]
         push!(rows, (; iters=k[], tau, time_s=elapsed))
         excluded[] += now_s() - mark
@@ -239,7 +240,7 @@ function trace_case(img, tau_ref; rungs=ladder)
             refined = nothing
         else
             mark = now_s()
-            tau = tortuosity(sol.u, sim)
+            tau = Tortuosity._checkpoint_tortuosity(sol.u, sim)
             elapsed = mark - t0 - excluded[]
         end
         for iters in pending

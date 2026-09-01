@@ -34,19 +34,26 @@ const _NEIGHBOURS = (_LOWER_NEIGHBOURS..., _UPPER_NEIGHBOURS...)
     InletFlux
 
 Compact data needed to reduce the physical inlet flux from a pore-vector
-solution. `nodes` and `weights` describe the inlet-to-free-node edges. `direct`
-is the unit-drop flux on inlet-to-outlet edges when the transport axis is only
-two voxels long.
+solution. `sources`, `targets`, and `weights` describe edges across the inlet
+plane. `inlet` and `outlet` contain every pore ordinal on the two boundary
+faces. `direct` is the unit-drop flux when the transport axis is only two
+voxels long.
 """
-struct InletFlux{Vi,Vw,T}
-    nodes::Vi
+struct InletFlux{Vs,Vt,Vw,Vin,Vout,T}
+    sources::Vs
+    targets::Vt
     weights::Vw
+    inlet::Vin
+    outlet::Vout
     direct::T
 end
 
 function _free!(flux::InletFlux)
-    isnothing(flux.nodes) || _free!(flux.nodes)
+    isnothing(flux.sources) || _free!(flux.sources)
+    isnothing(flux.targets) || _free!(flux.targets)
     isnothing(flux.weights) || _free!(flux.weights)
+    isnothing(flux.inlet) || _free!(flux.inlet)
+    isnothing(flux.outlet) || _free!(flux.outlet)
     return nothing
 end
 
@@ -71,31 +78,93 @@ end
     @inbounds flags[p] = (idx[i1, j1, k1] > 0) & (idx[i2, j2, k2] > 0)
 end
 
+@inline _store_source!(::Nothing, pos, source) = nothing
+@inline function _store_source!(sources, pos, source)
+    @inbounds sources[pos] = source
+    return nothing
+end
+
 @kernel function _inlet_fill_kernel!(
-    nodes, weights, @Const(scan), @Const(idx), D, nx, ny, bcdim, D0,
+    sources, targets, weights, @Const(scan), @Const(idx), D, nx, ny, bcdim, D0,
 )
     p = @index(Global)
     i1, j1, k1, i2, j2, k2 = _inlet_pair(p, nx, ny, bcdim)
     @inbounds begin
-        node = idx[i2, j2, k2]
-        if (idx[i1, j1, k1] > 0) & (node > 0)
+        source = idx[i1, j1, k1]
+        target = idx[i2, j2, k2]
+        if (source > 0) & (target > 0)
             pos = scan[p]
             da = _node_diffusivity(D, D0, i1, j1, k1)
             db = _node_diffusivity(D, D0, i2, j2, k2)
-            nodes[pos] = node
+            _store_source!(sources, pos, source)
+            targets[pos] = target
             weights[pos] = _edge_weight(D, D0, da, db)
         end
     end
 end
 
+@inline function _face_point(p, nx, ny, bcdim, coord)
+    if bcdim == 1
+        j = (p - 1) % ny + 1
+        k = (p - 1) ÷ ny + 1
+        return coord, j, k
+    elseif bcdim == 2
+        i = (p - 1) % nx + 1
+        k = (p - 1) ÷ nx + 1
+        return i, coord, k
+    end
+    i = (p - 1) % nx + 1
+    j = (p - 1) ÷ nx + 1
+    return i, j, coord
+end
+
+@kernel function _face_flags_kernel!(flags, @Const(idx), nx, ny, bcdim, coord)
+    p = @index(Global)
+    i, j, k = _face_point(p, nx, ny, bcdim, coord)
+    @inbounds flags[p] = idx[i, j, k] > 0
+end
+
+@kernel function _face_fill_kernel!(nodes, @Const(scan), @Const(idx), nx, ny, bcdim, coord)
+    p = @index(Global)
+    i, j, k = _face_point(p, nx, ny, bcdim, coord)
+    @inbounds begin
+        node = idx[i, j, k]
+        node > 0 && (nodes[scan[p]] = node)
+    end
+end
+
+function _build_face_nodes(idx, bcdim, coord)
+    nx, ny, _ = size(idx)
+    face_area = length(idx) ÷ size(idx, bcdim)
+    backend = get_backend(idx)
+    Ti = eltype(idx)
+
+    flags = similar(idx, Ti, face_area)
+    _face_flags_kernel!(backend)(flags, idx, nx, ny, bcdim, coord; ndrange=face_area)
+    KernelAbstractions.synchronize(backend)
+    scan = accumulate(+, flags)
+    n = Int(Array(@view scan[end:end])[1])
+    _free!(flags)
+
+    nodes = similar(idx, Ti, n)
+    if n > 0
+        _face_fill_kernel!(backend)(
+            nodes, scan, idx, nx, ny, bcdim, coord; ndrange=face_area,
+        )
+        KernelAbstractions.synchronize(backend)
+    end
+    _free!(scan)
+    return nodes
+end
+
 """
 Build the compact inlet-edge map while the full pore-index grid is available.
 
-Only one face is scanned and retained, so permanent storage is O(N²) rather
-than O(N³). The scan compacts the valid pore-to-pore edges without atomics and
-keeps their order deterministic on every backend.
+Only boundary faces are retained, so permanent storage is O(N²) rather than
+O(N³). The scans compact pore ordinals and valid pore-to-pore edges without
+atomics and keep their order deterministic on every backend.
 """
-function _build_inlet_flux(idx, D, bcdim, D0)
+function _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout=false)
     nx, ny, _ = size(idx)
     face_area = length(idx) ÷ size(idx, bcdim)
     backend = get_backend(idx)
@@ -108,23 +177,30 @@ function _build_inlet_flux(idx, D, bcdim, D0)
     n = Int(Array(@view scan[end:end])[1])
     _free!(flags)
 
-    nodes = similar(idx, Ti, n)
+    sources = checkpoint_readout ? similar(idx, Ti, n) : nothing
+    targets = similar(idx, Ti, n)
     weights = similar(idx, typeof(D0), n)
     if n > 0
         _inlet_fill_kernel!(backend)(
-            nodes, weights, scan, idx, D, nx, ny, bcdim, D0; ndrange=face_area,
+            sources, targets, weights, scan, idx, D, nx, ny, bcdim, D0;
+            ndrange=face_area,
         )
         KernelAbstractions.synchronize(backend)
     end
     _free!(scan)
 
-    if size(idx, bcdim) == 2
-        direct = n == 0 ? zero(D0) : sum(weights)
-        _free!(nodes)
+    inlet = checkpoint_readout ? _build_face_nodes(idx, bcdim, 1) : nothing
+    outlet = checkpoint_readout ?
+        _build_face_nodes(idx, bcdim, size(idx, bcdim)) : nothing
+    two_layer = size(idx, bcdim) == 2
+    direct = two_layer && n > 0 ? sum(weights) : zero(D0)
+    if two_layer && !checkpoint_readout
+        _free!(targets)
         _free!(weights)
-        return InletFlux(nothing, nothing, direct)
+        targets = nothing
+        weights = nothing
     end
-    return InletFlux(nodes, weights, zero(D0))
+    return InletFlux(sources, targets, weights, inlet, outlet, direct)
 end
 
 """
@@ -364,6 +440,7 @@ compare against.
 """
 function build_steady_system(
     img; nnodes, axis, D=nothing, T=Float64, Ti=nothing, return_flux::Bool=false,
+    checkpoint_readout::Bool=false,
 )
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
@@ -398,7 +475,8 @@ function build_steady_system(
     cumsum!(vec(idx), vec(img))
     idx .*= img
     backend = get_backend(idx)
-    inlet_flux = return_flux ? _build_inlet_flux(idx, D, bcdim, D0) : nothing
+    inlet_flux = return_flux ?
+        _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout) : nothing
     # The backend-selected shape keeps the first dimension contiguous while
     # balancing occupancy against locality.
     wg = _steady_workgroup(idx)

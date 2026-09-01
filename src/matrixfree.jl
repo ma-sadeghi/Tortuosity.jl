@@ -316,7 +316,7 @@ every apply.
 """
 function build_steady_operator(
     img; nnodes, axis, D=nothing, T=Float64, owns_D::Bool=false,
-    return_flux::Bool=false,
+    return_flux::Bool=false, checkpoint_readout::Bool=false,
 )
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
@@ -345,7 +345,8 @@ function build_steady_operator(
     cumsum!(vec(idx), vec(img))
     idx .*= img
     backend = get_backend(idx)
-    inlet_flux = return_flux ? _build_inlet_flux(idx, D, bcdim, D0) : nothing
+    inlet_flux = return_flux ?
+        _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout) : nothing
     # The backend-selected shape is shared with assembly and operator applies.
     wg = _steady_workgroup(idx)
 

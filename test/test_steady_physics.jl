@@ -206,7 +206,8 @@ end
 
     for matrixfree in (false, true), ax in (:x, :y, :z), D in (nothing, 2.5, D_field)
         sim = SteadyDiffusionProblem(
-            img; axis=ax, D, gpu=false, matrixfree, warn_nonpercolating=false,
+            img; axis=ax, D, gpu=false, matrixfree, checkpoint_readout=true,
+            warn_nonpercolating=false,
         )
         u = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
         c = reconstruct_field(u, img)
@@ -218,9 +219,18 @@ end
               tortuosity(c, img; axis=ax, D=D_measure) rtol = 1e-9
         @test formation_factor(u, sim) ≈
               formation_factor(c, img; axis=ax, D=D_measure) rtol = 1e-9
+
+        partial = collect(range(0.2, 0.8; length=length(u)))
+        partial_c = reconstruct_field(partial, img)
+        @test Tortuosity._checkpoint_tortuosity(partial, sim) ≈
+              tortuosity(partial_c, img; axis=ax, D=D_measure) rtol = 1e-12
     end
 
     sim = SteadyDiffusionProblem(img; axis=:x, gpu=false, warn_nonpercolating=false)
+    @test isnothing(sim.flux.sources)
+    @test isnothing(sim.flux.inlet)
+    @test isnothing(sim.flux.outlet)
+    @test_throws ArgumentError Tortuosity._checkpoint_tortuosity(zeros(count(img)), sim)
     @test_throws DimensionMismatch effective_diffusivity(zeros(count(img) - 1), sim)
     bare = SteadyDiffusionProblem(sim.img, sim.axis, sim.prob)
     typed_bare = SteadyDiffusionProblem{typeof(sim.img)}(sim.img, sim.axis, sim.prob)
@@ -250,7 +260,8 @@ end
         img = ones(Bool, shape)
         D = reshape(range(0.5, 1.5; length=length(img)), shape)
         sim = SteadyDiffusionProblem(
-            img; axis=ax, D, gpu=false, matrixfree, warn_nonpercolating=false,
+            img; axis=ax, D, gpu=false, matrixfree, checkpoint_readout=true,
+            warn_nonpercolating=false,
         )
         u = solve(sim.prob, KrylovJL_CG(); reltol=1e-12).u
         c = reconstruct_field(u, img)
@@ -260,7 +271,17 @@ end
         @test tortuosity(u, sim) ≈ tortuosity(c, img; axis=ax, D) rtol = 1e-10
         @test formation_factor(u, sim) ≈
               formation_factor(c, img; axis=ax, D) rtol = 1e-10
+        @test Tortuosity._checkpoint_tortuosity(u, sim) ≈
+              tortuosity(c, img; axis=ax, D) rtol = 1e-10
     end
+
+    default_sim = SteadyDiffusionProblem(
+        ones(Bool, 2, 6, 7); axis=:x, gpu=false, warn_nonpercolating=false,
+    )
+    @test isnothing(default_sim.flux.sources)
+    @test isnothing(default_sim.flux.targets)
+    @test isnothing(default_sim.flux.weights)
+    @test default_sim.flux.direct == 42
 end
 
 # --- Scaling laws ---

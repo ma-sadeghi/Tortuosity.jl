@@ -8,11 +8,12 @@
 #  lateral rates cancel out.
 
 function _inlet_edge_flux(u, flux::InletFlux)
-    isnothing(flux.nodes) && return zero(flux.direct)
-    isempty(flux.nodes) && return zero(eltype(flux.weights))
+    !iszero(flux.direct) && return zero(flux.direct)
+    isnothing(flux.targets) && return zero(flux.direct)
+    isempty(flux.targets) && return zero(eltype(flux.weights))
 
-    nodes, weights = flux.nodes, flux.weights
-    nodes_backend = _device_backend(nodes)
+    targets, weights = flux.targets, flux.weights
+    nodes_backend = _device_backend(targets)
     u_backend = _device_backend(u)
     same_backend = if isnothing(nodes_backend) || isnothing(u_backend)
         isnothing(nodes_backend) && isnothing(u_backend)
@@ -21,18 +22,18 @@ function _inlet_edge_flux(u, flux::InletFlux)
     end
     if same_backend
         return mapreduce(
-            (i, w) -> w * (one(eltype(u)) - u[i]), +, nodes, weights,
+            (i, w) -> w * (one(eltype(u)) - u[i]), +, targets, weights,
         )
     end
 
     adapted_nodes = isnothing(u_backend) ?
-        Vector{eltype(nodes)}(undef, length(nodes)) :
-        similar(u, eltype(nodes), length(nodes))
+        Vector{eltype(targets)}(undef, length(targets)) :
+        similar(u, eltype(targets), length(targets))
     adapted_weights = isnothing(u_backend) ?
         Vector{eltype(u)}(undef, length(weights)) :
         similar(u, eltype(u), length(weights))
     try
-        copyto!(adapted_nodes, nodes)
+        copyto!(adapted_nodes, targets)
         copyto!(adapted_weights, weights)
         return mapreduce(
             (i, w) -> w * (one(eltype(u)) - u[i]), +, adapted_nodes, adapted_weights,
@@ -41,6 +42,42 @@ function _inlet_edge_flux(u, flux::InletFlux)
         _free!(adapted_nodes)
         _free!(adapted_weights)
     end
+end
+
+function _checkpoint_tortuosity(u, sim::SteadyDiffusionProblem)
+    flux = sim.flux
+    isnothing(flux) && throw(ArgumentError(
+        "this SteadyDiffusionProblem has no boundary-flux metadata"
+    ))
+    isnothing(flux.sources) && throw(ArgumentError(
+        "construct the SteadyDiffusionProblem with `checkpoint_readout=true` to inspect \
+         unconverged iterates"
+    ))
+    u_backend = _device_backend(u)
+    flux_backend = _device_backend(flux.targets)
+    same_backend = if isnothing(u_backend) || isnothing(flux_backend)
+        isnothing(u_backend) && isnothing(flux_backend)
+    else
+        typeof(u_backend) === typeof(flux_backend)
+    end
+    same_backend || throw(ArgumentError(
+        "checkpoint readout requires the solution and boundary metadata on the same backend"
+    ))
+
+    edge_flux = mapreduce(
+        (source, target, weight) -> weight * (u[source] - u[target]),
+        +, flux.sources, flux.targets, flux.weights,
+    )
+    inlet_mean = mapreduce(i -> u[i], +, flux.inlet) / length(flux.inlet)
+    outlet_mean = mapreduce(i -> u[i], +, flux.outlet) / length(flux.outlet)
+    dc = inlet_mean - outlet_mean
+
+    ax = axis_dim(sim.axis)
+    N = size(sim.img, ax)
+    face_area = length(sim.img) ÷ N
+    D_eff = edge_flux / face_area * (N - 1) / dc
+    ε = length(sim.prob.b) / length(sim.img)
+    return sim.D0 * ε / D_eff
 end
 
 """

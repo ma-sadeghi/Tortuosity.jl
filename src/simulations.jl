@@ -154,11 +154,14 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
 - `Ti`: index type of the assembled matrix, `Int32` or `Int64`. `nothing`
   (default) picks the narrowest that fits. Rejected together with
   `matrixfree=true`, whose operator indexes on its own terms.
+- `checkpoint_readout`: retain compact boundary metadata for transport
+  observables on unconverged iterates. This is used by the benchmark harness;
+  converged solutions need no extra metadata. Default: `false`.
 - `verbose`: print progress messages. Default: `false`.
 """
 function SteadyDiffusionProblem(
     img; axis, D=nothing, gpu=nothing, warn_nonpercolating=nothing,
-    matrixfree::Bool=false, Ti=nothing, verbose=false,
+    matrixfree::Bool=false, checkpoint_readout::Bool=false, Ti=nothing, verbose=false,
 )
     verbose && @info "Preprocessing image..."
     img = atleast_3d(img)
@@ -249,10 +252,11 @@ function SteadyDiffusionProblem(
     A, b, inlet_flux = if matrixfree
         build_steady_operator(img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T,
                               owns_D=(D_dev isa AbstractArray && D_dev !== D),
-                              return_flux=true)
+                              return_flux=true, checkpoint_readout)
     else
         build_steady_system(
-            img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T, Ti=Ti, return_flux=true,
+            img_dev; nnodes=nnodes, axis=axis, D=D_dev, T=T, Ti=Ti,
+            return_flux=true, checkpoint_readout,
         )
     end
     D0 = if isnothing(D_dev)
