@@ -126,7 +126,6 @@ function solve_case(img, maxiters)
     # the device is very nearly synchronised already — but "very nearly" is not a
     # measurement, and the final update is not covered by it.
     gpu && CUDA.synchronize()
-    tortuosity(sol.u, sim)
     return sim, sol
 end
 
@@ -357,7 +356,10 @@ end
 # coarse space, so this warms the preconditioner too when one is in use.
 @info "Warming up" device operator precond measure threads = Threads.nthreads()
 let warm = BH.build_image(cfg, Case(64, 1.0, 0.6))
-    solve_case(warm, 5)
+    sim, sol = solve_case(warm, 5)
+    tortuosity(sol.u, sim)
+    sim = sol = nothing
+    release!()
     # The timing stage runs a *different* path, and warming only the one above
     # would leave the first measured case carrying its compilation: a callback of
     # a fresh closure type respecializes `Krylov.cg!`, and the tortuosity read-off
