@@ -19,12 +19,21 @@ const _COARSE_SLOTS = 7
 const DEFAULT_MAX_COARSE = 32_000
 
 # GPU fine-grid applies are much cheaper relative to the host sparse triangular
-# solve, so the crossover is lower. At 200³ the old 32k ceiling left a dense
+# solve, so the base crossover is lower. At 200³ the old 32k ceiling left a
 # 15.6k-cell coarse factor on the host; one solve cost 2.6-4.4 ms. Putting one
 # more grid under it cut that to 0.5-1.3 ms and made the complete automatic
-# solve 1.44× faster geometrically over all 15 benchmark images. At 400³ the
-# same choice cut matched-accuracy time by 19-32% from ε=0.6 through 0.95.
+# solve 1.44× faster geometrically over all 15 benchmark images.
 const DEFAULT_GPU_MAX_COARSE = 14_000
+# As the fine problem grows, its device apply dominates a 16k-32k host solve.
+# Retaining a stronger direct coarse correction then avoids a whole benchmark
+# iteration rung: 16k recovered the previous target rung across the measured
+# 800³ matrix, and 32k did the same at 1000³ and porosity 0.6. The node count
+# expresses that cost ratio without tying the route to cubic images or a named
+# domain size.
+const MID_GPU_MAX_COARSE = 16_000
+const LARGE_GPU_MAX_COARSE = DEFAULT_MAX_COARSE
+const MID_GPU_FINE_NODES = 250_000_000
+const LARGE_GPU_FINE_NODES = 500_000_000
 # Thin coarse grids have banded factors whose host solve stays cheap; keep the
 # CPU ceiling until all three directions are large enough to create 3-D fill.
 const MIN_GPU_COARSE_EDGE = 8
@@ -626,10 +635,16 @@ end
 _precond_template(A) = nonzeros(A)
 _precond_template(A::MaskedLaplacian) = A.idx
 
+function _gpu_max_coarse(n)
+    n >= LARGE_GPU_FINE_NODES && return LARGE_GPU_MAX_COARSE
+    n >= MID_GPU_FINE_NODES && return MID_GPU_MAX_COARSE
+    return DEFAULT_GPU_MAX_COARSE
+end
+
 function _resolve_max_coarse(A, max_coarse, dims)
     isnothing(max_coarse) || return max_coarse
     use_gpu_ceiling = _on_gpu(_precond_template(A)) && minimum(dims) >= MIN_GPU_COARSE_EDGE
-    return use_gpu_ceiling ? DEFAULT_GPU_MAX_COARSE : DEFAULT_MAX_COARSE
+    return use_gpu_ceiling ? _gpu_max_coarse(size(A, 1)) : DEFAULT_MAX_COARSE
 end
 
 """
@@ -894,10 +909,12 @@ residuals. They agree on `tortuosity` to solver tolerance — verified to 1e-9 a
   `DEFAULT_COARSE_BLOCK`, the same edge at every image size — see above for why
   it does not grow with the image.
 - `max_coarse`: ceiling on the number of unknowns solved *directly*. `nothing`
-  (default) selects 14,000 for a genuinely three-dimensional GPU coarse grid and
-  32,000 for a CPU or thin grid. The direct solve runs once per iteration, so a
-  larger one stops paying for itself; a coarse space above the ceiling gets
-  coarser grids built under it instead of being made coarser itself.
+  (default) selects 14,000 for a genuinely three-dimensional GPU coarse grid,
+  rising to 16,000 at 250 million fine nodes and 32,000 at 500 million; CPU and
+  thin grids use 32,000. The direct solve runs once per iteration, so a larger
+  one stops paying for itself on smaller fine grids; a coarse space above the
+  ceiling gets coarser grids built under it instead of being made coarser
+  itself.
 - `shift`: relative diagonal shift applied before factorisation. `WᵀAW` is
   positive semi-definite, not definite — a pore cluster reaching neither
   Dirichlet face spans blocks whose coarse rows sum to zero — so the shift is
