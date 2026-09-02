@@ -489,8 +489,7 @@ function build_steady_operator(
     # pore/solid test — the same idiom `build_steady_system` uses, so the two
     # paths number the nodes identically.
     idx = similar(img, Ti)
-    cumsum!(vec(idx), vec(img))
-    idx .*= img
+    _pore_index!(idx, img)
     backend = get_backend(idx)
     inlet_flux = return_flux ?
         _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout) : nothing

@@ -949,8 +949,7 @@ function two_level_preconditioner(
     # is assembled, so this pass never coincides with the solve's peak.
     img_dev = _on_gpu(nonzeros(A)) ? _gpu_adapt[](img) : img
     idx = similar(img_dev, Int32)
-    cumsum!(vec(idx), vec(img_dev))
-    idx .*= img_dev
+    _pore_index!(idx, img_dev)
     agg = _aggregate(idx, n, nbx * nby * nbz, bs, nbx, nby)
     _free!(idx)
     img_dev === img || _free!(img_dev)

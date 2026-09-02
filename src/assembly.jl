@@ -472,8 +472,7 @@ function build_steady_system(
     # type is the ordinal's, not the offsets': the two bounds differ by a factor
     # of seven, and this array spans the grid rather than the pore space.
     idx = similar(img, _ordinal_index_type(nnodes))
-    cumsum!(vec(idx), vec(img))
-    idx .*= img
+    _pore_index!(idx, img)
     backend = get_backend(idx)
     inlet_flux = return_flux ?
         _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout) : nothing

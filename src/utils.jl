@@ -85,6 +85,51 @@ function build_pore_index(img::BitArray)
     return g
 end
 
+const _PORE_INDEX_MIN_THREADED = 1_000_000
+
+function _pore_index!(idx, img)
+    cumsum!(vec(idx), vec(img))
+    idx .*= img
+    return idx
+end
+
+function _pore_index!(idx::Array{Ti}, img::Union{Array{Bool},BitArray}) where {Ti<:Integer}
+    n = length(img)
+    if Threads.nthreads() == 1 || n < _PORE_INDEX_MIN_THREADED
+        return invoke(_pore_index!, Tuple{Any,Any}, idx, img)
+    end
+
+    nchunks = min(n, 4 * Threads.nthreads())
+    chunk_size = cld(n, nchunks)
+    offsets = zeros(Ti, nchunks)
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        ilo = (chunk - 1) * chunk_size + 1
+        ihi = min(ilo + chunk_size - 1, n)
+        total = zero(Ti)
+        @inbounds for i in ilo:ihi
+            total += img[i]
+            idx[i] = total
+        end
+        offsets[chunk] = total
+    end
+
+    running_offset = zero(Ti)
+    @inbounds for chunk in eachindex(offsets)
+        total = offsets[chunk]
+        offsets[chunk] = running_offset
+        running_offset += total
+    end
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        ilo = (chunk - 1) * chunk_size + 1
+        ihi = min(ilo + chunk_size - 1, n)
+        chunk_offset = offsets[chunk]
+        @inbounds @simd for i in ilo:ihi
+            idx[i] = img[i] ? idx[i] + chunk_offset : zero(Ti)
+        end
+    end
+    return idx
+end
+
 """
     find_true_indices(a::AbstractArray{Bool})
 
