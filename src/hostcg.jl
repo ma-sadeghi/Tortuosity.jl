@@ -93,6 +93,23 @@ function _host_mul!(y, A, x, symmetric_sparse)
     return mul!(y, A, x)
 end
 
+function _host_mul_dot_separate!(y, A, x, partial, symmetric_sparse)
+    _host_mul!(y, A, x, symmetric_sparse)
+    return _host_dot(x, y, partial)
+end
+
+_host_mul_dot!(y, A, x, partial, symmetric_sparse) =
+    _host_mul_dot_separate!(y, A, x, partial, symmetric_sparse)
+
+function _host_mul_dot!(
+    y, A::MaskedLaplacian{T,Ti,AI,DT}, x, partial, symmetric_sparse,
+) where {T,Ti,AI<:Array{Ti,3},DT<:Union{Nothing,Array}}
+    dense_enough = 2 * A.nnodes >= length(A.idx)
+    dense_enough ||
+        return _host_mul_dot_separate!(y, A, x, partial, symmetric_sparse)
+    return _cpu_mul_dot!(y, A, x, partial, Val(A.bcdim))
+end
+
 function _host_axpby!(y, alpha, x, beta)
     n = length(y)
     nchunks = _host_chunks(n)
@@ -191,8 +208,7 @@ function _host_cg_solve!(cache::HostCGCache)
     curvature_failure = false
 
     while residual > tolerance && iterations < cache.maxiters
-        _host_mul!(Ap, A, p, cache.symmetric_sparse)
-        pAp = _host_dot(p, Ap, partial)
+        pAp = _host_mul_dot!(Ap, A, p, partial, cache.symmetric_sparse)
         if pAp <= zero(pAp)
             curvature_failure = true
             break

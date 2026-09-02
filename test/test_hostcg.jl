@@ -22,6 +22,28 @@ using Tortuosity: HostCG, HOST_CG_MIN_NODES
     end
 end
 
+@testset "fused matrix-free products match separate reduction" begin
+    img = trues(12, 11, 10)
+    img[4:6, 5:7, 3:8] .= false
+    D = zeros(size(img))
+    D[img] .= 0.5 .+ 0.1 .* mod.(1:count(img), 5)
+    for axis in (:x, :y, :z), diffusivity in (nothing, D)
+        sim = SteadyDiffusionProblem(
+            img; axis, D=diffusivity, gpu=false, matrixfree=true,
+            warn_nonpercolating=false,
+        )
+        x = collect(range(0.1, 0.9; length=length(sim.prob.b)))
+        separate = similar(x)
+        fused = similar(x)
+        partial = zeros(Float64, 4 * Threads.nthreads())
+        mul!(separate, sim.prob.A, x)
+        expected = dot(x, separate)
+        actual = Tortuosity._host_mul_dot!(fused, sim.prob.A, x, partial, false)
+        @test fused == separate
+        @test actual ≈ expected rtol=1e-14
+    end
+end
+
 @testset "HostCG honors callbacks and iteration limits" begin
     img = trues(32, 12, 10)
     sim = SteadyDiffusionProblem(
