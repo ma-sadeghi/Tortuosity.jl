@@ -18,6 +18,7 @@ using Tortuosity: HostCG, HOST_CG_MIN_NODES
         @test host.iters == krylov.iters
         @test host.u ≈ krylov.u rtol=1e-11
         @test tortuosity(host.u, sim) ≈ tortuosity(krylov.u, sim) rtol=1e-11
+        @test host.cache.symmetric_sparse == !matrixfree
     end
 end
 
@@ -98,6 +99,10 @@ end
     @test solve(small).alg isa typeof(KrylovJL_CG())
     @test solve(large).alg isa HostCG
     @test solve(large, KrylovJL_CG()).alg isa typeof(KrylovJL_CG())
+    small_assembled = SteadyDiffusionProblem(
+        trues(10, 10, 10); axis=:x, gpu=false, warn_nonpercolating=false,
+    )
+    @test !solve(small_assembled, HostCG(); precond=:none).cache.symmetric_sparse
 
     prob32 = Tortuosity.LinearSolve.LinearProblem(large.prob.A, Float32.(large.prob.b))
     large32 = SteadyDiffusionProblem(large.img, large.axis, prob32)

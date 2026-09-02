@@ -47,6 +47,7 @@ mutable struct HostCGCache{A,B,P,Alg,W,T}
     maxiters::Int
     workspace::W
     u::B
+    symmetric_sparse::Bool
 end
 
 @inline function _host_chunks(n)
@@ -71,6 +72,25 @@ function _host_dot(x, y, partial)
         partial[chunk] = acc
     end
     return sum(partial)
+end
+
+function _host_sparse_mul!(y, A::SparseMatrixCSC, x)
+    colptr = SparseArrays.getcolptr(A)
+    rowval = SparseArrays.rowvals(A)
+    nzval = SparseArrays.nonzeros(A)
+    Threads.@threads :dynamic for j in axes(A, 2)
+        acc = zero(eltype(y))
+        @inbounds @simd for k in colptr[j]:(colptr[j + 1] - 1)
+            acc += nzval[k] * x[rowval[k]]
+        end
+        @inbounds y[j] = acc
+    end
+    return y
+end
+
+function _host_mul!(y, A, x, symmetric_sparse)
+    symmetric_sparse && return _host_sparse_mul!(y, A, x)
+    return mul!(y, A, x)
 end
 
 function _host_axpby!(y, alpha, x, beta)
@@ -137,7 +157,7 @@ function _host_apply_preconditioner!(y, P, x, partial)
     return _host_precondition_dot!(y, P, x, partial)
 end
 
-function _host_cg_cache(A, b, P, alg, reltol, abstol, maxiters)
+function _host_cg_cache(A, b, P, alg, reltol, abstol, maxiters, symmetric_sparse)
     n = length(b)
     x = similar(b)
     r = similar(b)
@@ -148,7 +168,7 @@ function _host_cg_cache(A, b, P, alg, reltol, abstol, maxiters)
     )
     return HostCGCache(
         A, b, P, alg, convert(eltype(b), reltol), convert(eltype(b), abstol),
-        maxiters, workspace, x,
+        maxiters, workspace, x, symmetric_sparse,
     )
 end
 
@@ -171,7 +191,7 @@ function _host_cg_solve!(cache::HostCGCache)
     curvature_failure = false
 
     while residual > tolerance && iterations < cache.maxiters
-        mul!(Ap, A, p)
+        _host_mul!(Ap, A, p, cache.symmetric_sparse)
         pAp = _host_dot(p, Ap, partial)
         if pAp <= zero(pAp)
             curvature_failure = true
@@ -237,7 +257,11 @@ function LinearSolve.solve(
                iszero(maxiters) ? 2 * length(b) : maxiters
     P = _resolve_precond(precond, sim, verbose)
     verbose && @info "Solving" alg reltol precond = isnothing(P) ? :none : :two_level
-    cache = _host_cg_cache(sim.prob.A, b, P, alg, reltol, abstol, maxiters)
+    symmetric_sparse = sim.prob.A isa SparseMatrixCSC && !isnothing(sim.flux) &&
+                       length(b) >= HOST_CG_MIN_NODES
+    cache = _host_cg_cache(
+        sim.prob.A, b, P, alg, reltol, abstol, maxiters, symmetric_sparse,
+    )
     return solve!(cache)
 end
 
