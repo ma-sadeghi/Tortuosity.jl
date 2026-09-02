@@ -606,7 +606,7 @@ end
 # is also the size at which a system stops fitting comfortably in cache.
 const _PRECOND_MIN_NODES = 100_000
 _precond_min_nodes(::AbstractArray) = _PRECOND_MIN_NODES
-const _CPU_PRECOND_MIN_NODES = 20_000
+const _CPU_PRECOND_MIN_NODES = 8_000
 _precond_min_nodes(::Array) = _CPU_PRECOND_MIN_NODES
 
 function _precond_min_nodes(sim::SteadyDiffusionProblem)

@@ -547,6 +547,19 @@ end
         )
         @test count(thin) > Tortuosity._precond_min_nodes(thin_sim.prob.b)
         @test Tortuosity._resolve_precond(:auto, thin_sim, false) === nothing
+
+        below = trues(40, 14, 14)
+        below_sim = SteadyDiffusionProblem(
+            below; axis=:x, gpu=false, matrixfree=true, warn_nonpercolating=false,
+        )
+        above = trues(40, 16, 16)
+        above_sim = SteadyDiffusionProblem(
+            above; axis=:x, gpu=false, matrixfree=true, warn_nonpercolating=false,
+        )
+        @test count(below) < Tortuosity._CPU_PRECOND_MIN_NODES
+        @test count(above) > Tortuosity._CPU_PRECOND_MIN_NODES
+        @test Tortuosity._resolve_precond(:auto, below_sim, false) === nothing
+        @test !isnothing(Tortuosity._resolve_precond(:auto, above_sim, false))
     end
 
     @testset "drives the preconditioner on a problem large enough to want one" begin
