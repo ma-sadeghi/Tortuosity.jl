@@ -14,8 +14,8 @@ samples cover a real solve, which the sample count and the child log show.
 
 import argparse
 import hashlib
-import os
 import json
+import os
 import shutil
 import statistics
 import subprocess
@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 
 import psutil
+
+from benchkit.occupancy import published_results_lock
 
 TRIM = 0.20
 TOUCHED = [
@@ -89,13 +91,6 @@ def main():
     ap.add_argument("--out", default="results/core-occupancy-ours.json")
     args = ap.parse_args()
 
-    before = {path: digest(path) for path in TOUCHED}
-    backups = {}
-    for path in TOUCHED:
-        backup = path.with_suffix(path.suffix + ".occupancy-backup")
-        if backup.is_file():
-            raise RuntimeError(f"stale occupancy backup exists: {backup}")
-
     plan = [
         # (label, case, sampling interval): the small case needs a fast interval
         # to yield enough samples, the large one does not.
@@ -106,36 +101,50 @@ def main():
            "host_physical_cores": psutil.cpu_count(logical=False),
            "host_logical_cores": psutil.cpu_count(logical=True),
            "cases": {}}
-    try:
+    with published_results_lock():
+        before = {path: digest(path) for path in TOUCHED}
+        backups = {}
         for path in TOUCHED:
-            if path.is_file():
-                backup = path.with_suffix(path.suffix + ".occupancy-backup")
-                shutil.copy2(path, backup)
-                backups[path] = backup
-        for label, case, interval in plan:
-            cmd = ["julia", "-t", "auto", "--project=.", "bench_tortuosity.jl",
-                   "--device=cpu", "--operator=matrixfree", "--measure=time",
-                   f"--cases={case}", "--overwrite"]
-            child_log = f"results/occupancy-ours-{label}.log"
-            print(f"running {label} (interval {interval}s) ...", flush=True)
-            code, elapsed, samples = sample(cmd, interval, child_log)
-            out["cases"][label] = {"exit": code, "elapsed_s": round(elapsed, 1),
-                                   "interval_s": interval, "child_log": child_log,
-                                   **summarise(samples)}
-            print(f"  exit={code} {elapsed:.1f}s {out['cases'][label]}\n", flush=True)
-    finally:
-        for path in TOUCHED:
-            if path in backups:
-                shutil.move(str(backups[path]), str(path))
-            elif before[path] is None and path.is_file():
-                path.unlink()
-            else:
-                partial = path.with_suffix(path.suffix + ".occupancy-backup")
-                if partial.is_file():
-                    partial.unlink()
-        unchanged = all(digest(path) == before[path] for path in TOUCHED)
-        out["published_results_unchanged"] = unchanged
-        print(f"results restored and verified: {out['published_results_unchanged']}")
+            backup = path.with_suffix(path.suffix + ".occupancy-backup")
+            if backup.is_file():
+                raise RuntimeError(f"stale occupancy backup exists: {backup}")
+        try:
+            for path in TOUCHED:
+                if path.is_file():
+                    backup = path.with_suffix(path.suffix + ".occupancy-backup")
+                    shutil.copy2(path, backup)
+                    backups[path] = backup
+            for label, case, interval in plan:
+                cmd = ["julia", "-t", "auto", "--project=.",
+                       "bench_tortuosity.jl", "--device=cpu",
+                       "--operator=matrixfree", "--measure=time",
+                       f"--cases={case}", "--overwrite"]
+                child_log = f"results/occupancy-ours-{label}.log"
+                print(f"running {label} (interval {interval}s) ...", flush=True)
+                code, elapsed, samples = sample(cmd, interval, child_log)
+                out["cases"][label] = {
+                    "exit": code, "elapsed_s": round(elapsed, 1),
+                    "interval_s": interval, "child_log": child_log,
+                    **summarise(samples)
+                }
+                print(f"  exit={code} {elapsed:.1f}s "
+                      f"{out['cases'][label]}\n", flush=True)
+        finally:
+            for path in TOUCHED:
+                if path in backups:
+                    shutil.move(str(backups[path]), str(path))
+                elif before[path] is None and path.is_file():
+                    path.unlink()
+                else:
+                    partial = path.with_suffix(
+                        path.suffix + ".occupancy-backup"
+                    )
+                    if partial.is_file():
+                        partial.unlink()
+            unchanged = all(digest(path) == before[path] for path in TOUCHED)
+            out["published_results_unchanged"] = unchanged
+            print("results restored and verified: "
+                  f"{out['published_results_unchanged']}")
 
     Path(args.out).write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))

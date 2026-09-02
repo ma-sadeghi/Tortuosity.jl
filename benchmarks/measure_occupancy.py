@@ -34,6 +34,8 @@ from pathlib import Path
 
 import psutil
 
+from benchkit.occupancy import published_results_lock
+
 # Trim this fraction off each end before summarising: the head is compilation and
 # workspace construction, the tail is teardown and writing results.
 TRIM = 0.20
@@ -172,41 +174,43 @@ def main():
         "host_logical_cores": psutil.cpu_count(logical=True),
         "tools": {},
     }
-    before = {p: digest(p) for p in TOUCHED}
-    backups = {}
-    for p in TOUCHED:
-        backup = p.with_suffix(p.suffix + ".occupancy-backup")
-        if backup.is_file():
-            raise RuntimeError(f"stale occupancy backup exists: {backup}")
-    try:
+    with published_results_lock():
+        before = {p: digest(p) for p in TOUCHED}
+        backups = {}
         for p in TOUCHED:
-            if p.is_file():
-                backup = p.with_suffix(p.suffix + ".occupancy-backup")
-                shutil.copy2(p, backup)
-                backups[p] = backup
-        print(f"backed up {len(backups)} results file(s)")
-        for name, cmd in runs.items():
-            print(f"running {name} ...", flush=True)
-            child_log = f"results/occupancy-{name}.log"
-            code, elapsed, samples = sample(cmd, child_log)
-            out["tools"][name] = {
-                "exit": code, "elapsed_s": round(elapsed, 1),
-                "child_log": child_log, **summarise(samples)
-            }
-            print(f"  exit={code}  {elapsed:.1f}s  {out['tools'][name]}\n", flush=True)
-    finally:
-        for p in TOUCHED:
-            if p in backups:
-                shutil.move(str(backups[p]), str(p))
-            elif before[p] is None and p.is_file():
-                p.unlink()
-            else:
-                partial = p.with_suffix(p.suffix + ".occupancy-backup")
-                if partial.is_file():
-                    partial.unlink()
-        restored = all(digest(p) == before[p] for p in TOUCHED)
-        out["published_results_unchanged"] = restored
-        print(f"results files restored and verified by SHA-256: {restored}")
+            backup = p.with_suffix(p.suffix + ".occupancy-backup")
+            if backup.is_file():
+                raise RuntimeError(f"stale occupancy backup exists: {backup}")
+        try:
+            for p in TOUCHED:
+                if p.is_file():
+                    backup = p.with_suffix(p.suffix + ".occupancy-backup")
+                    shutil.copy2(p, backup)
+                    backups[p] = backup
+            print(f"backed up {len(backups)} results file(s)")
+            for name, cmd in runs.items():
+                print(f"running {name} ...", flush=True)
+                child_log = f"results/occupancy-{name}.log"
+                code, elapsed, samples = sample(cmd, child_log)
+                out["tools"][name] = {
+                    "exit": code, "elapsed_s": round(elapsed, 1),
+                    "child_log": child_log, **summarise(samples)
+                }
+                print(f"  exit={code}  {elapsed:.1f}s  "
+                      f"{out['tools'][name]}\n", flush=True)
+        finally:
+            for p in TOUCHED:
+                if p in backups:
+                    shutil.move(str(backups[p]), str(p))
+                elif before[p] is None and p.is_file():
+                    p.unlink()
+                else:
+                    partial = p.with_suffix(p.suffix + ".occupancy-backup")
+                    if partial.is_file():
+                        partial.unlink()
+            restored = all(digest(p) == before[p] for p in TOUCHED)
+            out["published_results_unchanged"] = restored
+            print(f"results files restored and verified by SHA-256: {restored}")
 
     Path(args.out).write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
