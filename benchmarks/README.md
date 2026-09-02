@@ -129,6 +129,8 @@ The warm-up has to exercise the same code as the measurement, not merely the sam
 
 Each iteration-swept tool's whole ladder is traced from a **single** solve. A Krylov or SOR iterate is deterministic — iterate *k* is the same vector whether the run stopped there or carried on — so reading tortuosity off at each rung reports exactly what one solve per rung reported, for a fraction of the cost. The time recorded against a rung has the cost of the readings taken so far subtracted back out, so it stays comparable with a plain run that stopped at that iteration.
 
+CPU Tortuosity rows use the package's bandwidth-fused `HostCG` implementation and carry `-hostcg` in their variant and filename. GPU rows retain `KrylovJL_CG`. Encoding the solver in the CPU variant is required for resume safety: a campaign must never treat an older Krylov row as a completed HostCG case or mix both algorithms in one series.
+
 PoreSpy is swept on tolerance and so needs a solve per rung, but everything the tolerance does not change is shared: trimming, the network, the assembly and the multigrid hierarchy are built once and their measured cost is added to every rung. That is what the tool charges a user who asks for that tolerance directly. Rebuilding them per rung would charge one fixed cost eighteen times and measure the ladder rather than the solver.
 
 Verified rather than assumed, on both devices and all three iteration-swept tools: τ comes back **bit-identical** at every rung, and the traced time lands within a few percent of one-solve-per-rung, converging on it as the rung grows. This is what makes the campaign affordable — the CPU stages were 6.5 of the 7 hours of the previous 200³ run.

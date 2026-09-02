@@ -44,7 +44,8 @@ matrixfree = operator == "matrixfree"
 axis = Symbol(cfg["campaign"]["axis"])
 # The preconditioner is part of the configuration's identity, so a run without
 # it lands in its own file rather than silently mixing with one that had it.
-variant = operator * (precond == :none ? "-nopc" : "")
+solver_suffix = gpu ? "" : "-hostcg"
+variant = operator * solver_suffix * (precond == :none ? "-nopc" : "")
 overwrite = flag(args, "overwrite")
 
 gpu && !CUDA.functional() && error("--device=gpu but CUDA is not functional on this machine")
@@ -120,7 +121,8 @@ function solve_case(img, maxiters)
     sim = SteadyDiffusionProblem(
         img; axis=axis, gpu=gpu, matrixfree=matrixfree, warn_nonpercolating=false,
     )
-    sol = quiet_solve(sim, KrylovJL_CG(); precond=precond, verbose=false,
+    alg = gpu ? KrylovJL_CG() : Tortuosity.HostCG()
+    sol = quiet_solve(sim, alg; precond=precond, verbose=false,
                       maxiters=maxiters, reltol=cap_reltol)
     # Krylov methods read the residual norm back to the host every iteration, so
     # the device is very nearly synchronised already — but "very nearly" is not a
@@ -200,7 +202,8 @@ function trace_case(img, tau_ref; rungs=ladder)
     # the callback on its correction rounds, where `ws.x` is a correction and the
     # tortuosity read off it is meaningless. The refined answer is measured below,
     # on its own, where it is the thing being asked for.
-    sol = quiet_solve(sim, KrylovJL_CG(; callback=cb); precond=precond, verbose=false,
+    alg = gpu ? KrylovJL_CG(; callback=cb) : Tortuosity.HostCG(; callback=cb)
+    sol = quiet_solve(sim, alg; precond=precond, verbose=false,
                       maxiters=last(rungs), reltol=cap_reltol, abstol=0.0, refine=false)
     gpu && CUDA.synchronize()
 

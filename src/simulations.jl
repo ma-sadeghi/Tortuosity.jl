@@ -282,7 +282,8 @@ function SteadyDiffusionProblem(
 end
 
 """
-    solve(sim::SteadyDiffusionProblem, alg=KrylovJL_CG(); precond=:auto, reltol=nothing, ...)
+    solve(sim::SteadyDiffusionProblem; precond=:auto, reltol=nothing, ...)
+    solve(sim::SteadyDiffusionProblem, alg; precond=:auto, reltol=nothing, ...)
 
 Solve a steady diffusion problem, choosing the preconditioner and the tolerance
 for you.
@@ -295,6 +296,10 @@ it, and that one when you want to drive LinearSolve yourself.
 
 What it decides:
 
+- **Algorithm.** Host problems with at least 10,000 unknowns use `HostCG`, which
+  fuses the bandwidth-bound vector operations in conjugate gradient. Smaller
+  host problems and every GPU backend use `KrylovJL_CG`. Passing an algorithm
+  explicitly always honors it.
 - **Preconditioner.** `precond=:auto` (the default) builds a
   [`two_level_preconditioner`](@ref) once the problem is large enough to pay for
   the coarse solve, and runs unpreconditioned below that. The coarse space cuts
@@ -334,7 +339,7 @@ the same numbering either path produces, so it feeds
 [`reconstruct_field`](@ref) directly.
 """
 function LinearSolve.solve(
-    sim::SteadyDiffusionProblem, alg=KrylovJL_CG();
+    sim::SteadyDiffusionProblem, alg;
     precond=:auto, reltol=nothing, abstol=nothing, maxiters=nothing,
     verbose=false, refine=nothing, kwargs...,
 )

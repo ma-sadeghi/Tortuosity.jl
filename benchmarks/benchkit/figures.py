@@ -76,6 +76,8 @@ def series_label(tool, variant):
     Dropping it would be the worst outcome: a measured series silently missing
     from a figure looks exactly like a series that was never measured.
     """
+    if tool == "tortuosity":
+        variant = variant.replace("-hostcg", "")
     entry = SERIES.get((tool, variant))
     return entry[0] if entry else f"{tool} ({variant})"
 
@@ -105,6 +107,18 @@ def load_results(resultsdir, kind):
     if not frames:
         return pd.DataFrame()
     data = pd.concat(frames, ignore_index=True)
+    hostcg = (
+        (data["tool"] == "tortuosity")
+        & (data["device"] == "cpu")
+        & data["variant"].str.contains("-hostcg", regex=False)
+    )
+    if hostcg.any():
+        superseded = (
+            (data["tool"] == "tortuosity")
+            & (data["device"] == "cpu")
+            & ~data["variant"].str.contains("-hostcg", regex=False)
+        )
+        data = data.loc[~superseded].copy()
     data["series"] = [series_label(t, v) for t, v in zip(data["tool"], data["variant"])]
     return data
 

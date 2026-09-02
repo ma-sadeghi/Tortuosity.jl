@@ -25,7 +25,10 @@ from pathlib import Path
 import psutil
 
 TRIM = 0.20
-TOUCHED = Path("results/timings/tortuosity-cpu-matrixfree.csv")
+TOUCHED = [
+    Path("results/timings/tortuosity-cpu-matrixfree-hostcg.csv"),
+    Path("results/environment.csv"),
+]
 
 
 def digest(path):
@@ -86,9 +89,12 @@ def main():
     ap.add_argument("--out", default="results/core-occupancy-ours.json")
     args = ap.parse_args()
 
-    before = digest(TOUCHED)
-    backup = TOUCHED.with_suffix(TOUCHED.suffix + ".occupancy-backup")
-    shutil.copy2(TOUCHED, backup)
+    before = {path: digest(path) for path in TOUCHED}
+    backups = {}
+    for path in TOUCHED:
+        backup = path.with_suffix(path.suffix + ".occupancy-backup")
+        if backup.is_file():
+            raise RuntimeError(f"stale occupancy backup exists: {backup}")
 
     plan = [
         # (label, case, sampling interval): the small case needs a fast interval
@@ -101,6 +107,11 @@ def main():
            "host_logical_cores": psutil.cpu_count(logical=True),
            "cases": {}}
     try:
+        for path in TOUCHED:
+            if path.is_file():
+                backup = path.with_suffix(path.suffix + ".occupancy-backup")
+                shutil.copy2(path, backup)
+                backups[path] = backup
         for label, case, interval in plan:
             cmd = ["julia", "-t", "auto", "--project=.", "bench_tortuosity.jl",
                    "--device=cpu", "--operator=matrixfree", "--measure=time",
@@ -113,8 +124,17 @@ def main():
                                    **summarise(samples)}
             print(f"  exit={code} {elapsed:.1f}s {out['cases'][label]}\n", flush=True)
     finally:
-        shutil.move(str(backup), str(TOUCHED))
-        out["published_results_unchanged"] = digest(TOUCHED) == before
+        for path in TOUCHED:
+            if path in backups:
+                shutil.move(str(backups[path]), str(path))
+            elif before[path] is None and path.is_file():
+                path.unlink()
+            else:
+                partial = path.with_suffix(path.suffix + ".occupancy-backup")
+                if partial.is_file():
+                    partial.unlink()
+        unchanged = all(digest(path) == before[path] for path in TOUCHED)
+        out["published_results_unchanged"] = unchanged
         print(f"results restored and verified: {out['published_results_unchanged']}")
 
     Path(args.out).write_text(json.dumps(out, indent=2))

@@ -40,9 +40,10 @@ TRIM = 0.20
 INTERVAL_S = 0.5
 
 TOUCHED = [
-    Path("results/timings/tortuosity-cpu-matrixfree.csv"),
+    Path("results/timings/tortuosity-cpu-matrixfree-hostcg.csv"),
     Path("results/timings/puma-cpu.csv"),
     Path("results/timings/porespy-cpu.csv"),
+    Path("results/environment.csv"),
 ]
 
 
@@ -131,15 +132,6 @@ def main():
     ap.add_argument("--tools", help="comma-separated subset to sample (default: all)")
     args = ap.parse_args()
 
-    before = {p: digest(p) for p in TOUCHED}
-    backups = {}
-    for p in TOUCHED:
-        if p.is_file():
-            b = p.with_suffix(p.suffix + ".occupancy-backup")
-            shutil.copy2(p, b)
-            backups[p] = b
-    print(f"backed up {len(backups)} results file(s)")
-
     print(f"host: {psutil.cpu_count(logical=False)} physical / "
           f"{psutil.cpu_count(logical=True)} logical cores")
     print(f"case: {args.case}\n")
@@ -180,7 +172,19 @@ def main():
         "host_logical_cores": psutil.cpu_count(logical=True),
         "tools": {},
     }
+    before = {p: digest(p) for p in TOUCHED}
+    backups = {}
+    for p in TOUCHED:
+        backup = p.with_suffix(p.suffix + ".occupancy-backup")
+        if backup.is_file():
+            raise RuntimeError(f"stale occupancy backup exists: {backup}")
     try:
+        for p in TOUCHED:
+            if p.is_file():
+                backup = p.with_suffix(p.suffix + ".occupancy-backup")
+                shutil.copy2(p, backup)
+                backups[p] = backup
+        print(f"backed up {len(backups)} results file(s)")
         for name, cmd in runs.items():
             print(f"running {name} ...", flush=True)
             child_log = f"results/occupancy-{name}.log"
@@ -191,9 +195,16 @@ def main():
             }
             print(f"  exit={code}  {elapsed:.1f}s  {out['tools'][name]}\n", flush=True)
     finally:
-        for p, b in backups.items():
-            shutil.move(str(b), str(p))
-        restored = all(digest(p) == before[p] for p in backups)
+        for p in TOUCHED:
+            if p in backups:
+                shutil.move(str(backups[p]), str(p))
+            elif before[p] is None and p.is_file():
+                p.unlink()
+            else:
+                partial = p.with_suffix(p.suffix + ".occupancy-backup")
+                if partial.is_file():
+                    partial.unlink()
+        restored = all(digest(p) == before[p] for p in TOUCHED)
         out["published_results_unchanged"] = restored
         print(f"results files restored and verified by SHA-256: {restored}")
 
