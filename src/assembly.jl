@@ -380,6 +380,71 @@ operator, where the ordinal is the only index in play.
 """
 _ordinal_index_type(nnodes::Integer) = nnodes + 1 <= typemax(Int32) ? Int32 : Int
 
+const _COLPTR_MIN_THREADED = 200_000
+
+function _host_colptr!(colptr, counts)
+    n = length(counts)
+    if Threads.nthreads() == 1 || n < _COLPTR_MIN_THREADED
+        serial_total = one(eltype(colptr))
+        colptr[1] = serial_total
+        @inbounds for j in eachindex(counts)
+            serial_total += counts[j]
+            colptr[j + 1] = serial_total
+        end
+        return colptr
+    end
+
+    nchunks = min(n, 4 * Threads.nthreads())
+    chunk_size = cld(n, nchunks)
+    offsets = zeros(eltype(colptr), nchunks)
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        ilo = (chunk - 1) * chunk_size + 1
+        ihi = min(ilo + chunk_size - 1, n)
+        chunk_total = zero(eltype(colptr))
+        @inbounds for j in ilo:ihi
+            chunk_total += counts[j]
+            colptr[j + 1] = chunk_total
+        end
+        offsets[chunk] = chunk_total
+    end
+
+    running_offset = one(eltype(colptr))
+    @inbounds for chunk in eachindex(offsets)
+        completed_total = offsets[chunk]
+        offsets[chunk] = running_offset
+        running_offset += completed_total
+    end
+    colptr[1] = one(eltype(colptr))
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        ilo = (chunk - 1) * chunk_size + 1
+        ihi = min(ilo + chunk_size - 1, n)
+        chunk_offset = offsets[chunk]
+        @inbounds @simd for j in ilo:ihi
+            colptr[j + 1] += chunk_offset
+        end
+    end
+    return colptr
+end
+
+function _column_pointers(counts::Vector{Ti}) where {Ti<:Integer}
+    colptr = similar(counts, length(counts) + 1)
+    _host_colptr!(colptr, counts)
+    _free!(counts)
+    return colptr
+end
+
+function _column_pointers(counts)
+    n = length(counts)
+    scan = accumulate(+, counts)
+    _free!(counts)
+    colptr = similar(scan, n + 1)
+    backend = get_backend(counts)
+    _build_colptr_kernel!(backend)(colptr, scan, n; ndrange=max(n, 1))
+    KernelAbstractions.synchronize(backend)
+    _free!(scan)
+    return colptr
+end
+
 """
     _resolve_index_type(Ti, nnodes)
 
@@ -487,12 +552,7 @@ function build_steady_system(
     )
     KernelAbstractions.synchronize(backend)
 
-    scan = accumulate(+, counts)
-    _free!(counts)
-    colptr = similar(idx, Ti, nnodes + 1)
-    _build_colptr_kernel!(backend)(colptr, scan, nnodes; ndrange=max(nnodes, 1))
-    KernelAbstractions.synchronize(backend)
-    _free!(scan)
+    colptr = _column_pointers(counts)
 
     # One single-slot host read, the idiom `_build_connectivity_list_ka` uses.
     nnz_A = Int(Array(@view colptr[end:end])[1]) - 1

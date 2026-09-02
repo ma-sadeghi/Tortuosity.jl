@@ -23,6 +23,7 @@ using Tortuosity:
     effective_diffusivity,
     tortuosity,
     _build_connectivity_list_cpu,
+    _column_pointers,
     find_boundary_nodes,
     interpolate_edge_values,
     laplacian,
@@ -51,6 +52,14 @@ function assembly_fixtures()
 end
 
 const ASSEMBLY_IMAGES = assembly_fixtures()
+
+@testset "column pointers match an inclusive count scan" begin
+    for n in (100, 250_001), Ti in (Int32, Int64)
+        counts = Ti.(mod.(1:n, 7) .+ 1)
+        expected = vcat(one(Ti), cumsum(counts) .+ one(Ti))
+        @test _column_pointers(counts) == expected
+    end
+end
 
 # Count face-adjacent pore pairs by brute force, independent of the kernel.
 function count_adjacent_pairs(img)
