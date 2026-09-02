@@ -165,8 +165,8 @@ already had, which is what [`_steady_fill_kernel!`](@ref) writes.
     end
 end
 
-@inline function _cpu_uniform_apply_range!(
-    y, x, idx, nx, ny, nz, nbc, D0, alpha, beta, j, k, ilo, ihi,
+@inline function _cpu_apply_range!(
+    y, x, idx, D, nx, ny, nz, nbc, D0, alpha, beta, j, k, ilo, ihi,
     ::Val{B}, ::Val{Z},
 ) where {B,Z}
     Ty = eltype(y)
@@ -177,6 +177,7 @@ end
         c0 > 0 || continue
 
         self_bc = _is_bc(_face_coord(i, j, k, B), nbc)
+        da = _node_diffusivity(D, D0, i, j, k)
         deg = zero(Tv)
         acc_lo = zero(Ty)
         acc_hi = zero(Ty)
@@ -184,49 +185,55 @@ end
         if k > 1
             q = idx[i, j, k - 1]
             if q > 0
-                deg += D0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j, k - 1))
+                deg += w
                 (self_bc || _is_bc(_face_coord(i, j, k - 1, B), nbc)) ||
-                    (acc_lo += Ty(-D0 * x[q]))
+                    (acc_lo += Ty(-w * x[q]))
             end
         end
         if j > 1
             q = idx[i, j - 1, k]
             if q > 0
-                deg += D0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j - 1, k))
+                deg += w
                 (self_bc || _is_bc(_face_coord(i, j - 1, k, B), nbc)) ||
-                    (acc_lo += Ty(-D0 * x[q]))
+                    (acc_lo += Ty(-w * x[q]))
             end
         end
         if i > 1
             q = idx[i - 1, j, k]
             if q > 0
-                deg += D0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i - 1, j, k))
+                deg += w
                 (self_bc || _is_bc(_face_coord(i - 1, j, k, B), nbc)) ||
-                    (acc_lo += Ty(-D0 * x[q]))
+                    (acc_lo += Ty(-w * x[q]))
             end
         end
         if i < nx
             q = idx[i + 1, j, k]
             if q > 0
-                deg += D0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i + 1, j, k))
+                deg += w
                 (self_bc || _is_bc(_face_coord(i + 1, j, k, B), nbc)) ||
-                    (acc_hi += Ty(-D0 * x[q]))
+                    (acc_hi += Ty(-w * x[q]))
             end
         end
         if j < ny
             q = idx[i, j + 1, k]
             if q > 0
-                deg += D0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j + 1, k))
+                deg += w
                 (self_bc || _is_bc(_face_coord(i, j + 1, k, B), nbc)) ||
-                    (acc_hi += Ty(-D0 * x[q]))
+                    (acc_hi += Ty(-w * x[q]))
             end
         end
         if k < nz
             q = idx[i, j, k + 1]
             if q > 0
-                deg += D0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j, k + 1))
+                deg += w
                 (self_bc || _is_bc(_face_coord(i, j, k + 1, B), nbc)) ||
-                    (acc_hi += Ty(-D0 * x[q]))
+                    (acc_hi += Ty(-w * x[q]))
             end
         end
 
@@ -242,14 +249,14 @@ end
     return y
 end
 
-function _cpu_uniform_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
+function _cpu_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
     nx, ny, nz = size(A.idx)
     nthreads = Threads.nthreads()
     if nz >= nthreads
         Threads.@threads :dynamic for k in 1:nz
             for j in 1:ny
-                _cpu_uniform_apply_range!(
-                    y, x, A.idx, nx, ny, nz, A.nbc, A.D0, α, β,
+                _cpu_apply_range!(
+                    y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
                     j, k, 1, nx, Val(B), Val(Z),
                 )
             end
@@ -262,8 +269,8 @@ function _cpu_uniform_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
         Threads.@threads :dynamic for line in 1:nlines
             j = (line - 1) % ny + 1
             k = (line - 1) ÷ ny + 1
-            _cpu_uniform_apply_range!(
-                y, x, A.idx, nx, ny, nz, A.nbc, A.D0, α, β,
+            _cpu_apply_range!(
+                y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
                 j, k, 1, nx, Val(B), Val(Z),
             )
         end
@@ -279,8 +286,8 @@ function _cpu_uniform_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
         ihi = min(ilo + chunk_size - 1, nx)
         j = (line - 1) % ny + 1
         k = (line - 1) ÷ ny + 1
-        _cpu_uniform_apply_range!(
-            y, x, A.idx, nx, ny, nz, A.nbc, A.D0, α, β,
+        _cpu_apply_range!(
+            y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
             j, k, ilo, ihi, Val(B), Val(Z),
         )
     end
@@ -288,9 +295,9 @@ function _cpu_uniform_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
 end
 
 function LinearAlgebra.mul!(
-    y::Vector, A::MaskedLaplacian{T,Ti,AI,Nothing}, x::Vector,
+    y::Vector, A::MaskedLaplacian{T,Ti,AI,DT}, x::Vector,
     alpha::Number, beta::Number,
-) where {T,Ti,AI<:Array{Ti,3}}
+) where {T,Ti,AI<:Array{Ti,3},DT<:Union{Nothing,Array}}
     if length(y) != A.nnodes || length(x) != A.nnodes
         throw(DimensionMismatch(
             "operator is $(A.nnodes)×$(A.nnodes) but y has length $(length(y)) \
@@ -302,7 +309,7 @@ function LinearAlgebra.mul!(
     Ty = eltype(y)
     α = convert(Ty, alpha)
     β = convert(Ty, beta)
-    return _cpu_uniform_mul!(y, A, x, α, β, Val(A.bcdim), Val(iszero(β)))
+    return _cpu_mul!(y, A, x, α, β, Val(A.bcdim), Val(iszero(β)))
 end
 
 function LinearAlgebra.mul!(
