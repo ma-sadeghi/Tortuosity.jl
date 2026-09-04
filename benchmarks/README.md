@@ -38,6 +38,8 @@ cd benchmarks/
 
 That resolves the Julia project, installs the Python environment with [pixi](https://pixi.sh), checks out the vendored taufactor fork at its pinned commit, and checks that the GPU and all four tools actually work before anything is measured.
 
+`run/campaign.sh` requires `setsid` so an interrupted campaign can terminate and wait for each complete child process group before releasing the measurement lock. The occupancy drivers likewise require POSIX process-group containment. Run measurement from Linux/WSL and install a `setsid` implementation for the shell campaign; these tools fail closed rather than risk an orphaned solver. All checkouts on a host share `/tmp/tortuosity-benchmark.measurement.lock`; set `TORTUOSITY_BENCHMARK_LOCK_DIR` to another absolute path only when the host requires it.
+
 Two things about the environments are deliberate and easy to undo by accident:
 
 - **The Julia project here is separate from the package above it.** `bench_tortuosity.jl` needs CUDA, which is a *weak* dependency of Tortuosity.jl. Adding it to the package's own `Project.toml` would turn the CUDA extension into a hard dependency of the released package. Always run with `--project=.` from this directory.

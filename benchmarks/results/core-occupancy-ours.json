@@ -1,30 +1,60 @@
 {
-  "tool": "tortuosity-cpu-matrixfree",
+  "tool": "tortuosity-cpu-matrixfree-hostcg",
+  "host": "pmeal-hpc",
+  "started_at": "2026-09-03T19:55:11-04:00",
   "host_physical_cores": 8,
   "host_logical_cores": 16,
   "cases": {
     "n200_b100_p040": {
       "exit": 0,
-      "elapsed_s": 55.3,
+      "elapsed_s": 39.9,
       "interval_s": 0.1,
       "child_log": "results/occupancy-ours-n200_b100_p040.log",
-      "n_samples": 464,
-      "n_used": 279,
-      "median_cores": 1.0,
-      "mean_cores": 2.64,
-      "peak_cores": 15.97
+      "benchmark_environment": {
+        "measured_at": "2026-09-03T19:55:40",
+        "host": "pmeal-hpc",
+        "stage": "time",
+        "tool": "tortuosity",
+        "device": "cpu",
+        "variant": "matrixfree-hostcg",
+        "runtime": "julia",
+        "runtime_version": "1.12.6",
+        "cpu_threads": "16",
+        "accelerator": "",
+        "notes": "ladder=18 rungs, target=0.001, timeout=1800.0s"
+      },
+      "n_samples": 21,
+      "n_used": 21,
+      "median_cores": 7.82,
+      "mean_cores": 7.13,
+      "peak_cores": 11.54
     },
     "n600_b100_p040": {
       "exit": 0,
-      "elapsed_s": 145.1,
+      "elapsed_s": 125.7,
       "interval_s": 0.5,
       "child_log": "results/occupancy-ours-n600_b100_p040.log",
-      "n_samples": 279,
-      "n_used": 168,
-      "median_cores": 5.48,
-      "mean_cores": 6.79,
-      "peak_cores": 15.78
+      "benchmark_environment": {
+        "measured_at": "2026-09-03T19:56:19",
+        "host": "pmeal-hpc",
+        "stage": "time",
+        "tool": "tortuosity",
+        "device": "cpu",
+        "variant": "matrixfree-hostcg",
+        "runtime": "julia",
+        "runtime_version": "1.12.6",
+        "cpu_threads": "16",
+        "accelerator": "",
+        "notes": "ladder=18 rungs, target=0.001, timeout=1800.0s"
+      },
+      "n_samples": 144,
+      "n_used": 144,
+      "median_cores": 14.04,
+      "mean_cores": 12.88,
+      "peak_cores": 15.81
     }
   },
-  "published_results_unchanged": true
+  "results_mode": "isolated",
+  "published_results_unchanged": true,
+  "completed_at": "2026-09-03T19:57:57-04:00"
 }

@@ -235,7 +235,7 @@ campaign spans a laptop and a rented GPU host by design, which makes this the
 difference between a dataset that can be audited and one that cannot.
 """
 function record_environment(cfg::Config; stage, tool, device, variant="", accelerator="", notes="")
-    path = joinpath(cfg.root, "results", "environment.csv")
+    path = joinpath(results_output_dir(cfg), "environment.csv")
     w = ResultsWriter(path, ENVIRONMENT_COLUMNS)
     try
         write_row!(w, (; measured_at=Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),

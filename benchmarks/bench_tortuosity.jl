@@ -51,7 +51,7 @@ overwrite = flag(args, "overwrite")
 gpu && !CUDA.functional() && error("--device=gpu but CUDA is not functional on this machine")
 
 subdir = measure == "time" ? "timings" : "memory"
-outpath = joinpath(cfg.root, "results", subdir, "tortuosity-$(device)-$(variant).csv")
+outpath = joinpath(BH.results_output_dir(cfg), subdir, "tortuosity-$(device)-$(variant).csv")
 columns = measure == "time" ? BH.TIMING_COLUMNS : BH.MEMORY_COLUMNS
 
 target_error = Float64(cfg["sweep"]["target_error"])
@@ -139,6 +139,31 @@ release!() = (GC.gc(true); gpu && CUDA.reclaim(); nothing)
 # every number this harness reported before.
 now_s() = time_ns() / 1e9
 
+const OCCUPANCY_MARKING_ENABLED = Ref(false)
+
+function mark_occupancy_phase(name)
+    OCCUPANCY_MARKING_ENABLED[] || return nothing
+    marker = get(ENV, "TORTUOSITY_BENCHMARK_PHASE_MARKER", "")
+    isempty(marker) && return nothing
+    mkpath(dirname(marker))
+    active = marker * ".active"
+    if name in ("start", "resume")
+        open(active, "w") do io
+            println(io, time_ns())
+        end
+    elseif name in ("pause", "end")
+        rm(active; force=true)
+    end
+    path = marker * "." * name
+    open(path, "w") do io
+        println(io, time_ns())
+    end
+    open(marker * ".transitions", "a") do io
+        println(io, name, ",", time_ns())
+    end
+    return nothing
+end
+
 row_prefix(case) = (; tool="tortuosity", device, variant, cpu_threads=Threads.nthreads(),
                     case_id=case.id, size=case.size, blobiness=case.blobiness,
                     porosity_target=case.porosity, porosity=manifest[case.id].porosity,
@@ -158,13 +183,14 @@ subtracted back out.
 Stops at the first rung that meets the accuracy target, so a case that converges
 early never pays for the rungs above it.
 """
-function trace_case(img, tau_ref; rungs=ladder)
+function _trace_case(img, tau_ref; rungs=ladder)
     rows, pending, excluded, k = NamedTuple[], copy(rungs), Ref(0.0), Ref(0)
     asked_to_stop = Ref(false)
     # Drain whatever the previous case left queued before starting the clock, for
     # the same reason every checkpoint reads it after a barrier: work that is
     # already in flight must not be charged to this solve.
     gpu && CUDA.synchronize()
+    mark_occupancy_phase("start")
     t0 = now_s()
 
     sim = SteadyDiffusionProblem(
@@ -183,12 +209,14 @@ function trace_case(img, tau_ref; rungs=ladder)
         # nearly synchronised already — but "nearly" is not a measurement.
         gpu && CUDA.synchronize()
         mark = now_s()
+        mark_occupancy_phase("pause")
         tau = Tortuosity._checkpoint_tortuosity(ws.x, sim)
         elapsed = mark - t0 - excluded[]
         push!(rows, (; iters=k[], tau, time_s=elapsed))
         excluded[] += now_s() - mark
         asked_to_stop[] = abs(tau - tau_ref) / tau_ref <= target_error ||
                           elapsed > timeout_s || isempty(pending)
+        asked_to_stop[] || mark_occupancy_phase("resume")
         return asked_to_stop[]
     end
 
@@ -234,6 +262,7 @@ function trace_case(img, tau_ref; rungs=ladder)
                                   maxiters=last(rungs), reltol=cap_reltol, abstol=0.0)
             CUDA.synchronize()
             mark = now_s()
+            mark_occupancy_phase("pause")
             tau = tortuosity(refined.u, sim)
             # `setup_s` because every checkpointed rung's time is setup plus the
             # iterations up to it, and a padded rung has to be comparable with
@@ -243,6 +272,7 @@ function trace_case(img, tau_ref; rungs=ladder)
             refined = nothing
         else
             mark = now_s()
+            mark_occupancy_phase("pause")
             tau = Tortuosity._checkpoint_tortuosity(sol.u, sim)
             elapsed = mark - t0 - excluded[]
         end
@@ -252,8 +282,17 @@ function trace_case(img, tau_ref; rungs=ladder)
     end
 
     sim = sol = nothing
+    mark_occupancy_phase("pause")
     release!()
     return rows
+end
+
+function trace_case(img, tau_ref; rungs=ladder)
+    try
+        return _trace_case(img, tau_ref; rungs)
+    finally
+        mark_occupancy_phase("end")
+    end
 end
 
 """Sweep one case, writing a row per rung and stopping at the first conclusion."""
@@ -351,6 +390,12 @@ end
 
 # ── Warm up, then run ─────────────────────────────────────────────────
 
+phase_marked = !isempty(get(ENV, "TORTUOSITY_BENCHMARK_PHASE_MARKER", ""))
+phase_marked && length(pending) != 1 &&
+    error("phase-marked runs require exactly one pending case")
+phase_marked && measure != "time" &&
+    error("phase-marked runs require --measure=time")
+
 # Warmed on an image of its own rather than on a measured one: no reported number
 # may include compilation, and re-solving a benchmark case to warm the path would
 # double its cost for nothing. Julia specialises on types rather than on array
@@ -371,6 +416,7 @@ let warm = BH.build_image(cfg, Case(64, 1.0, 0.6))
     measure == "time" && trace_case(warm, Inf; rungs=[1, 2])
     release!()
 end
+OCCUPANCY_MARKING_ENABLED[] = phase_marked
 
 record_environment(cfg; stage=measure, tool="tortuosity", device, variant,
                    accelerator=gpu ? string(CUDA.name(CUDA.device())) : "",
@@ -390,6 +436,7 @@ try
         img = load_image(cfg, case)
         try
             measure == "time" ? sweep_case(w, case, img, refs[case.id]) : probe_case(w, case, img)
+            mark_occupancy_phase("success")
         catch e
             # One case failing must not take the rest of the run with it. At the
             # largest sizes the assembled path is *expected* to run out of device

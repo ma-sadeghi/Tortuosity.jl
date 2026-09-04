@@ -46,6 +46,12 @@ function load_config(path=joinpath(benchdir(), "config.toml"))
     return Config(TOML.parsefile(path), dirname(abspath(path)))
 end
 
+"""Directory receiving result files, optionally isolated for instrumentation."""
+function results_output_dir(cfg::Config)
+    default = joinpath(cfg.root, "results")
+    return abspath(get(ENV, "TORTUOSITY_BENCHMARK_OUTPUT_DIR", default))
+end
+
 """Sizes of the named grid, e.g. `sizes(cfg, "smoke")`."""
 function sizes(cfg::Config, grid::AbstractString)
     grids = cfg["grid"]

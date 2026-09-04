@@ -78,19 +78,185 @@ LOGS=logs
 mkdir -p "$LOGS" results data/images
 SELECT="--grid=$GRID$PASSTHROUGH"
 
+if ! command -v setsid > /dev/null 2>&1; then
+  echo "setsid is required to manage benchmark child process groups safely." >&2
+  echo "Run the campaign from Linux/WSL or install a setsid implementation." >&2
+  exit 2
+fi
+
 # Refuse to start alongside another campaign. Two of these contend for the same
 # GPU and the same cores, which silently corrupts every timing rather than
 # failing — and the way it happens is not obvious: killing a stage's solver
 # process leaves this script alive, so it simply proceeds to the next stage while
 # a replacement campaign is already running.
-LOCK="$LOGS/.campaign.lock"
-if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2> /dev/null; then
-  echo "a campaign is already running (pid $(cat "$LOCK"))." >&2
-  echo "stop it first, or remove $LOCK if you are sure it is dead." >&2
+LOCK="${TORTUOSITY_BENCHMARK_LOCK_DIR:-/tmp/tortuosity-benchmark.measurement.lock}"
+case "$LOCK" in
+  /*) ;;
+  *) echo "TORTUOSITY_BENCHMARK_LOCK_DIR must be absolute." >&2; exit 2 ;;
+esac
+PRESERVE_LOCK=0
+CHILD_PID=""
+CHILD_GROUP=0
+TEMP_FILE=""
+LAUNCHING=1
+PENDING_SIGNAL=0
+TERMINATING=0
+
+# Defer catchable termination until the lock owner and cleanup state are
+# registered. SIGKILL cannot be trapped; its stale lock must be handled with the
+# process verification in ORCHESTRATION.md.
+trap 'PENDING_SIGNAL=130' INT
+trap 'PENDING_SIGNAL=143' TERM
+
+if ! mkdir -p "$(dirname "$LOCK")"; then
+  echo "cannot create measurement-lock parent: $(dirname "$LOCK")" >&2
+  exit 2
+fi
+if ! mkdir "$LOCK" 2> /dev/null; then
+  echo "another benchmark measurement holds $LOCK." >&2
+  echo "stop it first, or remove the stale lock if you are sure it is dead." >&2
   exit 1
 fi
-echo $$ > "$LOCK"
-trap 'rm -f "$LOCK"' EXIT
+if ! echo $$ > "$LOCK/pid"; then
+  rm -f "$LOCK/pid"
+  rmdir "$LOCK"
+  exit 2
+fi
+
+release_lock() {
+  trap '' INT TERM
+  if [ "$PRESERVE_LOCK" -eq 1 ]; then
+    echo "measurement lock preserved at $LOCK; a child group survived cleanup" >&2
+    return
+  fi
+  [ -z "$TEMP_FILE" ] || rm -f "$TEMP_FILE"
+  rm -f "$LOCK/child_pgid"
+  rm -f "$LOCK/pid"
+  rmdir "$LOCK"
+}
+
+terminate_child() {
+  [ -n "$CHILD_PID" ] || return 0
+  TERMINATING=1
+  local target=$CHILD_PID
+  [ "$CHILD_GROUP" -eq 0 ] || target="-$CHILD_PID"
+  if kill -0 -- "$target" 2> /dev/null; then
+    kill -TERM -- "$target" 2> /dev/null || true
+    local attempt=0
+    while kill -0 -- "$target" 2> /dev/null && [ "$attempt" -lt 100 ]; do
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+    kill -0 -- "$target" 2> /dev/null &&
+      kill -KILL -- "$target" 2> /dev/null || true
+    attempt=0
+    while kill -0 -- "$target" 2> /dev/null && [ "$attempt" -lt 100 ]; do
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+    if kill -0 -- "$target" 2> /dev/null; then
+      PRESERVE_LOCK=1
+      TERMINATING=0
+      echo "benchmark process group $target survived TERM and KILL" >&2
+      return 1
+    fi
+  fi
+  wait "$CHILD_PID" 2> /dev/null || true
+  rm -f "$LOCK/child_pgid"
+  CHILD_PID=""
+  CHILD_GROUP=0
+  TERMINATING=0
+  replay_pending_signal
+}
+
+interrupt_campaign() {
+  local status=$1
+  trap '' INT TERM
+  terminate_child || exit 125
+  exit "$status"
+}
+
+handle_signal() {
+  local status=$1
+  if [ "$LAUNCHING" -eq 1 ] || [ "$TERMINATING" -eq 1 ]; then
+    PENDING_SIGNAL=$status
+    return
+  fi
+  interrupt_campaign "$status"
+}
+
+replay_pending_signal() {
+  local status=$PENDING_SIGNAL
+  PENDING_SIGNAL=0
+  [ "$status" -eq 0 ] || interrupt_campaign "$status"
+}
+
+register_child_group() {
+  CHILD_PID=$!
+  CHILD_GROUP=1
+  local attempt=0
+  while ! kill -0 -- "-$CHILD_PID" 2> /dev/null &&
+        kill -0 "$CHILD_PID" 2> /dev/null &&
+        [ "$attempt" -lt 100 ]; do
+    sleep 0.01
+    attempt=$((attempt + 1))
+  done
+  if kill -0 "$CHILD_PID" 2> /dev/null &&
+     ! kill -0 -- "-$CHILD_PID" 2> /dev/null; then
+    kill -TERM "$CHILD_PID" 2> /dev/null || true
+    wait "$CHILD_PID" 2> /dev/null || true
+    PRESERVE_LOCK=1
+    LAUNCHING=0
+    replay_pending_signal
+    echo "failed to establish a benchmark child process group" >&2
+    return 2
+  fi
+  echo "$CHILD_PID" > "$LOCK/child_pgid"
+  LAUNCHING=0
+  replay_pending_signal
+}
+
+trap release_lock EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
+LAUNCHING=0
+replay_pending_signal
+
+wait_child() {
+  local status
+  wait "$CHILD_PID"
+  status=$?
+  terminate_child || exit 125
+  return "$status"
+}
+
+run_child_truncate() {
+  local log=$1
+  shift
+  LAUNCHING=1
+  setsid "$@" > "$log" 2>&1 &
+  register_child_group || exit 125
+  wait_child
+}
+
+run_child_append() {
+  local log=$1
+  shift
+  LAUNCHING=1
+  setsid "$@" >> "$log" 2>&1 &
+  register_child_group || exit 125
+  wait_child
+}
+
+run_child_capture() {
+  local output=$1
+  local log=$2
+  shift 2
+  LAUNCHING=1
+  setsid "$@" > "$output" 2>> "$log" &
+  register_child_group || exit 125
+  wait_child
+}
 
 has_stage() { case ",$STAGES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 has_tool()  { case ",$TOOLS,"  in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
@@ -106,8 +272,10 @@ has_device() {
 step() {
   local name=$1; shift
   echo "=== $name  ($(date '+%H:%M:%S'))"
-  "$@" > "$LOGS/$name.log" 2>&1
-  echo "    exit $? — $(date '+%H:%M:%S')  → $LOGS/$name.log"
+  run_child_truncate "$LOGS/$name.log" "$@"
+  local status=$?
+  echo "    exit $status — $(date '+%H:%M:%S')  → $LOGS/$name.log"
+  [ "$status" -lt 128 ] || exit "$status"
 }
 
 # ── Images ───────────────────────────────────────────────────────────
@@ -188,9 +356,16 @@ isolated() {
   echo "=== $name  ($(date '+%H:%M:%S'))"
   : > "$LOGS/$name.log"
 
-  local cases status
-  cases=$("$@" $SELECT --list-cases 2>> "$LOGS/$name.log")
+  local cases status case_file
+  case_file="$LOGS/.$name.cases.$$"
+  TEMP_FILE=$case_file
+  run_child_capture "$case_file" "$LOGS/$name.log" \
+    "$@" $SELECT --list-cases
   status=$?
+  cases=$(cat "$case_file")
+  rm -f "$case_file"
+  TEMP_FILE=""
+  [ "$status" -lt 128 ] || exit "$status"
   if [ $status -ne 0 ] || [ -z "$cases" ]; then
     echo "    could not enumerate cases (exit $status) — see $LOGS/$name.log"
     return
@@ -216,7 +391,11 @@ isolated() {
     # `$SELECT` is passed alongside `--cases` for `--grid`, which is what tells
     # the harness which grid to resolve the id against. `--cases` overrides the
     # size, porosity and blobiness filters, so repeating them is harmless.
-    if ! "$@" $SELECT --cases="$case_id" >> "$LOGS/$name.log" 2>&1; then
+    run_child_append "$LOGS/$name.log" \
+      "$@" $SELECT --cases="$case_id"
+    status=$?
+    [ "$status" -lt 128 ] || exit "$status"
+    if [ "$status" -ne 0 ]; then
       failed=$((failed + 1))
       echo "    !! $case_id exited non-zero"
     fi

@@ -6,6 +6,7 @@ from the other.
 """
 
 import argparse
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,12 @@ class Config:
     @property
     def resultsdir(self):
         return self.root / "results"
+
+    @property
+    def outputdir(self):
+        """Directory receiving results, optionally isolated for instrumentation."""
+        override = os.environ.get("TORTUOSITY_BENCHMARK_OUTPUT_DIR")
+        return Path(override).resolve() if override else self.resultsdir
 
 
 def load_config(path=None):

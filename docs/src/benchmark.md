@@ -121,7 +121,7 @@ The counts recorded in `results/environment.csv` are asymmetric, and the asymmet
 | PuMA | 16 |
 | taufactor | 8 |
 
-Julia's `-t auto` and SciPy's BLAS both take all 16 logical threads; torch sizes its default pool to the 8 physical cores. **Threads requested are not cores used**, which is why occupancy was sampled separately — see [Core occupancy](#Core-occupancy) below, where the tool taking half as many threads turns out to occupy six times as many cores.
+Julia's `-t auto` and SciPy's BLAS both take all 16 logical threads; torch sizes its default pool to the 8 physical cores. **Threads requested are not cores used**, which is why occupancy was sampled separately — see [Core occupancy](#Core-occupancy) below.
 
 !!! note "An earlier policy pinned everything to one thread, and it was wrong in both directions"
     It forced taufactor and PuMA down to one thread while Julia's OpenBLAS quietly kept eight, and then recorded `cpu_threads = 1` for runs that were nothing of the sort. Nothing on this page was measured that way.
@@ -142,7 +142,7 @@ The whole dataset comes from one host. `results/environment.csv` records the hos
 | PoreSpy | 3.0.4, with OpenPNM 3.6.3 |
 | taufactor | fork of v1.2.1, pinned at `a4bc5f9` |
 
-The GPU model comes from the `accelerator` column of `environment.csv`, and the core counts from `results/core-occupancy*.json`, which record `host_physical_cores` and `host_logical_cores` directly. **The operating system, the exact CPU model and the host RAM are not recorded anywhere in `results/`.** The largest CPU run in the campaign peaked at 165.4 GB resident, so the machine has at least that much memory, but the campaign does not record the figure itself. The `torch` build recorded (`2.10.0+cu128`) is the Linux wheel from `pixi.lock`; the Windows wheel pinned in the same lockfile is 2.11.0+cu128 and was not used.
+The GPU model comes from the `accelerator` column of `environment.csv`, and the core counts from `results/core-occupancy*.json`, which record `host_physical_cores` and `host_logical_cores` directly. **The operating system, the exact CPU model and the host RAM are not recorded anywhere in `results/`.** The largest CPU run in the campaign peaked at 169.4 GB resident, so the machine has at least that much memory, but the campaign does not record the figure itself. The `torch` build recorded (`2.10.0+cu128`) is the Linux wheel from `pixi.lock`; the Windows wheel pinned in the same lockfile is 2.11.0+cu128 and was not used.
 
 ## Results
 
@@ -227,18 +227,18 @@ Each panel is one domain size at one accuracy target, with one bar per porosity,
 
 ### Against taufactor on the CPU
 
-Both tools also run on the CPU, where the margin is smaller and the sign flips at high porosity:
+Both tools also run on the CPU, where HostCG changes the balance and the sign flips only for small high-porosity cases:
 
 | | ``N=200`` | ``N=400`` | ``N=600`` | ``N=800`` | row |
 |---|---|---|---|---|---|
-| ε ≈ 0.20 | 20.8× | 55.9× | 87.4× | — | **43.1×** |
-| ε ≈ 0.40 | 1.91× | 6.28× | 10.4× | 8.43× | **5.69×** |
-| ε ≈ 0.60 | 0.87× | 5.32× | 8.61× | 10.3× | **4.50×** |
-| ε ≈ 0.80 | 0.23× | 1.65× | 3.75× | 2.07× | **1.31×** |
-| ε ≈ 0.95 | 0.11× | 0.49× | 1.26× | 1.23× | **0.53×** |
-| column | **0.97×** | **4.33×** | **6.91×** | **3.85×** | **3.18×** |
+| ε ≈ 0.20 | 96.2× | 215× | 303× | — | **173×** |
+| ε ≈ 0.40 | 6.97× | 21.1× | 32.7× | 27.4× | **19.1×** |
+| ε ≈ 0.60 | 2.45× | 16.1× | 26.2× | 32.5× | **13.5×** |
+| ε ≈ 0.80 | 0.69× | 4.97× | 11.7× | 6.52× | **4.03×** |
+| ε ≈ 0.95 | 0.33× | 1.50× | 4.00× | 3.91× | **1.66×** |
+| column | **3.26×** | **14.0×** | **21.9×** | **12.3×** | **10.3×** |
 
-Pooled over all three microstructures, 56 paired cases, geometric mean 3.18×, ranging 0.041× to 157×. taufactor is faster in 14 of them, all at ε ≥ 0.4 and all at ``N \le 800``; at ε ≈ 0.95 it is faster on average at every size below ``600^3``. See `docs/src/assets/benchmark_speedup_taufactor_cpu.png` and `docs/src/assets/benchmark_scaling_cpu.png`.
+Pooled over all three microstructures, 56 paired cases, geometric mean 10.3×, ranging 0.125× to 547×. taufactor is faster in five of them, all at ``N = 200`` and ε ≥ 0.8; from ``400^3`` onward `Tortuosity.jl` is faster in every paired CPU case. See `docs/src/assets/benchmark_speedup_taufactor_cpu.png` and `docs/src/assets/benchmark_scaling_cpu.png`.
 
 !!! warning "The taufactor CPU dataset has two gaps, and the scaling panel fills them by projection"
     There is **no taufactor CPU data at ``1000^3``**, and none at ``800^3`` for ε ≈ 0.2. The ``800^3`` cases were excluded from the sweep that ran and the follow-up never happened — a sequencing gap, not a decision. Filling it was judged not worth the machine time: the worst ``600^3`` CPU case took 6.02 h and exhausted its ladder without reaching the target.
@@ -251,13 +251,13 @@ Pooled over all three microstructures, 56 paired cases, geometric mean 3.18×, r
 
 ### Against our own CPU path
 
-On the GPU the solver is **20.6× faster than its own CPU path**, geometric mean over all 74 cases, ranging 6.6× to 33.5×:
+On the GPU the solver is **6.33× faster than its own HostCG CPU path**, geometric mean over all 74 cases, ranging 1.51× to 9.94×:
 
 | | ``N=200`` | ``N=400`` | ``N=600`` | ``N=800`` | ``N=1000`` |
 |---|---|---|---|---|---|
-| GPU over CPU | 10.1× | 20.0× | 25.6× | 27.7× | 26.2× |
+| GPU over CPU | 3.00× | 6.17× | 8.02× | 8.59× | 8.09× |
 
-The ratio rises with size and then holds near 27×, which is what a device with a fixed launch overhead and a large bandwidth advantage should do.
+The ratio rises with size and then holds near 8×, which is what a device with a fixed launch overhead and a large bandwidth advantage should do.
 
 ### Against the CPU-only tools
 
@@ -265,17 +265,17 @@ The ratio rises with size and then holds near 27×, which is what a device with 
 
 PuMA's finite-volume solver and PoreSpy's `tortuosity_fd` have no GPU path, so both are compared against the `Tortuosity.jl` CPU path, and both were run at ``200^3`` and no further.
 
-`Tortuosity.jl` is faster than both in all 15 cases at ``N = 200``: by a geometric mean of **31.1×** against PuMA, ranging 2.1× to 388×, and of **10.2×** against PoreSpy, ranging 4.2× to 17.8×. At blobiness 1.0:
+`Tortuosity.jl` is faster than both in all 15 cases at ``N = 200``: by a geometric mean of **105×** against PuMA, ranging 6.5× to 1991×, and of **34.3×** against PoreSpy, ranging 15.8× to 57.4×. At blobiness 1.0:
 
 | Porosity | `Tortuosity.jl` (CPU) | PoreSpy | speedup | PuMA | speedup |
 |---|---|---|---|---|---|
-| ε ≈ 0.19 | 4.84 s | 29.2 s | **6.0×** | 1141.3 s | **236×** |
-| ε ≈ 0.40 | 3.14 s | 40.9 s | **13.0×** | 351.4 s | **112×** |
-| ε ≈ 0.60 | 7.36 s | 68.6 s | **9.3×** | 198.5 s | **27.0×** |
-| ε ≈ 0.80 | 5.32 s | 94.7 s | **17.8×** | 112.5 s | **21.1×** |
-| ε ≈ 0.95 | 10.4 s | 137.2 s | **13.1×** | 36.3 s | **3.5×** |
+| ε ≈ 0.19 | 0.95 s | 29.2 s | **30.7×** | 1141.3 s | **1201×** |
+| ε ≈ 0.40 | 0.89 s | 40.9 s | **46.1×** | 351.4 s | **396×** |
+| ε ≈ 0.60 | 2.53 s | 68.6 s | **27.1×** | 198.5 s | **78.5×** |
+| ε ≈ 0.80 | 1.83 s | 94.7 s | **51.7×** | 112.5 s | **61.4×** |
+| ε ≈ 0.95 | 3.34 s | 137.2 s | **41.1×** | 36.3 s | **10.9×** |
 
-The two fail in opposite regimes, which is the useful part of running both. PuMA's margin is worst on the densest image and nearly closes on the most open one — 236× down to 3.5× — because its conjugate gradient has the hardest system to solve where the pore space is most tortuous. PoreSpy's runs the other way, 6.0× at the densest and 13.1× at the most open, because its cost is set by how many pore voxels there are rather than by how hard they are to connect: the network and the multigrid hierarchy are both built over the pore space before any iteration runs. So the pore-only design that PoreSpy shares with us is not by itself what produces the margin.
+The two expose different bottlenecks, which is the useful part of running both. PuMA's margin is worst on the most open image — 1201× down to 10.9× — because its conjugate gradient has the hardest system to solve where the pore space is most tortuous. PoreSpy remains 27–52× slower across the reference slice because its cost is set largely by how many pore voxels there are: the network and multigrid hierarchy are both built over the pore space before any iteration runs. So the pore-only design that PoreSpy shares with us is not by itself what produces the margin.
 
 PoreSpy also reached the 0.1% target in all 15 cases, and its ``\tau`` at the rung it stopped on lands within 9.9e-4 of our reference everywhere, median 4.7e-4. It is the third independent code the accuracy section leans on.
 
@@ -311,21 +311,21 @@ At ``600^3`` PoreSpy also stops fitting at the open end of the porosity range, s
 
 ### Core occupancy
 
-None of the three CPU tools saturates the machine, and the margin above is not won by taking more of it. Occupancy was sampled on the benchmark host with `psutil.cpu_percent` over the process tree, with the first and last 20% of samples trimmed so that compilation and teardown are excluded. Raw data in `results/core-occupancy.json` and `results/core-occupancy-ours.json`.
+The tools use the CPU very differently. Occupancy was sampled on the benchmark host with `psutil.cpu_percent` over the process tree. The external-tool run trims the first and last 20% of samples; the HostCG run uses explicit markers around the actual timed construction and solve intervals after compilation, warm-up and image loading. Checkpoint readouts, result writes, repeat bookkeeping and forced garbage collection are outside those intervals. Raw data in `results/core-occupancy.json` and `results/core-occupancy-ours.json`.
 
 | tool | case | median cores | mean | peak | usable samples |
 |---|---|---|---|---|---|
-| PuMA | `n200_b100_p040` | **6.23** | 5.79 | 6.89 | 426 |
-| PoreSpy | `n200_b100_p040` | **2.27** | 2.88 | 8.78 | 258 |
-| Tortuosity.jl (CPU, matrix-free) | `n200_b100_p040` | **1.00** | 2.64 | 15.97 | 279 |
-| Tortuosity.jl (CPU, matrix-free) | `n600_b100_p040` | **5.48** | 6.79 | 15.78 | 168 |
+| PuMA | `n200_b100_p040` | **6.30** | 5.85 | 6.76 | 420 |
+| PoreSpy | `n200_b100_p040` | **2.30** | 2.85 | 8.29 | 264 |
+| Tortuosity.jl (CPU, matrix-free HostCG) | `n200_b100_p040` | **7.82** | 7.13 | 11.54 | 21 |
+| Tortuosity.jl (CPU, matrix-free HostCG) | `n600_b100_p040` | **14.04** | 12.88 | 15.81 | 144 |
 
-Of 8 physical cores (16 logical). PuMA occupies most of the machine throughout its solve, PoreSpy a little over two cores, and the ordering matches the speed ordering rather than reversing it. Our own occupancy is size-dependent: at ``200^3`` a solve finishes in seconds and the median sample catches serial setup rather than the threaded apply, while at ``600^3``, where the solve dominates, the median rises to 5.5 cores with peaks using every logical thread. So both comparisons at ``200^3`` are won on **less** of the machine, not more.
+Of 8 physical cores (16 logical). PuMA occupies about six cores throughout its solve and PoreSpy about 2.3. HostCG uses more of the machine: 7.8 cores at ``200^3`` and 14.0 at ``600^3``, with peaks near all logical threads. The CPU margin therefore combines algorithmic work reduction with stronger host parallelism rather than coming from less hardware use.
 
 !!! note "Why our side is sampled by a second script"
-    `core-occupancy.json` covers the two external tools, sampled in one pass so that they are directly comparable. It does not cover ours: `julia` is not on the benchmark host's path inside a `pixi run` environment, and an earlier paired run that did reach it recorded `"exit": -11` — a SIGSEGV during exit cleanup, after the solve had completed and the row had been written — with only 6 usable samples. Six samples is not a measurement. The `Tortuosity.jl` figures above come from `core-occupancy-ours.json`, which sampled ten times a second at ``200^3`` and added a ``600^3`` case where the solve dominates outright. Both scripts back up the published result files, restore them afterwards, and verify the restore by SHA-256 — `published_results_unchanged: true` in each JSON.
+    `core-occupancy.json` covers the two external tools, sampled in one pass so that they are directly comparable. It does not cover ours: `julia` is not on the benchmark host's path inside a `pixi run` environment, and an earlier paired run that did reach it recorded `"exit": -11` — a SIGSEGV during exit cleanup, after the solve had completed and the row had been written — with only 6 usable samples. Six samples is not a measurement. The `Tortuosity.jl` figures above come from `core-occupancy-ours.json`, whose `tool` field identifies `tortuosity-cpu-matrixfree-hostcg`; it samples ten times a second at ``200^3`` and adds a ``600^3`` case where the solve dominates outright. Both scripts give their children an isolated temporary result root, so active timing and environment files are never opened; `results_mode: "isolated"` and `published_results_unchanged: true` record that invariant in each JSON. The top level records `host`, `started_at` and `completed_at`, and each sample embeds the benchmark child's runtime, version, thread count, variant and measurement timestamp.
 
-    PoreSpy is launched through `pixi run`, because it resolves in an environment of its own, so its solve runs one level below the process the sampler starts. An occupancy sampler must therefore hold on to the child processes it discovers and reuse them: `cpu_percent` reports the share used since *that object's* previous call, so rebuilding the objects each interval makes every call a first call, and every first call returns 0.0. Before that was fixed this sampler reported a 227-second PoreSpy solve as using no CPU at all, with a clean exit code. PuMA's number is unaffected — its work happens in the process the sampler launches directly — and re-measuring it after the fix moved the median from 6.39 to 6.23, which is run-to-run variation rather than a correction.
+    PoreSpy is launched through `pixi run`, because it resolves in an environment of its own, so its solve runs one level below the process the sampler starts. An occupancy sampler must therefore hold on to the child processes it discovers and reuse them: `cpu_percent` reports the share used since *that object's* previous call, so rebuilding the objects each interval makes every call a first call, and every first call returns 0.0. Before that was fixed this sampler reported a 227-second PoreSpy solve as using no CPU at all, with a clean exit code. PuMA's number is unaffected — its work happens in the process the sampler launches directly — and its current same-pass median is 6.30 cores.
 
 ### Memory
 
@@ -375,7 +375,7 @@ The two differ because refinement's 20 B/node is charged to *both* operators and
 
 ![Peak host memory on the CPU](assets/benchmark_memory_cpu.png)
 
-On the host the same structure holds with more headroom: at ``1000^3``, ε ≈ 0.95 the assembled path peaks at 163.6 GB above baseline against 53.8 GB matrix-free, a factor of 3.0. taufactor's CPU footprint is a flat 60.0 bytes per voxel across all four sizes it was measured at, which is what the ``1000^3`` projection in the figure rests on; PuMA's is a flat 164.0 bytes per voxel across the three sizes it was measured at, independent of porosity to every digit recorded.
+On the host the same structure holds with more headroom: at ``1000^3``, ε ≈ 0.95 the assembled HostCG path peaks at 155.9 GiB above baseline against 62.2 GiB matrix-free, a factor of 2.5. taufactor's CPU footprint is a flat 60.0 bytes per voxel across all four sizes it was measured at, which is what the ``1000^3`` projection in the figure rests on; PuMA's is a flat 164.0 bytes per voxel across the three sizes it was measured at, independent of porosity to every digit recorded.
 
 !!! note "PuMA's footprint is a straight line through the origin"
     The rate is fitted on the ``400^3`` and ``600^3`` measurements, and both sit on it to within 0.003%: 9.7754 GiB against 9.7754 predicted, and 32.9917 against 32.9920. ``200^3`` is the only size off the line, high by 1.87%, which is a fixed cost of about 24 MB — an interpreter and an image, not a term that grows. That distinction is the reason the rate is fitted on the largest measurements rather than all of them, and it is worth stating because a fixed cost read as a per-voxel one is multiplied by 125 on the way to ``1000^3``. Here it is not: projecting from ``200^3`` alone would have given 155.6 GiB at ``1000^3`` against 152.7 from the three-size fit, an error of 1.9%.
@@ -384,13 +384,13 @@ PoreSpy is the heaviest of the four by a wide margin, and unlike taufactor and P
 
 | tool | ε ≈ 0.19 | ε ≈ 0.95 | scales with |
 |---|---|---|---|
-| `Tortuosity.jl` (matrix-free) | 0.118 GiB | 0.405 GiB | 57–93 B per pore voxel |
-| `Tortuosity.jl` (assembled) | 0.173 GiB | 1.05 GiB | ≈ 140 B per pore voxel |
+| `Tortuosity.jl` (matrix-free HostCG) | 0.110 GiB | 0.526 GiB | 70–99 B per pore voxel |
+| `Tortuosity.jl` (assembled HostCG) | 0.237 GiB | 1.05 GiB | 141–186 B per pore voxel |
 | taufactor | 0.442 GiB | 0.442 GiB | 59.3 B per grid voxel |
 | PuMA | 1.24 GiB | 1.24 GiB | 164 B per grid voxel |
 | PoreSpy | 1.61 GiB | 8.11 GiB | **≈ 1.19 kB per pore voxel** |
 
-That is about twenty times our matrix-free path at the same porosity, and it is what the OpenPNM network costs: pore coordinates, throat connections and labels, the assembled matrix, and the multigrid hierarchy, all held at once. The single-term model, fitted at ``200^3`` alone, was checked against two ``400^3`` cases it was not fitted on. It predicts 14.0 GB against 13.7 GB measured at ε ≈ 0.18, and 46.0 GB against 43.2 GB at ε ≈ 0.60 — high by 2% and 6%, so a projection from it is a ceiling rather than a hope.
+That is about fifteen times our matrix-free path at the same porosity, and it is what the OpenPNM network costs: pore coordinates, throat connections and labels, the assembled matrix, and the multigrid hierarchy, all held at once. The single-term model, fitted at ``200^3`` alone, was checked against two ``400^3`` cases it was not fitted on. It predicts 14.0 GB against 13.7 GB measured at ε ≈ 0.18, and 46.0 GB against 43.2 GB at ε ≈ 0.60 — high by 2% and 6%, so a projection from it is a ceiling rather than a hope.
 
 That model, not the clock, is what ends PoreSpy's size sweep. Projected peak host memory, blobiness 1.0:
 
@@ -408,7 +408,7 @@ Against the 250 GB this host holds, ``400^3`` fits everywhere, ``600^3`` fits up
 
 The tables above are measured with both enabled, because that is what `solve(sim)` selects for images this size. They contribute in quite different ways.
 
-**The operator buys memory, not speed.** Holding everything else fixed and switching only the operator, matrix-free is **1.14×** faster end to end on the GPU (geometric mean over 59 paired cases) and **1.34×** on the CPU (74 cases). Its apply is considerably faster in isolation, but a solve also pays for preconditioner setup and the coarse solve, which are common to both paths, so the advantage dilutes. On the CPU it grows with size — 0.96× at ``200^3`` to 1.60× at ``1000^3`` — which is the same dilution running the other way as the solve stops being dominated by fixed costs. What does not dilute is the 1.8×–2.3× memory ratio above, and the 20 cases where the assembled operator does not fit at all.
+**The operator buys memory, while CPU speed is architecture- and size-dependent.** Holding everything else fixed and switching only the operator, matrix-free is **1.14×** faster end to end on the GPU (geometric mean over 59 paired cases). On the Waterloo CPU the two HostCG paths are within 1.4% geometrically over 74 cases: assembled is 1.14× faster at ``200^3``, the paths are within 1% at ``400^3`` and ``600^3``, and matrix-free becomes 1.07× faster at ``800^3`` and 1.14× at ``1000^3``. The memory result is unambiguous: assembled uses **2.08×** as much host memory geometrically, ranging 1.48×–2.62×, and its size-wise ratio rises from 1.85× at ``200^3`` to 2.36× at ``1000^3``. The 20 cases where the assembled operator does not fit are on the GPU and remain unchanged.
 
 **The preconditioner buys iterations.** Measured directly at a fixed relative residual of 1e-6, on the CPU in `Float64`, matrix-free, blobiness 1.0, over the cached campaign images (`results/iteration-counts-2026-08-21.log`). Iteration counts are deterministic given the image and the code, so this needs no quiet machine and reproduces exactly.
 
@@ -463,7 +463,7 @@ The campaign data shows the fix took: across `results/timings/tortuosity-gpu-mat
 
 What remains is narrower: **atomic additions are still used to assemble the Galerkin coarse operator** (`_coarse_stencil_kernel!`, which forms ``W^\top A W`` in one pass over the stored entries). That runs once per solve at setup, not once per iteration, but it means bit-for-bit equality across runs is still not guaranteed. If you need an exactly reproducible number, use the CPU `Float64` path. It shows zero spread throughout.
 
-**The CPU comparison is close to core-matched, and the residual asymmetry favors PuMA.** See [Core occupancy](#Core-occupancy): PuMA occupies a median 6.4 of 8 physical cores, our median at the same case is 1.0. This removes a doubt rather than raising one, but it does mean the two tools are not doing the same thing with the machine.
+**The CPU comparison is not core-matched.** See [Core occupancy](#Core-occupancy): PuMA occupies a median 6.30 cores while HostCG occupies 7.82 on the same case. The residual asymmetry favors Tortuosity.jl, so its CPU margin combines algorithmic work reduction with stronger parallel execution rather than isolating either effect.
 
 **PuMA is timed at one size only.** ``200^3``, by decision — a single case there costs it up to 19 minutes and the larger sizes were prohibitive. The larger images were not attempted and are not reported as failures. Its *memory* is measured at ``200^3``, ``400^3`` and ``600^3``, because a memory probe stops at the loosest rung rather than at the accuracy target and so costs minutes rather than hours.
 

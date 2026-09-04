@@ -223,7 +223,7 @@ def record_environment(cfg, *, stage, tool, device, variant="", accelerator="", 
     Timings are only comparable within one machine and one software stack, and
     this campaign spans a laptop and a rented host by design.
     """
-    path = cfg.resultsdir / "environment.csv"
+    path = cfg.outputdir / "environment.csv"
     with ResultsWriter(path, ENVIRONMENT_COLUMNS) as w:
         w.write_row({
             "measured_at": timestamp(),

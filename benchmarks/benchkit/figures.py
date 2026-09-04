@@ -107,18 +107,19 @@ def load_results(resultsdir, kind):
     if not frames:
         return pd.DataFrame()
     data = pd.concat(frames, ignore_index=True)
-    hostcg = (
+    superseded = (
         (data["tool"] == "tortuosity")
         & (data["device"] == "cpu")
-        & data["variant"].str.contains("-hostcg", regex=False)
+        & ~data["variant"].str.contains("-hostcg", regex=False)
     )
-    if hostcg.any():
-        superseded = (
-            (data["tool"] == "tortuosity")
-            & (data["device"] == "cpu")
-            & ~data["variant"].str.contains("-hostcg", regex=False)
+    if superseded.any():
+        variants = ", ".join(
+            sorted(data.loc[superseded, "variant"].drop_duplicates())
         )
-        data = data.loc[~superseded].copy()
+        raise ValueError(
+            "superseded CPU Tortuosity results remain active "
+            f"({variants}); move them under results/archive"
+        )
     data["series"] = [series_label(t, v) for t, v in zip(data["tool"], data["variant"])]
     return data
 

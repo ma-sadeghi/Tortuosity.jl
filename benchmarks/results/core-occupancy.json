@@ -1,28 +1,58 @@
 {
   "case": "n200_b100_p040",
+  "host": "pmeal-hpc",
+  "started_at": "2026-09-03T19:14:49-04:00",
   "host_physical_cores": 8,
   "host_logical_cores": 16,
   "tools": {
     "puma-cpu": {
       "exit": 0,
-      "elapsed_s": 370.4,
+      "elapsed_s": 366.2,
       "child_log": "results/occupancy-puma-cpu.log",
-      "n_samples": 710,
-      "n_used": 426,
-      "median_cores": 6.23,
-      "mean_cores": 5.79,
-      "peak_cores": 6.89
+      "benchmark_environment": {
+        "measured_at": "2026-09-03T19:14:50",
+        "host": "pmeal-hpc",
+        "stage": "time",
+        "tool": "puma",
+        "device": "cpu",
+        "variant": "fv-cg",
+        "runtime": "python",
+        "runtime_version": "3.11.15",
+        "cpu_threads": "16",
+        "accelerator": "",
+        "notes": "18 iteration rungs, maxiter=100000, target=0.001, timeout=1800.0s"
+      },
+      "n_samples": 701,
+      "n_used": 420,
+      "median_cores": 6.3,
+      "mean_cores": 5.85,
+      "peak_cores": 6.76
     },
     "porespy-cpu": {
       "exit": 0,
-      "elapsed_s": 224.7,
+      "elapsed_s": 230.4,
       "child_log": "results/occupancy-porespy-cpu.log",
-      "n_samples": 431,
-      "n_used": 258,
-      "median_cores": 2.27,
-      "mean_cores": 2.88,
-      "peak_cores": 8.78
+      "benchmark_environment": {
+        "measured_at": "2026-09-03T19:21:01",
+        "host": "pmeal-hpc",
+        "stage": "time",
+        "tool": "porespy",
+        "device": "cpu",
+        "variant": "fd-amg",
+        "runtime": "python",
+        "runtime_version": "3.11.16",
+        "cpu_threads": "16",
+        "accelerator": "",
+        "notes": "porespy 3.0.4, openpnm 3.6.3, 18 tolerance rungs, target=0.001, timeout=1800.0s"
+      },
+      "n_samples": 441,
+      "n_used": 264,
+      "median_cores": 2.3,
+      "mean_cores": 2.85,
+      "peak_cores": 8.29
     }
   },
-  "published_results_unchanged": true
+  "results_mode": "isolated",
+  "published_results_unchanged": true,
+  "completed_at": "2026-09-03T19:24:45-04:00"
 }

@@ -87,7 +87,7 @@ sample_interval = float(cfg["memory"]["sample_interval_ms"])
 
 device_label = "gpu" if device.startswith("cuda") else "cpu"
 subdir = "timings" if args.measure == "time" else "memory"
-outpath = cfg.resultsdir / subdir / f"taufactor-{device_label}.csv"
+outpath = cfg.outputdir / subdir / f"taufactor-{device_label}.csv"
 columns = bkresults.TIMING_COLUMNS if args.measure == "time" else bkresults.MEMORY_COLUMNS
 
 # taufactor applies its Dirichlet faces across the first array axis and reports
