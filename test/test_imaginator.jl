@@ -21,7 +21,8 @@ using Tortuosity.Imaginator:
     norm_to_uniform,
     phase_fraction,
     to_binary,
-    trim_nonpercolating_paths
+    trim_nonpercolating_paths,
+    _count_percolating
 
 # Count pore/solid face contacts — a proxy for feature fineness.
 function interface_area(img)
@@ -206,6 +207,7 @@ end
         @test all(trimmed[:, 3:5, 3:5])
         @test !any(trimmed[5:7, 7, 7])
         @test count(trimmed) == 12 * 3 * 3
+        @test _count_percolating(img; axis=:x) == count(trimmed)
     end
 
     @testset "the result is a subset of the input and is idempotent" begin
@@ -214,6 +216,7 @@ end
             trimmed = trim_nonpercolating_paths(img; axis=ax)
             @test all(trimmed .<= img)               # never adds pore space
             @test trim_nonpercolating_paths(trimmed; axis=ax) == trimmed
+            @test _count_percolating(img; axis=ax) == count(trimmed)
         end
     end
 
@@ -221,6 +224,7 @@ end
         img = trues(6, 6, 6)
         for ax in (:x, :y, :z)
             @test trim_nonpercolating_paths(img; axis=ax) == img
+            @test _count_percolating(img; axis=ax) == length(img)
         end
     end
 
@@ -230,6 +234,9 @@ end
         @test count(trim_nonpercolating_paths(img; axis=:x)) == count(img)
         @test count(trim_nonpercolating_paths(img; axis=:y)) == 0
         @test count(trim_nonpercolating_paths(img; axis=:z)) == 0
+        @test _count_percolating(img; axis=:x) == count(img)
+        @test _count_percolating(img; axis=:y) == 0
+        @test _count_percolating(img; axis=:z) == 0
     end
 end
 

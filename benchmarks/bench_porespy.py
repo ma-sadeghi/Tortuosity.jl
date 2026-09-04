@@ -104,7 +104,7 @@ if axis not in AXES:
 axis_index = AXES[axis]
 
 subdir = "timings" if args.measure == "time" else "memory"
-outpath = cfg.resultsdir / subdir / "porespy-cpu.csv"
+outpath = cfg.outputdir / subdir / "porespy-cpu.csv"
 columns = bkresults.TIMING_COLUMNS if args.measure == "time" else bkresults.MEMORY_COLUMNS
 PREFIX = dict(tool="porespy", device="cpu", variant="fd-amg", cpu_threads=cpu_threads)
 

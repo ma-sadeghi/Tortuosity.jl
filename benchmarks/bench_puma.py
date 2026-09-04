@@ -111,7 +111,7 @@ if axis != "x":
     )
 
 subdir = "timings" if args.measure == "time" else "memory"
-outpath = cfg.resultsdir / subdir / "puma-cpu.csv"
+outpath = cfg.outputdir / subdir / "puma-cpu.csv"
 columns = bkresults.TIMING_COLUMNS if args.measure == "time" else bkresults.MEMORY_COLUMNS
 PREFIX = dict(tool="puma", device="cpu", variant="fv-cg", cpu_threads=cpu_threads)
 

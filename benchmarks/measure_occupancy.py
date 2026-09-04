@@ -1,53 +1,47 @@
-"""Sample how many CPU cores each tool actually occupies while solving.
+"""Sample how many CPU cores each external CPU tool occupies while solving.
 
     pixi run python measure_occupancy.py
     pixi run python measure_occupancy.py --tools=porespy-cpu --out=results/x.json
 
-The paper argues that the CPU margin is won on less of the machine rather than
-more, which is only worth saying if the occupancy behind it was sampled on the
-same host as everything else. This samples it there, under the campaign's own
-settings -- `threads = "auto"`, so each tool takes the machine the way its own
-defaults let it.
+The CPU margin combines algorithmic work reduction with each tool's own
+parallelism, which is only interpretable if occupancy is sampled on the same
+host as the timings. This samples it there under `threads = "auto"`, so each
+tool takes the machine the way its defaults allow.
 
 Occupancy is `psutil.cpu_percent` over the process *and its children*, divided by
-100, sampled twice a second. Startup and teardown are trimmed before the summary:
-a Julia process spends its first seconds compiling on one core and a PuMA process
-spends its first seconds building a workspace, and neither is the solve. What is
-reported is the median over the trimmed middle, which is the quantity the
-sentence in the paper is about.
+100, sampled twice a second. Startup and teardown are trimmed before the summary. What is reported is the
+median over the middle of each external tool's process.
 
-No harness here takes an output path, so each writes into the published results
-files. This backs those files up, runs, restores them, and verifies the restore
-by SHA-256 -- an occupancy sample must not perturb a single published number.
+Each child receives a temporary output root through the shared benchmark
+configuration. Published results are never opened, so a concurrent campaign
+cannot be overwritten when occupancy sampling finishes.
 """
 
 import argparse
-import contextlib
-import hashlib
 import json
+import os
 import shutil
+import socket
 import statistics
-import subprocess
 import sys
-import time
+import tempfile
 from pathlib import Path
 
 import psutil
+
+from benchkit.occupancy import (
+    benchmark_measurement_lock,
+    install_termination_handler,
+    latest_environment,
+    require_target_result,
+    sample_cpu_occupancy,
+    timestamp,
+)
 
 # Trim this fraction off each end before summarising: the head is compilation and
 # workspace construction, the tail is teardown and writing results.
 TRIM = 0.20
 INTERVAL_S = 0.5
-
-TOUCHED = [
-    Path("results/timings/tortuosity-cpu-matrixfree.csv"),
-    Path("results/timings/puma-cpu.csv"),
-    Path("results/timings/porespy-cpu.csv"),
-]
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
 def pixi_binary():
@@ -62,47 +56,13 @@ def pixi_binary():
     return str(found)
 
 
-def sample(cmd, logpath):
-    """Run `cmd`, sampling total CPU occupancy of the process tree until it exits.
-
-    The child's output goes to a file rather than to /dev/null: a tool that dies
-    on a signal reports only its exit code, and without its stderr there is
-    nothing to diagnose from.
-
-    Every process is kept and reused between samples. `cpu_percent` reports the
-    share used since that same object's previous call, so its first call always
-    returns 0.0; building the child objects afresh each iteration would make
-    every call a first call and report a solve that used no CPU at all. This
-    matters only when the work happens below the process we launched — a tool run
-    through `pixi run` — which is why it went unnoticed while every tool here was
-    launched directly.
-    """
-    log = open(logpath, "wb")
-    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
-    parent = psutil.Process(proc.pid)
-    tracked = {parent.pid: parent}
-    parent.cpu_percent(None)  # prime; the first call always returns 0.0
-    samples = []
-    started = time.perf_counter()
-    while proc.poll() is None:
-        time.sleep(INTERVAL_S)
-        try:
-            for child in parent.children(recursive=True):
-                if child.pid not in tracked:
-                    tracked[child.pid] = child
-                    with contextlib.suppress(psutil.Error):
-                        child.cpu_percent(None)  # prime it too
-        except psutil.Error:
-            pass
-        total = 0.0
-        for pid, process in list(tracked.items()):
-            try:
-                total += process.cpu_percent(None)
-            except psutil.Error:
-                del tracked[pid]  # exited between one sample and the next
-        samples.append(total / 100.0)
-    log.close()
-    return proc.returncode, time.perf_counter() - started, samples
+def sample(cmd, logpath, output_dir):
+    """Run one external tool under the shared sampler, in an isolated output root."""
+    env = os.environ.copy()
+    env["TORTUOSITY_BENCHMARK_OUTPUT_DIR"] = output_dir
+    code, elapsed, samples = sample_cpu_occupancy(cmd, INTERVAL_S, logpath, env)
+    provenance = latest_environment(output_dir)
+    return code, elapsed, samples, provenance
 
 
 def summarise(samples):
@@ -121,6 +81,7 @@ def summarise(samples):
 
 
 def main():
+    install_termination_handler()
     ap = argparse.ArgumentParser()
     ap.add_argument("--case", default="n200_b100_p040")
     ap.add_argument("--out", default="results/core-occupancy.json")
@@ -131,25 +92,11 @@ def main():
     ap.add_argument("--tools", help="comma-separated subset to sample (default: all)")
     args = ap.parse_args()
 
-    before = {p: digest(p) for p in TOUCHED}
-    backups = {}
-    for p in TOUCHED:
-        if p.is_file():
-            b = p.with_suffix(p.suffix + ".occupancy-backup")
-            shutil.copy2(p, b)
-            backups[p] = b
-    print(f"backed up {len(backups)} results file(s)")
-
     print(f"host: {psutil.cpu_count(logical=False)} physical / "
           f"{psutil.cpu_count(logical=True)} logical cores")
     print(f"case: {args.case}\n")
 
     runs = {
-        "tortuosity-cpu-matrixfree": [
-            "julia", "-t", "auto", "--project=.", "bench_tortuosity.jl",
-            "--device=cpu", "--operator=matrixfree", "--measure=time",
-            f"--cases={args.case}", "--overwrite",
-        ],
         "puma-cpu": [
             sys.executable, "bench_puma.py", "--measure=time",
             f"--cases={args.case}", "--overwrite",
@@ -176,28 +123,38 @@ def main():
 
     out = {
         "case": args.case,
+        "host": socket.gethostname(),
+        "started_at": timestamp(),
         "host_physical_cores": psutil.cpu_count(logical=False),
         "host_logical_cores": psutil.cpu_count(logical=True),
         "tools": {},
     }
-    try:
-        for name, cmd in runs.items():
-            print(f"running {name} ...", flush=True)
-            child_log = f"results/occupancy-{name}.log"
-            code, elapsed, samples = sample(cmd, child_log)
-            out["tools"][name] = {
-                "exit": code, "elapsed_s": round(elapsed, 1),
-                "child_log": child_log, **summarise(samples)
-            }
-            print(f"  exit={code}  {elapsed:.1f}s  {out['tools'][name]}\n", flush=True)
-    finally:
-        for p, b in backups.items():
-            shutil.move(str(b), str(p))
-        restored = all(digest(p) == before[p] for p in backups)
-        out["published_results_unchanged"] = restored
-        print(f"results files restored and verified by SHA-256: {restored}")
-
-    Path(args.out).write_text(json.dumps(out, indent=2))
+    with benchmark_measurement_lock():
+        with tempfile.TemporaryDirectory(
+            prefix="tortuosity-occupancy-"
+        ) as output_dir:
+            for name, cmd in runs.items():
+                print(f"running {name} ...", flush=True)
+                child_log = f"results/occupancy-{name}.log"
+                code, elapsed, samples, provenance = sample(
+                    cmd, child_log, output_dir
+                )
+                if code != 0:
+                    raise RuntimeError(f"{name} exited with status {code}")
+                require_target_result(output_dir, name, args.case)
+                out["tools"][name] = {
+                    "exit": code, "elapsed_s": round(elapsed, 1),
+                    "child_log": child_log,
+                    "benchmark_environment": provenance,
+                    **summarise(samples),
+                }
+                print(f"  exit={code}  {elapsed:.1f}s  "
+                      f"{out['tools'][name]}\n", flush=True)
+        out["results_mode"] = "isolated"
+        out["published_results_unchanged"] = True
+        out["completed_at"] = timestamp()
+        print("published results were not opened by occupancy children")
+        Path(args.out).write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
 
 

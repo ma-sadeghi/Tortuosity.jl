@@ -85,6 +85,75 @@ function build_pore_index(img::BitArray)
     return g
 end
 
+# Contiguous chunks for the threaded host kernels: a few per thread so that
+# `@threads`' static split stays balanced, and never more than there are
+# elements.
+const _CHUNKS_PER_THREAD = 4
+
+@inline function _host_chunks(n)
+    return min(n, max(1, _CHUNKS_PER_THREAD * Threads.nthreads()))
+end
+
+@inline function _host_chunk_bounds(n, nchunks, chunk)
+    chunk_size = cld(n, nchunks)
+    ilo = (chunk - 1) * chunk_size + 1
+    return ilo, min(ilo + chunk_size - 1, n)
+end
+
+# Threaded inclusive scan in two passes: every chunk scans `term(i)` locally
+# into `out`, the chunk totals are scanned serially, and a second pass adds each
+# chunk's offset back, storing `finish(i, value)`. `init` is added to every
+# element. The offsets are accumulated in index order, so the result does not
+# depend on the schedule.
+function _threaded_scan!(out, term, init, finish)
+    n = length(out)
+    bounds = find_chunk_bounds(; nelems=n, ndivs=_host_chunks(n))
+    offsets = zeros(typeof(init), length(bounds))
+    Threads.@threads :dynamic for chunk in eachindex(bounds)
+        ilo, ihi = bounds[chunk]
+        total = zero(init)
+        @inbounds for i in ilo:ihi
+            total += term(i)
+            out[i] = total
+        end
+        offsets[chunk] = total
+    end
+    running_offset = init
+    @inbounds for chunk in eachindex(offsets)
+        total = offsets[chunk]
+        offsets[chunk] = running_offset
+        running_offset += total
+    end
+    Threads.@threads :dynamic for chunk in eachindex(bounds)
+        ilo, ihi = bounds[chunk]
+        chunk_offset = offsets[chunk]
+        @inbounds @simd for i in ilo:ihi
+            out[i] = finish(i, out[i] + chunk_offset)
+        end
+    end
+    return out
+end
+
+const _PORE_INDEX_MIN_THREADED = 1_000_000
+
+function _pore_index!(idx, img)
+    cumsum!(vec(idx), vec(img))
+    idx .*= img
+    return idx
+end
+
+function _pore_index!(idx::Array{Ti}, img::Union{Array{Bool},BitArray}) where {Ti<:Integer}
+    n = length(img)
+    if Threads.nthreads() == 1 || n < _PORE_INDEX_MIN_THREADED
+        return invoke(_pore_index!, Tuple{Any,Any}, idx, img)
+    end
+
+    _threaded_scan!(
+        vec(idx), i -> img[i], zero(Ti), (i, ordinal) -> img[i] ? ordinal : zero(Ti),
+    )
+    return idx
+end
+
 """
     find_true_indices(a::AbstractArray{Bool})
 

@@ -226,7 +226,7 @@ function LinearAlgebra.mul!(
         _spmv_symmetric_kernel!(backend)(
             y, A.colptr, A.rowval, A.nzval, x, alpha, beta, n; ndrange=n,
         )
-        KernelAbstractions.synchronize(backend)
+        _async_return_safe(A.nzval) || KernelAbstractions.synchronize(backend)
         return y
     end
     if iszero(beta)
@@ -236,7 +236,7 @@ function LinearAlgebra.mul!(
     end
     if n > 0 && nnz(A) > 0 && !iszero(alpha)
         _spmv_kernel!(backend)(y, A.colptr, A.rowval, A.nzval, x, alpha, n; ndrange=n)
-        KernelAbstractions.synchronize(backend)
+        _async_return_safe(A.nzval) || KernelAbstractions.synchronize(backend)
     end
     return y
 end

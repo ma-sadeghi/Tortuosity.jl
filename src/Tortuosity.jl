@@ -16,6 +16,26 @@ const _gpu_adapt = Ref{Any}(identity)
 """True for GPU arrays; extensions override for CuArray, MtlArray, etc."""
 _on_gpu(::AbstractArray) = false
 
+"""True when a backend tracks cross-task dependencies for asynchronously returned arrays."""
+_async_return_safe(::AbstractArray) = false
+
+"""Workgroup shape for steady grid kernels; backend extensions may tune it."""
+_steady_workgroup(::AbstractArray) = (64, 4, 1)
+
+"""Pore-node count above which steady construction selects an available GPU."""
+_gpu_min_nodes(::Any) = 100_000
+
+_device_backend(x) = _on_gpu(x) ? get_backend(x) : nothing
+_device_backend(x::SubArray) = _device_backend(parent(x))
+_device_backend(x::Base.ReshapedArray) = _device_backend(parent(x))
+_device_backend(x::Base.ReinterpretArray) = _device_backend(parent(x))
+_device_backend(x::PermutedDimsArray) = _device_backend(parent(x))
+_device_backend(x::Adjoint) = _device_backend(parent(x))
+_device_backend(x::Transpose) = _device_backend(parent(x))
+# Same device, host included: a host array's backend is `nothing`, and
+# `typeof(nothing) === typeof(nothing)`.
+_same_device(a, b) = typeof(_device_backend(a)) === typeof(_device_backend(b))
+
 """
     _free!(x)
 
@@ -69,6 +89,7 @@ include("numpytools.jl")
 include("pdetools.jl")
 include("simulations.jl")
 include("preconditioner.jl")
+include("hostcg.jl")
 include("transient.jl")
 include("transient_measurements.jl")
 include("transient_fitting.jl")
@@ -131,7 +152,11 @@ export slab_cumulative_flux
 
     sim = SteadyDiffusionProblem(img; axis=:x)
     sol = solve(sim.prob, KrylovJL_CG())
+    solve(sim, HostCG(); precond=:none, maxiters=1)
     c = reconstruct_field(sol.u, img)
+    tortuosity(sol.u, sim)
+    effective_diffusivity(sol.u, sim)
+    formation_factor(sol.u, sim)
     tortuosity(c, img; axis=:x)
     effective_diffusivity(c, img; axis=:x)
     formation_factor(c, img; axis=:x)

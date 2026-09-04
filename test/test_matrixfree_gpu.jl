@@ -14,8 +14,12 @@ using CUDA
 using Tortuosity
 using Tortuosity: Imaginator,
     MaskedLaplacian,
+    DEFAULT_GPU_MAX_COARSE,
     build_steady_operator,
     build_steady_system,
+    _gpu_max_coarse,
+    _refinement_correction_reltol,
+    _resolve_max_coarse,
     _free!
 
 # The sizes `test_gpu_e2e.jl` runs: several workgroups deep in every dimension,
@@ -261,8 +265,25 @@ end
     @test eltype(op.idx) === Int32
     @test eltype(op) === Float32
     @test eltype(b) === Float32
+    @test Tortuosity._async_return_safe(op.idx) == (pkgversion(CUDA) >= v"5.4")
+    @test Tortuosity._steady_workgroup(op.idx) == (32, 2, 2)
+    @test Tortuosity._steady_workgroup(CUDA.ones(Bool, 4, 4, 1)) == (64, 4, 1)
+    @test Tortuosity._gpu_min_nodes(CUDABackend()) == 20_000
+    @test Tortuosity._precond_min_nodes(b) == 3_000
+    @test _gpu_max_coarse(249_999_999) == 14_000
+    @test _gpu_max_coarse(250_000_000) == 16_000
+    @test _gpu_max_coarse(499_999_999) == 16_000
+    @test _gpu_max_coarse(500_000_000) == 32_000
+    @test _refinement_correction_reltol(CUDABackend(), 249_999_999, 400_000_000) == 0.5f0
+    @test _refinement_correction_reltol(CUDABackend(), 250_000_000, 500_000_000) == 0.6f0
+    @test _refinement_correction_reltol(CUDABackend(), 350_000_000, 500_000_000) == 0.5f0
+    @test _refinement_correction_reltol(CUDABackend(), 450_000_000, 500_000_000) == 0.55f0
+    @test _refinement_correction_reltol(nothing, 300_000_000, 500_000_000) == 0.5f0
     @test size(op) == (nnodes, nnodes)
     @test size(op.idx) == size(img)
+    @test _resolve_max_coarse(op, nothing, (25, 25, 25)) == DEFAULT_GPU_MAX_COARSE
+    @test _resolve_max_coarse(op, nothing, (1, 1, 14_001)) == Tortuosity.DEFAULT_MAX_COARSE
+    @test _resolve_max_coarse(op, 321, (1, 1, 14_001)) == 321
 
     @test op.owns_D === false
     @test _free!(op) === nothing
@@ -290,7 +311,23 @@ end
     kept = SteadyDiffusionProblem(img; axis=:x, D=d_D, gpu=true, matrixfree=true)
     @test kept.prob.A.D !== d_D
     @test kept.prob.A.owns_D === true
-    @test _free!(kept.prob.A) === nothing
     @test Array(d_D) == Float32.(D)
+
+    host = SteadyDiffusionProblem(img; axis=:x, D=d_D, gpu=false, matrixfree=true)
+    @test host.prob.A.D isa Array
+    @test host.D0 == 1.5f0
+
+    D_lazy = reshape(range(0.5f0, 1.5f0; length=length(img)), size(img))
+    lazy = SteadyDiffusionProblem(img; axis=:x, D=D_lazy, gpu=true, matrixfree=true)
+    @test lazy.D0 == 1.5f0
+    @test isfinite(tortuosity(solve(lazy).u, lazy))
+
+    u = solve(kept.prob, KrylovJL_CG(); reltol=1.0f-8).u
+    c = reconstruct_field(u, img)
+    tau_grid = tortuosity(c, img; axis=:x, D=Float32.(D))
+    @test kept.D0 == 1.5f0
+    @test tortuosity(u, kept) ≈ tau_grid rtol = 1e-4
+
+    @test _free!(kept.prob.A) === nothing
     release!(d_D)
 end

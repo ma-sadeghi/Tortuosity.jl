@@ -31,6 +31,169 @@ const _NEIGHBOURS = (_LOWER_NEIGHBOURS..., _UPPER_NEIGHBOURS...)
 @inline _edge_weight(D, D0, da, db) = 2 * da * db / (da + db)
 
 """
+    InletFlux
+
+Compact data needed to reduce the physical inlet flux from a pore-vector
+solution. `sources`, `targets`, and `weights` describe edges across the inlet
+plane. `inlet` and `outlet` contain every pore ordinal on the two boundary
+faces. `direct` is the unit-drop flux when the transport axis is only two
+voxels long.
+"""
+struct InletFlux{Vs,Vt,Vw,Vin,Vout,T}
+    sources::Vs
+    targets::Vt
+    weights::Vw
+    inlet::Vin
+    outlet::Vout
+    direct::T
+end
+
+function _free!(flux::InletFlux)
+    isnothing(flux.sources) || _free!(flux.sources)
+    isnothing(flux.targets) || _free!(flux.targets)
+    isnothing(flux.weights) || _free!(flux.weights)
+    isnothing(flux.inlet) || _free!(flux.inlet)
+    isnothing(flux.outlet) || _free!(flux.outlet)
+    return nothing
+end
+
+# The `p`-th inlet-face voxel and the one behind it, as `i1, j1, k1, i2, j2, k2`.
+@inline function _inlet_pair(p, nx, ny, bcdim)
+    return (_face_point(p, nx, ny, bcdim, 1)..., _face_point(p, nx, ny, bcdim, 2)...)
+end
+
+@kernel function _inlet_flags_kernel!(flags, @Const(idx), nx, ny, bcdim)
+    p = @index(Global)
+    i1, j1, k1, i2, j2, k2 = _inlet_pair(p, nx, ny, bcdim)
+    @inbounds flags[p] = (idx[i1, j1, k1] > 0) & (idx[i2, j2, k2] > 0)
+end
+
+@inline _store_source!(::Nothing, pos, source) = nothing
+@inline function _store_source!(sources, pos, source)
+    @inbounds sources[pos] = source
+    return nothing
+end
+
+@kernel function _inlet_fill_kernel!(
+    sources, targets, weights, @Const(scan), @Const(idx), D, nx, ny, bcdim, D0,
+)
+    p = @index(Global)
+    i1, j1, k1, i2, j2, k2 = _inlet_pair(p, nx, ny, bcdim)
+    @inbounds begin
+        source = idx[i1, j1, k1]
+        target = idx[i2, j2, k2]
+        if (source > 0) & (target > 0)
+            pos = scan[p]
+            da = _node_diffusivity(D, D0, i1, j1, k1)
+            db = _node_diffusivity(D, D0, i2, j2, k2)
+            _store_source!(sources, pos, source)
+            targets[pos] = target
+            weights[pos] = _edge_weight(D, D0, da, db)
+        end
+    end
+end
+
+@inline function _face_point(p, nx, ny, bcdim, coord)
+    if bcdim == 1
+        j = (p - 1) % ny + 1
+        k = (p - 1) ÷ ny + 1
+        return coord, j, k
+    elseif bcdim == 2
+        i = (p - 1) % nx + 1
+        k = (p - 1) ÷ nx + 1
+        return i, coord, k
+    end
+    i = (p - 1) % nx + 1
+    j = (p - 1) ÷ nx + 1
+    return i, j, coord
+end
+
+@kernel function _face_flags_kernel!(flags, @Const(idx), nx, ny, bcdim, coord)
+    p = @index(Global)
+    i, j, k = _face_point(p, nx, ny, bcdim, coord)
+    @inbounds flags[p] = idx[i, j, k] > 0
+end
+
+@kernel function _face_fill_kernel!(nodes, @Const(scan), @Const(idx), nx, ny, bcdim, coord)
+    p = @index(Global)
+    i, j, k = _face_point(p, nx, ny, bcdim, coord)
+    @inbounds begin
+        node = idx[i, j, k]
+        node > 0 && (nodes[scan[p]] = node)
+    end
+end
+
+function _build_face_nodes(idx, bcdim, coord)
+    nx, ny, _ = size(idx)
+    face_area = length(idx) ÷ size(idx, bcdim)
+    backend = get_backend(idx)
+    Ti = eltype(idx)
+
+    flags = similar(idx, Ti, face_area)
+    _face_flags_kernel!(backend)(flags, idx, nx, ny, bcdim, coord; ndrange=face_area)
+    KernelAbstractions.synchronize(backend)
+    scan = accumulate(+, flags)
+    n = Int(Array(@view scan[end:end])[1])
+    _free!(flags)
+
+    nodes = similar(idx, Ti, n)
+    if n > 0
+        _face_fill_kernel!(backend)(
+            nodes, scan, idx, nx, ny, bcdim, coord; ndrange=face_area,
+        )
+        KernelAbstractions.synchronize(backend)
+    end
+    _free!(scan)
+    return nodes
+end
+
+"""
+Build the compact inlet-edge map while the full pore-index grid is available.
+
+Only boundary faces are retained, so permanent storage is O(N²) rather than
+O(N³). The scans compact pore ordinals and valid pore-to-pore edges without
+atomics and keep their order deterministic on every backend.
+"""
+function _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout=false)
+    nx, ny, _ = size(idx)
+    face_area = length(idx) ÷ size(idx, bcdim)
+    backend = get_backend(idx)
+    Ti = eltype(idx)
+
+    flags = similar(idx, Ti, face_area)
+    _inlet_flags_kernel!(backend)(flags, idx, nx, ny, bcdim; ndrange=face_area)
+    KernelAbstractions.synchronize(backend)
+    scan = accumulate(+, flags)
+    n = Int(Array(@view scan[end:end])[1])
+    _free!(flags)
+
+    sources = checkpoint_readout ? similar(idx, Ti, n) : nothing
+    targets = similar(idx, Ti, n)
+    weights = similar(idx, typeof(D0), n)
+    if n > 0
+        _inlet_fill_kernel!(backend)(
+            sources, targets, weights, scan, idx, D, nx, ny, bcdim, D0;
+            ndrange=face_area,
+        )
+        KernelAbstractions.synchronize(backend)
+    end
+    _free!(scan)
+
+    inlet = checkpoint_readout ? _build_face_nodes(idx, bcdim, 1) : nothing
+    outlet = checkpoint_readout ?
+        _build_face_nodes(idx, bcdim, size(idx, bcdim)) : nothing
+    two_layer = size(idx, bcdim) == 2
+    direct = two_layer && n > 0 ? sum(weights) : zero(D0)
+    if two_layer && !checkpoint_readout
+        _free!(targets)
+        _free!(weights)
+        targets = nothing
+        weights = nothing
+    end
+    return InletFlux(sources, targets, weights, inlet, outlet, direct)
+end
+
+"""
     _steady_count_kernel!(counts, b, idx, D, nx, ny, nz, bcdim, nbc, D0)
 
 KA kernel, pass 1: one thread per grid voxel writes the number of stored entries
@@ -207,6 +370,47 @@ operator, where the ordinal is the only index in play.
 """
 _ordinal_index_type(nnodes::Integer) = nnodes + 1 <= typemax(Int32) ? Int32 : Int
 
+const _COLPTR_MIN_THREADED = 200_000
+
+function _host_colptr!(colptr, counts)
+    n = length(counts)
+    if Threads.nthreads() == 1 || n < _COLPTR_MIN_THREADED
+        serial_total = one(eltype(colptr))
+        colptr[1] = serial_total
+        @inbounds for j in eachindex(counts)
+            serial_total += counts[j]
+            colptr[j + 1] = serial_total
+        end
+        return colptr
+    end
+
+    colptr[1] = one(eltype(colptr))
+    _threaded_scan!(
+        view(colptr, 2:(n + 1)), j -> counts[j], one(eltype(colptr)),
+        (j, offset) -> offset,
+    )
+    return colptr
+end
+
+function _column_pointers(counts::Vector{Ti}) where {Ti<:Integer}
+    colptr = similar(counts, length(counts) + 1)
+    _host_colptr!(colptr, counts)
+    _free!(counts)
+    return colptr
+end
+
+function _column_pointers(counts)
+    n = length(counts)
+    backend = get_backend(counts)
+    scan = accumulate(+, counts)
+    _free!(counts)
+    colptr = similar(scan, n + 1)
+    _build_colptr_kernel!(backend)(colptr, scan, n; ndrange=max(n, 1))
+    KernelAbstractions.synchronize(backend)
+    _free!(scan)
+    return colptr
+end
+
 """
     _resolve_index_type(Ti, nnodes)
 
@@ -265,7 +469,10 @@ compare against.
   spare; force `Int32` to have the request checked against the bound rather than
   assumed.
 """
-function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing)
+function build_steady_system(
+    img; nnodes, axis, D=nothing, T=Float64, Ti=nothing, return_flux::Bool=false,
+    checkpoint_readout::Bool=false,
+)
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
@@ -296,12 +503,13 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing
     # type is the ordinal's, not the offsets': the two bounds differ by a factor
     # of seven, and this array spans the grid rather than the pore space.
     idx = similar(img, _ordinal_index_type(nnodes))
-    cumsum!(vec(idx), vec(img))
-    idx .*= img
+    _pore_index!(idx, img)
     backend = get_backend(idx)
-    # 256 threads laid out along the contiguous dimension, so a warp reads one
-    # run of `idx` and its two in-plane neighbour rows coalesced.
-    wg = (64, 4, 1)
+    inlet_flux = return_flux ?
+        _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout) : nothing
+    # The backend-selected shape keeps the first dimension contiguous while
+    # balancing occupancy against locality.
+    wg = _steady_workgroup(idx)
 
     counts = similar(idx, Ti, nnodes)
     b = similar(idx, T, nnodes)
@@ -310,12 +518,7 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing
     )
     KernelAbstractions.synchronize(backend)
 
-    scan = accumulate(+, counts)
-    _free!(counts)
-    colptr = similar(idx, Ti, nnodes + 1)
-    _build_colptr_kernel!(backend)(colptr, scan, nnodes; ndrange=max(nnodes, 1))
-    KernelAbstractions.synchronize(backend)
-    _free!(scan)
+    colptr = _column_pointers(counts)
 
     # One single-slot host read, the idiom `_build_connectivity_list_ka` uses.
     nnz_A = Int(Array(@view colptr[end:end])[1]) - 1
@@ -333,5 +536,5 @@ function build_steady_system(img; nnodes, axis, D=nothing, T=Float64, Ti=nothing
     # and its column alike. `test_assembly.jl` pins this.
     A = on_gpu ? PortableSparseCSC(nnodes, nnodes, colptr, rowval, nzval; symmetric=true) :
         SparseMatrixCSC(nnodes, nnodes, colptr, rowval, nzval)
-    return A, b
+    return return_flux ? (A, b, inlet_flux) : (A, b)
 end

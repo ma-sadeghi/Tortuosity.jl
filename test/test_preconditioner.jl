@@ -16,10 +16,13 @@ using Tortuosity:
     two_level_preconditioner,
     DEFAULT_COARSE_SHIFT,
     DEFAULT_COARSE_BLOCK,
+    DEFAULT_MAX_COARSE,
+    DEFAULT_GPU_MAX_COARSE,
     COARSE_RATIO,
     _COARSE_SLOTS,
     _coarse_operator,
     _coarse_diagonal_floor,
+    _resolve_max_coarse,
     reconstruct_field,
     tortuosity
 
@@ -74,6 +77,8 @@ const PRECOND_IMAGES = precond_fixtures()
     # each one `COARSE_RATIO` coarser per edge, down to a direct solve that fits.
     P = two_level_preconditioner(sim; block=2, max_coarse=8)
     @test P.block == 2
+    uses_gather = Threads.nthreads() > 1 && size(sim.prob.A, 1) >= Tortuosity.PROLONG_MIN_THREADED
+    @test (P.agg isa Tortuosity.Aggregation) == uses_gather
     @test P.nc > 8                                  # the coarse space itself is not shrunk
     @test !isempty(P.levels)
     sizes = [size(L.A, 1) for L in P.levels]
@@ -88,6 +93,8 @@ const PRECOND_IMAGES = precond_fixtures()
     # Under the ceiling nothing is interposed at all, which is the two-level
     # method exactly as it was.
     @test isempty(two_level_preconditioner(sim; block=2, max_coarse=32_000).levels)
+    @test _resolve_max_coarse(sim.prob.A, nothing, (25, 25, 25)) == DEFAULT_MAX_COARSE
+    @test _resolve_max_coarse(sim.prob.A, 123, (25, 25, 25)) == 123
 end
 
 # Each level's operator has to be the Galerkin product of the one above it. A

@@ -200,6 +200,9 @@ end
     @test size(op, 1) == nnodes
     @test size(op, 2) == nnodes
     @test eltype(op) === Float64
+    @test !Tortuosity._async_return_safe(op.idx)
+    @test Tortuosity._steady_workgroup(op.idx) == (64, 4, 1)
+    @test Tortuosity._precond_min_nodes(b) == Tortuosity._CPU_PRECOND_MIN_NODES
     @test length(b) == nnodes
     @test op.nnodes == nnodes
     @test size(op.idx) == size(img)
@@ -537,6 +540,26 @@ end
         @test count(img) < Tortuosity._PRECOND_MIN_NODES
         sentinel = Tortuosity.two_level_preconditioner(sim; block=4)
         @test Tortuosity._resolve_precond(sentinel, sim, false) === sentinel
+
+        thin = ones(Bool, 17, 40, 40)
+        thin_sim = SteadyDiffusionProblem(
+            thin; axis=:x, gpu=false, matrixfree=true, warn_nonpercolating=false,
+        )
+        @test count(thin) > Tortuosity._precond_min_nodes(thin_sim.prob.b)
+        @test Tortuosity._resolve_precond(:auto, thin_sim, false) === nothing
+
+        below = trues(40, 14, 14)
+        below_sim = SteadyDiffusionProblem(
+            below; axis=:x, gpu=false, matrixfree=true, warn_nonpercolating=false,
+        )
+        above = trues(40, 16, 16)
+        above_sim = SteadyDiffusionProblem(
+            above; axis=:x, gpu=false, matrixfree=true, warn_nonpercolating=false,
+        )
+        @test count(below) < Tortuosity._CPU_PRECOND_MIN_NODES
+        @test count(above) > Tortuosity._CPU_PRECOND_MIN_NODES
+        @test Tortuosity._resolve_precond(:auto, below_sim, false) === nothing
+        @test !isnothing(Tortuosity._resolve_precond(:auto, above_sim, false))
     end
 
     @testset "drives the preconditioner on a problem large enough to want one" begin

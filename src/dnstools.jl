@@ -7,6 +7,108 @@
 #  the rate from j to i, but with opposite sign. So when we sum the rates, the
 #  lateral rates cancel out.
 
+function _inlet_edge_flux(u, flux::InletFlux)
+    !iszero(flux.direct) && return zero(flux.direct)
+    isnothing(flux.targets) && return zero(flux.direct)
+    isempty(flux.targets) && return zero(eltype(flux.weights))
+
+    targets, weights = flux.targets, flux.weights
+    u_backend = _device_backend(u)
+    if _same_device(targets, u)
+        return mapreduce(
+            (i, w) -> w * (one(eltype(u)) - u[i]), +, targets, weights,
+        )
+    end
+
+    adapted_nodes = isnothing(u_backend) ?
+        Vector{eltype(targets)}(undef, length(targets)) :
+        similar(u, eltype(targets), length(targets))
+    adapted_weights = isnothing(u_backend) ?
+        Vector{eltype(u)}(undef, length(weights)) :
+        similar(u, eltype(u), length(weights))
+    try
+        copyto!(adapted_nodes, targets)
+        copyto!(adapted_weights, weights)
+        return mapreduce(
+            (i, w) -> w * (one(eltype(u)) - u[i]), +, adapted_nodes, adapted_weights,
+        )
+    finally
+        _free!(adapted_nodes)
+        _free!(adapted_weights)
+    end
+end
+
+function _checkpoint_tortuosity(u, sim::SteadyDiffusionProblem)
+    flux = sim.flux
+    isnothing(flux) && throw(ArgumentError(
+        "this SteadyDiffusionProblem has no boundary-flux metadata"
+    ))
+    isnothing(flux.sources) && throw(ArgumentError(
+        "construct the SteadyDiffusionProblem with `checkpoint_readout=true` to inspect \
+         unconverged iterates"
+    ))
+    _same_device(u, flux.targets) || throw(ArgumentError(
+        "checkpoint readout requires the solution and boundary metadata on the same backend"
+    ))
+
+    # `init` so that an empty face reduces to zero and the ratio below comes out
+    # NaN, as the field-based readout does, instead of throwing in a callback.
+    zero_u = zero(eltype(u))
+    edge_flux = mapreduce(
+        (source, target, weight) -> weight * (u[source] - u[target]),
+        +, flux.sources, flux.targets, flux.weights; init=zero_u,
+    )
+    inlet_mean = mapreduce(i -> u[i], +, flux.inlet; init=zero_u) / length(flux.inlet)
+    outlet_mean = mapreduce(i -> u[i], +, flux.outlet; init=zero_u) / length(flux.outlet)
+    dc = inlet_mean - outlet_mean
+
+    ax = axis_dim(sim.axis)
+    N = size(sim.img, ax)
+    face_area = length(sim.img) ÷ N
+    D_eff = edge_flux / face_area * (N - 1) / dc
+    ε = length(sim.prob.b) / length(sim.img)
+    return sim.D0 * ε / D_eff
+end
+
+"""
+    effective_diffusivity(u, sim::SteadyDiffusionProblem; voxel_size=1.0, L=nothing, dc=1.0)
+
+Compute effective diffusivity directly from the pore-ordered solution vector
+`u` and its steady problem, without reconstructing the full concentration
+field.
+
+The problem retains a compact map of edges from the unit-concentration inlet to
+the adjacent free nodes. Reducing `w * (1 - u[i])` over those edges runs where
+`u` lives and transfers only the resulting scalar from a GPU, instead of
+copying the pore vector to the host and allocating an image-sized concentration
+field.
+
+`dc` defaults to the imposed inlet-to-outlet concentration difference, which is
+one for every `SteadyDiffusionProblem`.
+"""
+function effective_diffusivity(
+    u::AbstractVector, sim::SteadyDiffusionProblem;
+    voxel_size=1.0, L=nothing, dc=1.0,
+)
+    n = length(sim.prob.b)
+    length(u) == n || throw(DimensionMismatch(
+        "solution has length $(length(u)) but the steady problem has $(n) unknowns"
+    ))
+    isnothing(sim.flux) && throw(ArgumentError(
+        "this SteadyDiffusionProblem was built from an existing LinearProblem and has no \
+         inlet-flux metadata; construct it from an image to use direct transport observables"
+    ))
+
+    ax = axis_dim(sim.axis)
+    N = size(sim.img, ax)
+    L = isnothing(L) ? (N - 1) * voxel_size : L
+    face_area = length(sim.img) ÷ N
+    edge_flux = _inlet_edge_flux(u, sim.flux)
+    total_flux = edge_flux + sim.flux.direct
+    J = total_flux / voxel_size / face_area
+    return J * L / dc
+end
+
 """
     effective_diffusivity(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=nothing, dc=nothing)
 
@@ -35,6 +137,32 @@ function effective_diffusivity(c, img; axis, ind=1, D=1.0, voxel_size=1.0, L=not
     dc = isnothing(dc) ? nanmean(selectdim(c, ax, 1)) - nanmean(selectdim(c, ax, N)) : dc
     J = flux(c, D, voxel_size, img, axis; ind=ind)
     return J * L / dc
+end
+
+"""
+    tortuosity(u, sim::SteadyDiffusionProblem; ε=nothing, D0=nothing,
+               voxel_size=1.0, L=nothing, dc=1.0)
+
+Compute tortuosity directly from a pore-ordered steady solution. This is the
+fast path when the full concentration field is not otherwise needed; use
+[`reconstruct_field`](@ref) only for field visualization or analysis.
+
+The problem retains the scalar reference diffusivity selected from the `D` used
+to construct it, so device-resident diffusivity fields do not need to be copied
+or indexed from the host. Pass `D0` only to override that reference.
+"""
+function tortuosity(
+    u::AbstractVector, sim::SteadyDiffusionProblem;
+    ε=nothing, D0=nothing, voxel_size=1.0, L=nothing, dc=1.0,
+)
+    ε = isnothing(ε) ? length(sim.prob.b) / length(sim.img) : ε
+    isnothing(sim.D0) && isnothing(D0) && throw(ArgumentError(
+        "this SteadyDiffusionProblem has no reference-diffusivity metadata; pass `D0`, \
+         or construct it from an image"
+    ))
+    D0 = isnothing(D0) ? sim.D0 : D0
+    D_eff = effective_diffusivity(u, sim; voxel_size, L, dc)
+    return D0 * ε / D_eff
 end
 
 """
@@ -89,18 +217,57 @@ end
 # conventional reference is the fastest conducting phase, taken over the pore
 # space so that whatever value fills the solid voxels cannot set the scale.
 #
-# Reduced lazily rather than as `maximum(D[img])`: logical indexing materialises
-# one element per pore voxel — 4.8 GB at 1000³ and ε = 0.6, on top of the field
-# itself — to read a single number. Measured on a 24³ field: 16 B against
-# 32.7 kB, at about 2.2x the time. Memory is the binding constraint at the sizes
-# this package is built for, so the trade goes this way deliberately; it is not
-# free. `eachindex` over both arrays keeps the shape check that indexing gave.
-#
-# `D` is a host array on every path that reaches here: `flux` broadcasts `D`
-# against the host concentration field, so a device `D` fails there before this
-# reduction's cost could matter.
+# A fused masked reduction rather than `maximum(D[img])`: logical indexing
+# materialises one value per pore voxel — 4.8 GB at 1000³ and ε = 0.6 — to
+# return one scalar. `mapreduce` also stays on the arrays' backend, which lets
+# construction retain `D0` without copying a device diffusivity to the host.
 _reference_diffusivity(D::Number, img) = D
-_reference_diffusivity(D, img) = maximum(D[i] for i in eachindex(img, D) if img[i])
+function _reference_diffusivity(D, img)
+    _check_reference_axes(D, img)
+    return mapreduce(
+        (d, pore) -> ifelse(pore, d, typemin(typeof(d))), max, D, img,
+    )
+end
+
+# Only GPUArrays fuses the two-array `mapreduce`. Base lowers it to
+# `reduce(op, map(f, A, B))`, which materialises a full-grid temporary — 8 GB at
+# 1000³ in `Float64` — so host arrays take a plain loop instead.
+function _reference_diffusivity(D::Array, img::Union{Array,BitArray})
+    _check_reference_axes(D, img)
+    best = typemin(eltype(D))
+    @inbounds for i in eachindex(D, img)
+        best = ifelse(img[i], max(best, D[i]), best)
+    end
+    return best
+end
+
+function _check_reference_axes(D, img)
+    axes(D) == axes(img) || throw(DimensionMismatch(
+        "diffusivity has axes $(axes(D)) but the pore mask has axes $(axes(img))"
+    ))
+    return nothing
+end
+
+"""
+    formation_factor(u, sim::SteadyDiffusionProblem; D0=nothing,
+                     voxel_size=1.0, L=nothing, dc=1.0)
+
+Compute the formation factor directly from a pore-ordered steady solution,
+without reconstructing the full concentration field. The reference diffusivity
+comes from the `D` used to build `sim`; pass `D0` only to override it.
+"""
+function formation_factor(
+    u::AbstractVector, sim::SteadyDiffusionProblem;
+    D0=nothing, voxel_size=1.0, L=nothing, dc=1.0,
+)
+    isnothing(sim.D0) && isnothing(D0) && throw(ArgumentError(
+        "this SteadyDiffusionProblem has no reference-diffusivity metadata; pass `D0`, \
+         or construct it from an image"
+    ))
+    D0 = isnothing(D0) ? sim.D0 : D0
+    D_eff = effective_diffusivity(u, sim; voxel_size, L, dc)
+    return D0 / D_eff
+end
 
 """
     formation_factor(c, img; axis, ind=1, D=1.0, D0=nothing, voxel_size=1.0, L=nothing, dc=nothing)

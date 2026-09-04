@@ -38,6 +38,8 @@ cd benchmarks/
 
 That resolves the Julia project, installs the Python environment with [pixi](https://pixi.sh), checks out the vendored taufactor fork at its pinned commit, and checks that the GPU and all four tools actually work before anything is measured.
 
+`run/campaign.sh` requires `setsid` so an interrupted campaign can terminate and wait for each complete child process group before releasing the measurement lock. The occupancy drivers likewise require POSIX process-group containment. Run measurement from Linux/WSL and install a `setsid` implementation for the shell campaign; these tools fail closed rather than risk an orphaned solver. All checkouts on a host share `/tmp/tortuosity-benchmark.measurement.lock`; set `TORTUOSITY_BENCHMARK_LOCK_DIR` to another absolute path only when the host requires it.
+
 Two things about the environments are deliberate and easy to undo by accident:
 
 - **The Julia project here is separate from the package above it.** `bench_tortuosity.jl` needs CUDA, which is a *weak* dependency of Tortuosity.jl. Adding it to the package's own `Project.toml` would turn the CUDA extension into a hard dependency of the released package. Always run with `--project=.` from this directory.
@@ -62,8 +64,8 @@ A stage can run for hours, so every one of them logs as it goes — through `log
 ```bash
 julia --project=. generate_images.jl --grid=full
 julia --project=. -t auto compute_references.jl --grid=full
-julia --project=. -t 1 bench_tortuosity.jl --device=gpu --operator=matrixfree --measure=time
-julia --project=. -t 1,1 bench_tortuosity.jl --device=cpu --operator=assembled --measure=memory
+julia --project=. -t auto bench_tortuosity.jl --device=gpu --operator=matrixfree --measure=time
+julia --project=. -t auto,1 bench_tortuosity.jl --device=cpu --operator=assembled --measure=memory
 pixi run python bench_taufactor.py --device=cpu --measure=time
 pixi run python bench_puma.py --measure=memory
 pixi run -e porespy python bench_porespy.py --sizes=200 --measure=time
@@ -129,6 +131,8 @@ The warm-up has to exercise the same code as the measurement, not merely the sam
 
 Each iteration-swept tool's whole ladder is traced from a **single** solve. A Krylov or SOR iterate is deterministic — iterate *k* is the same vector whether the run stopped there or carried on — so reading tortuosity off at each rung reports exactly what one solve per rung reported, for a fraction of the cost. The time recorded against a rung has the cost of the readings taken so far subtracted back out, so it stays comparable with a plain run that stopped at that iteration.
 
+CPU Tortuosity rows use the package's bandwidth-fused `HostCG` implementation and carry `-hostcg` in their variant and filename. GPU rows retain `KrylovJL_CG`. Encoding the solver in the CPU variant is required for resume safety: a campaign must never treat an older Krylov row as a completed HostCG case or mix both algorithms in one series.
+
 PoreSpy is swept on tolerance and so needs a solve per rung, but everything the tolerance does not change is shared: trimming, the network, the assembly and the multigrid hierarchy are built once and their measured cost is added to every rung. That is what the tool charges a user who asks for that tolerance directly. Rebuilding them per rung would charge one fixed cost eighteen times and measure the ladder rather than the solver.
 
 Verified rather than assumed, on both devices and all three iteration-swept tools: τ comes back **bit-identical** at every rung, and the traced time lands within a few percent of one-solve-per-rung, converging on it as the rung grows. This is what makes the campaign affordable — the CPU stages were 6.5 of the 7 hours of the previous 200³ run.
@@ -137,7 +141,7 @@ Two things this required. `abstol = 0` for Tortuosity.jl, because LinearSolve ot
 
 Each rung is run three times and the **median** reported, with the spread recorded alongside. The median rather than one sample because wall time varies between launches, and because the preconditioner's restriction once scattered with atomic float adds whose order is not fixed. Those adds moved τ between runs by roughly the size of the accuracy target, and made whether a case "reached" the target partly luck. That scatter is now a gather over a fixed coarse-to-fine adjacency, and every three-repeat GPU row in the current results reports a τ spread of exactly zero. The coarse operator's own assembly still uses atomics, so bit-for-bit equality across runs is not guaranteed even though it is what we now measure. A first repeat slower than `repeat_threshold_s` abandons the remaining repeats, and those rows carry `repeats = 1` and a NaN spread — a spread of zero is the claim that three runs agreed exactly, which is not the same thing.
 
-**Every tool is clocked from the moment it receives the image to the moment tortuosity can be read.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all four. Only the image itself, and the tortuosity read-off at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work a user does.
+**Every tool is clocked from the moment it receives the image to the moment the solved state is ready for a tortuosity readout.** One rule, applied identically: problem construction, matrix assembly and preconditioner build are all inside the timed region, for all four. Only the image itself, and the tortuosity readout at the end, sit outside — the first because it is the input, the second because it is instrumentation rather than work shared by the solvers. Tortuosity.jl now reduces that scalar directly from its compact inlet-edge map, but the readout remains excluded so the timing boundary stays identical to the pinned competitor harnesses.
 
 This replaces an earlier convention that excluded setup for taufactor and PuMA on the grounds that their users "pay it before solving", and described the result as conservative. It was not conservative by a little. taufactor's `Solver` constructor builds the SOR checkerboard from an N³ float64 array and a three-way N³ meshgrid. Measured at 200³ on a GPU it costs **0.415 s against a 0.48 s solve — 45% of the total**, and it grows as N³. Charging Tortuosity.jl for its assembly and coarse space while charging taufactor nothing skewed the GPU comparison by about the whole margin being measured, and it inverted the ranking at the loose end of the accuracy ladder.
 

@@ -1,7 +1,7 @@
 # Benchmark Tortuosity.jl on the shared image store.
 #
-#   julia --project=. bench_tortuosity.jl --device=gpu --operator=matrixfree
-#   julia -t 1,1 --project=. bench_tortuosity.jl --device=cpu --measure=memory
+#   julia -t auto --project=. bench_tortuosity.jl --device=gpu --operator=matrixfree
+#   julia -t auto,1 --project=. bench_tortuosity.jl --device=cpu --measure=memory
 #
 # One device and one solver configuration per invocation, each writing its own
 # CSV. Splitting them is not tidiness: a process that has already run large
@@ -44,13 +44,14 @@ matrixfree = operator == "matrixfree"
 axis = Symbol(cfg["campaign"]["axis"])
 # The preconditioner is part of the configuration's identity, so a run without
 # it lands in its own file rather than silently mixing with one that had it.
-variant = operator * (precond == :none ? "-nopc" : "")
+solver_suffix = gpu ? "" : "-hostcg"
+variant = operator * solver_suffix * (precond == :none ? "-nopc" : "")
 overwrite = flag(args, "overwrite")
 
 gpu && !CUDA.functional() && error("--device=gpu but CUDA is not functional on this machine")
 
 subdir = measure == "time" ? "timings" : "memory"
-outpath = joinpath(cfg.root, "results", subdir, "tortuosity-$(device)-$(variant).csv")
+outpath = joinpath(BH.results_output_dir(cfg), subdir, "tortuosity-$(device)-$(variant).csv")
 columns = measure == "time" ? BH.TIMING_COLUMNS : BH.MEMORY_COLUMNS
 
 target_error = Float64(cfg["sweep"]["target_error"])
@@ -95,7 +96,8 @@ if flag(args, "dry-run")
     exit(0)
 end
 
-measure == "time" && BH.check_threads(cfg)
+threads_ok = measure != "time" || BH.check_threads(cfg)
+threads_ok || error("timing runs must use the configured thread count")
 isempty(no_reference) || @warn "skipping cases with no ground truth — run compute_references.jl" cases = no_reference
 
 """Solve with warnings silenced.
@@ -116,8 +118,11 @@ coarse space for the preconditioner is a cost a user pays on every `solve(sim)`,
 so charging it here is what keeps the comparison against another package honest.
 """
 function solve_case(img, maxiters)
-    sim = SteadyDiffusionProblem(img; axis=axis, gpu=gpu, matrixfree=matrixfree)
-    sol = quiet_solve(sim, KrylovJL_CG(); precond=precond, verbose=false,
+    sim = SteadyDiffusionProblem(
+        img; axis=axis, gpu=gpu, matrixfree=matrixfree, warn_nonpercolating=false,
+    )
+    alg = gpu ? KrylovJL_CG() : Tortuosity.HostCG()
+    sol = quiet_solve(sim, alg; precond=precond, verbose=false,
                       maxiters=maxiters, reltol=cap_reltol)
     # Krylov methods read the residual norm back to the host every iteration, so
     # the device is very nearly synchronised already — but "very nearly" is not a
@@ -133,6 +138,31 @@ release!() = (GC.gc(true); gpu && CUDA.reclaim(); nothing)
 # is also what `@elapsed` uses, so the traced times stay on the same clock as
 # every number this harness reported before.
 now_s() = time_ns() / 1e9
+
+const OCCUPANCY_MARKING_ENABLED = Ref(false)
+
+function mark_occupancy_phase(name)
+    OCCUPANCY_MARKING_ENABLED[] || return nothing
+    marker = get(ENV, "TORTUOSITY_BENCHMARK_PHASE_MARKER", "")
+    isempty(marker) && return nothing
+    mkpath(dirname(marker))
+    active = marker * ".active"
+    if name in ("start", "resume")
+        open(active, "w") do io
+            println(io, time_ns())
+        end
+    elseif name in ("pause", "end")
+        rm(active; force=true)
+    end
+    path = marker * "." * name
+    open(path, "w") do io
+        println(io, time_ns())
+    end
+    open(marker * ".transitions", "a") do io
+        println(io, name, ",", time_ns())
+    end
+    return nothing
+end
 
 row_prefix(case) = (; tool="tortuosity", device, variant, cpu_threads=Threads.nthreads(),
                     case_id=case.id, size=case.size, blobiness=case.blobiness,
@@ -153,14 +183,23 @@ subtracted back out.
 Stops at the first rung that meets the accuracy target, so a case that converges
 early never pays for the rungs above it.
 """
-function trace_case(img, tau_ref; rungs=ladder)
+function _trace_case(img, tau_ref; rungs=ladder)
     rows, pending, excluded, k = NamedTuple[], copy(rungs), Ref(0.0), Ref(0)
     asked_to_stop = Ref(false)
     # Drain whatever the previous case left queued before starting the clock, for
     # the same reason every checkpoint reads it after a barrier: work that is
     # already in flight must not be charged to this solve.
     gpu && CUDA.synchronize()
+    mark_occupancy_phase("start")
     t0 = now_s()
+
+    sim = SteadyDiffusionProblem(
+        img; axis=axis, gpu=gpu, matrixfree=matrixfree, warn_nonpercolating=false,
+        checkpoint_readout=true,
+    )
+    # Construction is charged to every rung, so the padded rows below have to
+    # carry it too — they re-solve, but they do not rebuild.
+    setup_s = now_s() - t0
 
     cb = function (ws)
         k[] += 1
@@ -170,19 +209,17 @@ function trace_case(img, tau_ref; rungs=ladder)
         # nearly synchronised already — but "nearly" is not a measurement.
         gpu && CUDA.synchronize()
         mark = now_s()
-        tau = tortuosity(reconstruct_field(copy(ws.x), img), img; axis=axis)
+        mark_occupancy_phase("pause")
+        tau = Tortuosity._checkpoint_tortuosity(ws.x, sim)
         elapsed = mark - t0 - excluded[]
         push!(rows, (; iters=k[], tau, time_s=elapsed))
         excluded[] += now_s() - mark
         asked_to_stop[] = abs(tau - tau_ref) / tau_ref <= target_error ||
                           elapsed > timeout_s || isempty(pending)
+        asked_to_stop[] || mark_occupancy_phase("resume")
         return asked_to_stop[]
     end
 
-    sim = SteadyDiffusionProblem(img; axis=axis, gpu=gpu, matrixfree=matrixfree)
-    # Construction is charged to every rung, so the padded rows below have to
-    # carry it too — they re-solve, but they do not rebuild.
-    setup_s = now_s() - t0
     # `abstol=0` because the iteration count has to be the only stopping rule for
     # the trace to reach the rungs it was asked for. LinearSolve otherwise
     # defaults it to `sqrt(eps(T))`, which on `Float32` is 3.4e-4 — loose enough
@@ -193,7 +230,8 @@ function trace_case(img, tau_ref; rungs=ladder)
     # the callback on its correction rounds, where `ws.x` is a correction and the
     # tortuosity read off it is meaningless. The refined answer is measured below,
     # on its own, where it is the thing being asked for.
-    sol = quiet_solve(sim, KrylovJL_CG(; callback=cb); precond=precond, verbose=false,
+    alg = gpu ? KrylovJL_CG(; callback=cb) : Tortuosity.HostCG(; callback=cb)
+    sol = quiet_solve(sim, alg; precond=precond, verbose=false,
                       maxiters=last(rungs), reltol=cap_reltol, abstol=0.0, refine=false)
     gpu && CUDA.synchronize()
 
@@ -223,16 +261,19 @@ function trace_case(img, tau_ref; rungs=ladder)
             refined = quiet_solve(sim, KrylovJL_CG(); precond=precond, verbose=false,
                                   maxiters=last(rungs), reltol=cap_reltol, abstol=0.0)
             CUDA.synchronize()
+            mark = now_s()
+            mark_occupancy_phase("pause")
+            tau = tortuosity(refined.u, sim)
             # `setup_s` because every checkpointed rung's time is setup plus the
             # iterations up to it, and a padded rung has to be comparable with
             # them. The re-solve is timed on its own, but the problem it solves
             # was still built.
-            elapsed = setup_s + (now_s() - t1)
-            tau = tortuosity(reconstruct_field(refined.u, img), img; axis=axis)
+            elapsed = setup_s + (mark - t1)
             refined = nothing
         else
             mark = now_s()
-            tau = tortuosity(reconstruct_field(sol.u, img), img; axis=axis)
+            mark_occupancy_phase("pause")
+            tau = Tortuosity._checkpoint_tortuosity(sol.u, sim)
             elapsed = mark - t0 - excluded[]
         end
         for iters in pending
@@ -241,8 +282,17 @@ function trace_case(img, tau_ref; rungs=ladder)
     end
 
     sim = sol = nothing
+    mark_occupancy_phase("pause")
     release!()
     return rows
+end
+
+function trace_case(img, tau_ref; rungs=ladder)
+    try
+        return _trace_case(img, tau_ref; rungs)
+    finally
+        mark_occupancy_phase("end")
+    end
 end
 
 """Sweep one case, writing a row per rung and stopping at the first conclusion."""
@@ -340,6 +390,12 @@ end
 
 # ── Warm up, then run ─────────────────────────────────────────────────
 
+phase_marked = !isempty(get(ENV, "TORTUOSITY_BENCHMARK_PHASE_MARKER", ""))
+phase_marked && length(pending) != 1 &&
+    error("phase-marked runs require exactly one pending case")
+phase_marked && measure != "time" &&
+    error("phase-marked runs require --measure=time")
+
 # Warmed on an image of its own rather than on a measured one: no reported number
 # may include compilation, and re-solving a benchmark case to warm the path would
 # double its cost for nothing. Julia specialises on types rather than on array
@@ -348,7 +404,10 @@ end
 # coarse space, so this warms the preconditioner too when one is in use.
 @info "Warming up" device operator precond measure threads = Threads.nthreads()
 let warm = BH.build_image(cfg, Case(64, 1.0, 0.6))
-    solve_case(warm, 5)
+    sim, sol = solve_case(warm, 5)
+    tortuosity(sol.u, sim)
+    sim = sol = nothing
+    release!()
     # The timing stage runs a *different* path, and warming only the one above
     # would leave the first measured case carrying its compilation: a callback of
     # a fresh closure type respecializes `Krylov.cg!`, and the tortuosity read-off
@@ -357,6 +416,7 @@ let warm = BH.build_image(cfg, Case(64, 1.0, 0.6))
     measure == "time" && trace_case(warm, Inf; rungs=[1, 2])
     release!()
 end
+OCCUPANCY_MARKING_ENABLED[] = phase_marked
 
 record_environment(cfg; stage=measure, tool="tortuosity", device, variant,
                    accelerator=gpu ? string(CUDA.name(CUDA.device())) : "",
@@ -376,6 +436,7 @@ try
         img = load_image(cfg, case)
         try
             measure == "time" ? sweep_case(w, case, img, refs[case.id]) : probe_case(w, case, img)
+            mark_occupancy_phase("success")
         catch e
             # One case failing must not take the rest of the run with it. At the
             # largest sizes the assembled path is *expected* to run out of device

@@ -112,8 +112,16 @@ rather than guessed at.
 Fourteen stages, serially, ordered so that an interrupted night leaves the results
 the paper most needs. Do not add parallelism. The stages contend for the same GPU
 and the same cores, and concurrency corrupts the very timings this exists to
-measure. `campaign.sh` takes a PID lock and refuses to start beside a live
-campaign, but that only catches the obvious case.
+measure. `campaign.sh` and both occupancy drivers take the same atomic
+measurement lock and refuse to start beside one another.
+
+`campaign.sh` also requires `setsid`. It exits before taking the lock when
+`setsid` is unavailable, because signaling only the wrapper PID cannot safely
+stop descendants launched through pixi.
+
+The lock is host-global rather than checkout-local:
+`${TORTUOSITY_BENCHMARK_LOCK_DIR:-/tmp/tortuosity-benchmark.measurement.lock}`.
+Every clone and worktree therefore contends on the same directory.
 
 PuMA and PoreSpy are not in the default tool list. Both are CPU only, both are an
 order of magnitude or more off the pace at the smallest size, and sweeping either
@@ -154,18 +162,28 @@ To stop cleanly, `Ctrl-C` the campaign inside its tmux window and confirm nothin
 survived:
 
 ```bash
-pgrep -af 'campaign.sh|bench_tortuosity|bench_taufactor|bench_puma'
+pgrep -af 'campaign.sh|generate_images|compute_references|bench_tortuosity|bench_taufactor|bench_puma|bench_porespy|measure_occupancy'
 ```
 
-**Killing the solver process is not enough.** The campaign script waits on its
-child. If you kill only the child, the script advances to the next stage, so a
-replacement campaign started afterwards runs concurrently with it. Match on the
-command line and kill the shell too:
+**Signal the recorded lock owner, not one solver process.** The campaign and
+occupancy drivers run each child in a managed process group. On `TERM` or
+`Ctrl-C` they terminate and wait for that group before releasing the shared
+measurement lock:
 
 ```bash
-pkill -f 'campaign.sh|bench_tortuosity|bench_taufactor|bench_puma'
-rm -f logs/.campaign.lock
+lock="${TORTUOSITY_BENCHMARK_LOCK_DIR:-/tmp/tortuosity-benchmark.measurement.lock}"
+owner=$(cat "$lock/pid")
+kill -TERM "$owner"
+while kill -0 "$owner" 2>/dev/null; do sleep 1; done
+test ! -e "$lock"
 ```
+
+If an uncatchable signal or machine failure leaves the lock behind, first run
+the comprehensive `pgrep` check above. Remove
+`$lock/pid`, `$lock/child_pgid` (when present), and the now-empty directory
+only when that command prints nothing.
+Removing a lock while any listed process survives permits the next campaign to
+overlap it and invalidates both measurements.
 
 Resuming is just re-running the same command. Every stage resumes from its own
 results file, cases run cheapest first, and a sweep counts as complete only once

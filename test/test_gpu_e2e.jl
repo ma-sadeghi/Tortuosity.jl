@@ -19,6 +19,23 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruc
 # Steady-state
 # ---------------------------------------------------------------------------
 
+@testset "automatic GPU selection follows the registered backend crossover" begin
+    threshold = Tortuosity._gpu_min_nodes(Tortuosity._preferred_gpu_backend[])
+    n = max(ceil(Int, cbrt(threshold)), 4 * Tortuosity.DEFAULT_COARSE_BLOCK + 1)
+    img = ones(Bool, n, n, n)
+    sim = SteadyDiffusionProblem(img; axis=:x, matrixfree=true, warn_nonpercolating=false)
+    @test count(img) >= threshold
+    @test _on_gpu(sim.prob.b)
+    @test !isnothing(Tortuosity._resolve_precond(:auto, sim, false))
+
+    thin = ones(Bool, 17, 50, 50)
+    thin_sim = SteadyDiffusionProblem(
+        thin; axis=:x, gpu=true, matrixfree=true, warn_nonpercolating=false,
+    )
+    @test _on_gpu(thin_sim.prob.b)
+    @test isnothing(Tortuosity._resolve_precond(:auto, thin_sim, false))
+end
+
 # The small sizes are a regression guard, not padding: small-box GPU runs once
 # produced τ ≈ 0.73 instead of 1.0 on Metal because histogram_connections_kernel!
 # interleaved a per-bucket atomic with a shared-counter atomic, and the latter
@@ -98,7 +115,7 @@ end
     sol_cpu = solve(sim_cpu.prob, KrylovJL_CG(); reltol=1.0e-8)
     tau_cpu = tortuosity(reconstruct_field(sol_cpu.u, sim_cpu.img), sim_cpu.img; axis=:x)
 
-    sim_gpu = SteadyDiffusionProblem(img; axis=:x, gpu=true)
+    sim_gpu = SteadyDiffusionProblem(img; axis=:x, gpu=true, checkpoint_readout=true)
     sol_gpu = solve(sim_gpu.prob, KrylovJL_CG(); reltol=1.0f-6)
     tau_gpu = tortuosity(reconstruct_field(sol_gpu.u, sim_gpu.img), sim_gpu.img; axis=:x)
 
@@ -106,6 +123,17 @@ end
     @test isfinite(tau_gpu)
     @test tau_gpu > 1
     @test tau_cpu ≈ tau_gpu rtol = 1e-3
+    @test tortuosity(sol_gpu.u, sim_gpu) ≈ tau_gpu rtol = 1e-3
+    @test tortuosity(Array(sol_gpu.u), sim_gpu) ≈ tau_gpu rtol = 1e-3
+    u_gpu = Tortuosity._gpu_adapt[](sol_cpu.u)
+    @test tortuosity(u_gpu, sim_cpu) ≈ tau_cpu rtol = 1e-3
+    Tortuosity._free!(u_gpu)
+
+    partial = 0.5f0 .* sol_gpu.u
+    partial_c = reconstruct_field(partial, sim_gpu.img)
+    @test Tortuosity._checkpoint_tortuosity(partial, sim_gpu) ≈
+          tortuosity(partial_c, sim_gpu.img; axis=:x) rtol = 1e-4
+    Tortuosity._free!(partial)
 end
 
 # The two-level preconditioner has to give the same tortuosity on the device as
@@ -128,6 +156,43 @@ end
     tau_prec = tortuosity(reconstruct_field(prec.u, sim.img), sim.img; axis=:x)
     @test tau_prec ≈ tau_plain rtol = 1e-3
     @test prec.iters < plain.iters
+end
+
+@testset "loose refinement corrections meet the true-residual contract" begin
+    img = Imaginator.blobs(
+        ; shape=(20, 20, 20), porosity=0.5f0, blobiness=1, seed=42,
+    )
+    img = Array{Bool}(Imaginator.trim_nonpercolating_paths(img; axis=:x))
+    D = ones(Float32, size(img))
+    D[2:2:end, :, :] .= 0.1f0
+    D[.!img] .= 0.0f0
+    sim = SteadyDiffusionProblem(
+        img; axis=:x, D=D, gpu=true, warn_nonpercolating=false,
+    )
+    P = Tortuosity.two_level_preconditioner(sim)
+    sol = solve(sim; precond=P)
+
+    @test Symbol(sol.retcode) === :Success
+    @test sol.resid[] <= 1.0f-6
+end
+
+@testset "loose refinement checks the narrowed vector before skipping fallback" begin
+    img = Imaginator.blobs(
+        ; shape=(32, 32, 32), porosity=0.5, blobiness=1, seed=1,
+    )
+    img = Array{Bool}(Imaginator.trim_nonpercolating_paths(img; axis=:x))
+    sim = SteadyDiffusionProblem(
+        img; axis=:x, gpu=true, matrixfree=true, warn_nonpercolating=false,
+    )
+    base = solve(sim.prob, KrylovJL_CG(); reltol=1.0f-6, abstol=0.0f0)
+    base.cache.reltol = 2.7f-7
+    refined = Tortuosity._refine(
+        base, sim, KrylovJL_CG();
+        rounds=3, correction_reltol=0.6f0, fallback_reltol=0.5f0,
+    )
+
+    @test Symbol(refined.retcode) === :Success
+    @test refined.resid[] <= base.cache.reltol
 end
 
 @testset "a scalar D narrows to the device element type" begin
@@ -242,15 +307,18 @@ end
 
     sim_cpu = SteadyDiffusionProblem(img; axis=:x, gpu=false, D=Float64.(D))
     sol_cpu = solve(sim_cpu.prob, KrylovJL_CG(); reltol=1.0e-8)
-    tau_cpu = tortuosity(reconstruct_field(sol_cpu.u, sim_cpu.img), sim_cpu.img; axis=:x)
+    tau_cpu = tortuosity(
+        reconstruct_field(sol_cpu.u, sim_cpu.img), sim_cpu.img; axis=:x, D=Float64.(D),
+    )
 
     sim_gpu = SteadyDiffusionProblem(img; axis=:x, gpu=true, D=D)
     sol_gpu = solve(sim_gpu.prob, KrylovJL_CG(); reltol=1.0f-6)
-    tau_gpu = tortuosity(reconstruct_field(sol_gpu.u, sim_gpu.img), sim_gpu.img; axis=:x)
+    tau_gpu = tortuosity(reconstruct_field(sol_gpu.u, sim_gpu.img), sim_gpu.img; axis=:x, D=D)
 
     @test isfinite(tau_gpu)
     @test tau_gpu > 1
     @test tau_cpu ≈ tau_gpu rtol = 2e-3
+    @test tortuosity(sol_gpu.u, sim_gpu) ≈ tau_gpu rtol = 1e-3
 end
 
 # ---------------------------------------------------------------------------

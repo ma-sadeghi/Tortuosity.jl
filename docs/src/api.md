@@ -16,11 +16,7 @@ Tortuosity.TransientSolution
 
 ## Steady-state solvers and analysis
 
-The linear system assembled by [`SteadyDiffusionProblem`](@ref) is a standard
-[LinearSolve.jl](https://docs.sciml.ai/LinearSolve/) `LinearProblem`, so the
-`solve` function and any compatible algorithm from that package apply. For
-diffusion Laplacians the Krylov conjugate-gradient method
-(`KrylovJL_CG()` — re-exported from LinearSolve.jl) is the recommended default:
+The linear system assembled by [`SteadyDiffusionProblem`](@ref) is a standard [LinearSolve.jl](https://docs.sciml.ai/LinearSolve/) `LinearProblem`, so `solve(sim.prob, alg)` accepts any compatible algorithm. `KrylovJL_CG()` remains the direct, unopinionated conjugate-gradient route:
 
 ```julia
 sol = solve(sim.prob, KrylovJL_CG(); reltol=1e-6)
@@ -37,16 +33,21 @@ Tortuosity.CoarseLevel
 Tortuosity.Aggregation
 ```
 
-Rather than make those choices yourself, you can hand the whole problem to the
-package and let it decide the preconditioner and the tolerance:
+Rather than make those choices yourself, you can hand the whole problem to the package and let it decide the algorithm, preconditioner, and tolerance:
 
 ```julia
-sol = solve(sim)                    # two-level coarse space above 100k pore voxels
+sol = solve(sim)                    # automatic two-level coarse space and tolerance
 sol = solve(sim; precond=:none)     # or opt out
 ```
 
-`solve(sim.prob, alg; ...)` is unaffected by this and remains the unopinionated
-form that takes LinearSolve's defaults.
+On Float64 host systems with at least 10,000 unknowns, `solve(sim)` selects [`Tortuosity.HostCG`](@ref), a deterministic threaded conjugate-gradient implementation that fuses bandwidth-bound vector operations and uses a row-parallel gather for image-built assembled matrices. Smaller hosts and GPU systems retain `KrylovJL_CG`. Passing an algorithm explicitly always honors it, and `solve(sim.prob, alg; ...)` remains the unopinionated LinearSolve form.
+
+```@docs
+Tortuosity.HostCG
+Tortuosity.HostCGWorkspace
+```
+
+The automatic coarse space starts at 3,000 pore nodes on CUDA, 8,000 on CPU, and 100,000 on Metal or AMDGPU. Domains with at most 32 voxels along the transport axis retain the 100,000-node threshold because their unpreconditioned solve is already short. These thresholds reflect where setup plus refinement becomes cheaper than the unpreconditioned iteration count on each measured path.
 
 ### Matrix-free operator
 
@@ -54,9 +55,11 @@ form that takes LinearSolve's defaults.
 7-point stencil applied straight from the pore mask instead of an assembled
 sparse matrix. It stores one `Int32` index array over the grid — four bytes per
 grid voxel, against roughly 59 bytes per *pore* voxel for the assembled
-matrix — and its apply is about twice as fast on GPU and six times as fast
+matrix — and its apply is about twice as fast on GPU and two to three times as fast
 threaded on CPU. Measured end to end, peak device memory is 32.0 bytes per pore
-node plus 4.00 bytes per grid voxel, which is 1.7× to 3.2× leaner than the
+node plus 4.00 bytes per grid voxel, with at most 8 bytes per open inlet-face
+voxel for direct flux readout. The O(N²) inlet term is negligible beside the
+O(N³) solve storage. The matrix-free path is 1.7× to 3.2× leaner than the
 assembled path depending on porosity. That margin is what lets a 1000³ image at
 any porosity fit on a 48 GiB card where the assembled path runs out above ε ≈ 0.4.
 
@@ -78,6 +81,16 @@ Tortuosity.build_steady_operator
 
 Once you have solved for a steady-state concentration field, these helpers
 derive the usual transport descriptors.
+
+Pass the pore-vector solution and its problem directly when you only need a transport scalar:
+
+```julia
+τ = tortuosity(sol.u, sim)
+D_eff = effective_diffusivity(sol.u, sim)
+F = formation_factor(sol.u, sim)
+```
+
+This path reduces the inlet flux from the linear system without allocating a full image or copying the complete solution from a GPU. Use `reconstruct_field` only when you also need the concentration field.
 
 ```@docs
 tortuosity

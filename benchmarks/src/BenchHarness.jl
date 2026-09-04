@@ -21,7 +21,7 @@ export image_path, ensure_image!, load_image, read_manifest, manifest_path
 export references_path, read_references, record_reference
 export ResultsWriter, write_row!, completed_cases, close_writer!
 export current_rss, device_live_bytes, device_pool_bytes, with_peak_sampling
-export parse_args, flag, option, record_environment, benchdir
+export parse_args, flag, option, record_environment, benchdir, results_output_dir
 
 include("config.jl")
 include("images.jl")

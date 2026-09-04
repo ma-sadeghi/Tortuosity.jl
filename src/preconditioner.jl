@@ -10,13 +10,33 @@
 # host-side symmetrisation a single indexed lookup.
 const _COARSE_SLOTS = 7
 
-# Default ceiling on the number of unknowns solved *directly*. The direct solve
-# runs once per CG iteration, so its cost has to stay well under one fine SpMV:
+# Default CPU ceiling on the number of unknowns solved *directly*. The direct
+# solve runs once per CG iteration, so its cost has to stay well under one fine SpMV:
 # measured on a 3-D 7-point operator, a 25³ coarse grid factorises in 0.44 s and
 # solves in 1.9 ms, where a 50³ one takes 1.7 s and 47 ms. A coarse grid larger
 # than this gets a hierarchy of coarser grids built under it, ending in a direct
 # solve that does fit — see [`_coarse_hierarchy`](@ref).
 const DEFAULT_MAX_COARSE = 32_000
+
+# GPU fine-grid applies are much cheaper relative to the host sparse triangular
+# solve, so the base crossover is lower. At 200³ the old 32k ceiling left a
+# 15.6k-cell coarse factor on the host; one solve cost 2.6-4.4 ms. Putting one
+# more grid under it cut that to 0.5-1.3 ms and made the complete automatic
+# solve 1.44× faster geometrically over all 15 benchmark images.
+const DEFAULT_GPU_MAX_COARSE = 14_000
+# As the fine problem grows, its device apply dominates a 16k-32k host solve.
+# Retaining a stronger direct coarse correction then avoids a whole benchmark
+# iteration rung: 16k recovered the previous target rung across the measured
+# 800³ matrix, and 32k did the same at 1000³ and porosity 0.6. The node count
+# expresses that cost ratio without tying the route to cubic images or a named
+# domain size.
+const MID_GPU_MAX_COARSE = 16_000
+const LARGE_GPU_MAX_COARSE = DEFAULT_MAX_COARSE
+const MID_GPU_FINE_NODES = 250_000_000
+const LARGE_GPU_FINE_NODES = 500_000_000
+# Thin coarse grids have banded factors whose host solve stays cheap; keep the
+# CPU ceiling until all three directions are large enough to create 3-D fill.
+const MIN_GPU_COARSE_EDGE = 8
 
 # Edge length in voxels of a coarse block. Fixed, and deliberately so: the ratio
 # between the fine and coarse grids is what decides whether the method is
@@ -47,6 +67,10 @@ const COARSE_SMOOTH_OMEGA = 0.8
 # 4096 rows and ~40 µs at 15 625 — so this is the measured crossover, and the
 # levels below it are the ones where the startup would be the whole cost.
 const COARSE_MUL_MIN_THREADED = 4096
+# Prolongation does less work per element than a sparse row product, so thread
+# startup pays back later: 100k entries is the measured crossover. At 319k it
+# is 4.6× faster, and at 49k it is still slower than the serial loop.
+const PROLONG_MIN_THREADED = 100_000
 
 # Relative diagonal shift applied to the coarse operator before factorisation.
 # `WᵀAW` is only positive *semi*-definite — a pore cluster that reaches neither
@@ -314,7 +338,7 @@ function _coarse_stencil!(stencil, A::MaskedLaplacian, agg, nbx, nbxy)
     nx, ny, nz = size(A.idx)
     backend = get_backend(A.idx)
     dmax = fill!(similar(A.idx, T, 1), zero(T))
-    _coarse_grid_stencil_kernel!(backend, (64, 4, 1))(
+    _coarse_grid_stencil_kernel!(backend, _steady_workgroup(A.idx))(
         stencil, dmax, A.idx, agg, A.D, nx, ny, nz, A.bcdim, A.nbc, A.D0, nbx, nbxy;
         ndrange=(nx, ny, nz),
     )
@@ -611,6 +635,18 @@ end
 _precond_template(A) = nonzeros(A)
 _precond_template(A::MaskedLaplacian) = A.idx
 
+function _gpu_max_coarse(n)
+    n >= LARGE_GPU_FINE_NODES && return LARGE_GPU_MAX_COARSE
+    n >= MID_GPU_FINE_NODES && return MID_GPU_MAX_COARSE
+    return DEFAULT_GPU_MAX_COARSE
+end
+
+function _resolve_max_coarse(A, max_coarse, dims)
+    isnothing(max_coarse) || return max_coarse
+    use_gpu_ceiling = _on_gpu(_precond_template(A)) && minimum(dims) >= MIN_GPU_COARSE_EDGE
+    return use_gpu_ceiling ? _gpu_max_coarse(size(A, 1)) : DEFAULT_MAX_COARSE
+end
+
 """
 Coarse index of every pore voxel: the cubic block its grid position falls in.
 
@@ -627,7 +663,7 @@ function _aggregate(idx, n, nc0, bs, nbx, nby)
     Ta = nc0 <= typemax(Int16) ? Int16 : Int32
     agg = similar(idx, Ta, n)
     backend = get_backend(idx)
-    _aggregate_kernel!(backend, (64, 4, 1))(
+    _aggregate_kernel!(backend, _steady_workgroup(idx))(
         agg, idx, bs, nbx, nby; ndrange=size(idx),
     )
     KernelAbstractions.synchronize(backend)
@@ -645,8 +681,9 @@ fixes the order, and the ordering is paid once here rather than on every CG
 iteration.
 
 The pore nodes of coarse cell `a` are `fine[offsets[a]:(offsets[a + 1] - 1)]`,
-ascending. Only the device path builds one; the host `_restrict!` is a serial
-loop and is already reproducible.
+ascending. Device restriction needs it to avoid nondeterministic atomics;
+multithreaded host restriction uses the same map to gather coarse cells in
+parallel without changing the serial summation order within any cell.
 """
 struct Aggregation{Vf<:AbstractVector,Vo<:AbstractVector}
     fwd::Vf                 # fine -> coarse, 0 where the block was dropped
@@ -659,6 +696,7 @@ end
 Base.length(a::Aggregation) = length(a.fwd)
 Base.Array(a::Aggregation) = Array(a.fwd)
 _on_gpu(a::Aggregation) = _on_gpu(a.fwd)
+_async_return_safe(a::Aggregation) = _async_return_safe(a.fwd)
 KernelAbstractions.get_backend(a::Aggregation) = get_backend(a.fwd)
 _free!(a::Aggregation) = (_free!(a.fwd); _free!(a.offsets); _free!(a.fine); nothing)
 
@@ -677,7 +715,7 @@ cell. So every cell's slice comes out ascending, whichever thread got there
 first, and no sort is needed to make it so.
 """
 function _invert_aggregates(agg, nc; max_scratch_bytes=256 * 1024 * 1024)
-    fwd = Array(agg)
+    fwd = agg isa Array ? agg : Array(agg)
     n = length(fwd)
     # One entry per pore node, so the same index wall the fine numbering faces.
     Tf = n <= typemax(Int32) ? Int32 : Int64
@@ -794,13 +832,17 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse
     on_gpu && _free!(remap_dev)
 
     # Inverted after the remap, so the adjacency is indexed by the coarse
-    # numbering that survived rather than the one the blocks started with. Only
-    # the device path needs it; see [`Aggregation`](@ref).
-    agg = if on_gpu
+    # numbering that survived rather than the one the blocks started with.
+    # Device arrays are adapted back to their backend; multithreaded host arrays
+    # use the same representation directly so restriction can gather in
+    # parallel. A one-thread host keeps the serial scatter and its lower setup
+    # and storage cost.
+    use_host_gather = Threads.nthreads() > 1 && n >= PROLONG_MIN_THREADED
+    if on_gpu || use_host_gather
         offsets, fine = _invert_aggregates(agg, nc)
-        Aggregation(agg, _gpu_adapt[](offsets), _gpu_adapt[](fine))
-    else
-        agg
+        agg = on_gpu ?
+            Aggregation(agg, _gpu_adapt[](offsets), _gpu_adapt[](fine)) :
+            Aggregation(agg, offsets, fine)
     end
 
     # Gershgorin: every column of this Laplacian has |offdiagonals| summing to
@@ -866,10 +908,13 @@ residuals. They agree on `tortuosity` to solver tolerance — verified to 1e-9 a
 - `block`: edge length in voxels of a coarse block. `nothing` (default) is
   `DEFAULT_COARSE_BLOCK`, the same edge at every image size — see above for why
   it does not grow with the image.
-- `max_coarse`: ceiling on the number of unknowns solved *directly*. The direct
-  solve runs once per iteration, so a larger one stops paying for itself; a
-  coarse space above the ceiling gets coarser grids built under it instead of
-  being made coarser itself.
+- `max_coarse`: ceiling on the number of unknowns solved *directly*. `nothing`
+  (default) selects 14,000 for a genuinely three-dimensional GPU coarse grid,
+  rising to 16,000 at 250 million fine nodes and 32,000 at 500 million; CPU and
+  thin grids use 32,000. The direct solve runs once per iteration, so a larger
+  one stops paying for itself on smaller fine grids; a coarse space above the
+  ceiling gets coarser grids built under it instead of being made coarser
+  itself.
 - `shift`: relative diagonal shift applied before factorisation. `WᵀAW` is
   positive semi-definite, not definite — a pore cluster reaching neither
   Dirichlet face spans blocks whose coarse rows sum to zero — so the shift is
@@ -881,7 +926,7 @@ residuals. They agree on `tortuosity` to solver tolerance — verified to 1e-9 a
 """
 function two_level_preconditioner(
     A, img;
-    block=nothing, max_coarse=DEFAULT_MAX_COARSE, shift=DEFAULT_COARSE_SHIFT,
+    block=nothing, max_coarse=nothing, shift=DEFAULT_COARSE_SHIFT,
     verbose=false,
 )
     @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
@@ -897,14 +942,14 @@ function two_level_preconditioner(
     nx, ny, nz = size(img)
     bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
     nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
+    max_coarse = _resolve_max_coarse(A, max_coarse, (nbx, nby, nbz))
 
     # Pore ordinals are the prefix sum of the mask, exactly as in
     # `build_steady_system`; both scratch arrays go before the coarse operator
     # is assembled, so this pass never coincides with the solve's peak.
     img_dev = _on_gpu(nonzeros(A)) ? _gpu_adapt[](img) : img
     idx = similar(img_dev, Int32)
-    cumsum!(vec(idx), vec(img_dev))
-    idx .*= img_dev
+    _pore_index!(idx, img_dev)
     agg = _aggregate(idx, n, nbx * nby * nbz, bs, nbx, nby)
     _free!(idx)
     img_dev === img || _free!(img_dev)
@@ -914,7 +959,7 @@ end
 
 function two_level_preconditioner(
     A::MaskedLaplacian, img;
-    block=nothing, max_coarse=DEFAULT_MAX_COARSE, shift=DEFAULT_COARSE_SHIFT,
+    block=nothing, max_coarse=nothing, shift=DEFAULT_COARSE_SHIFT,
     verbose=false,
 )
     @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
@@ -928,6 +973,7 @@ function two_level_preconditioner(
     nx, ny, nz = size(img)
     bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
     nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
+    max_coarse = _resolve_max_coarse(A, max_coarse, (nbx, nby, nbz))
 
     # The operator's index array is the pore numbering the aggregation needs, so
     # it stands in for the scratch array the assembled path builds here. It is
@@ -994,14 +1040,21 @@ function _restrict!(rc, agg::Aggregation, x)
     _restrict_kernel!(backend, _RESTRICT_GROUP)(
         rc, agg.offsets, agg.fine, x, nc; ndrange=nc,
     )
-    KernelAbstractions.synchronize(backend)
+    _async_return_safe(agg) || KernelAbstractions.synchronize(backend)
     return rc
 end
 
 function _prolong!(y::Vector, agg::Vector, xc::Vector, x::Vector, inv_lambda)
-    @inbounds for i in eachindex(agg)
-        a = agg[i]
-        y[i] = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+    if Threads.nthreads() > 1 && length(agg) >= PROLONG_MIN_THREADED
+        Threads.@threads for i in eachindex(agg)
+            @inbounds a = agg[i]
+            @inbounds y[i] = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+        end
+    else
+        @inbounds for i in eachindex(agg)
+            a = agg[i]
+            y[i] = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+        end
     end
     return y
 end
@@ -1010,8 +1063,27 @@ function _prolong!(y, agg, xc, x, inv_lambda)
     backend = get_backend(agg)
     n = length(agg)
     _prolong_kernel!(backend)(y, agg, xc, x, inv_lambda, n; ndrange=n)
-    KernelAbstractions.synchronize(backend)
+    _async_return_safe(agg) || KernelAbstractions.synchronize(backend)
     return y
+end
+
+# The host prolongation with `xᵀy` fused into the same pass, for HostCG, which
+# would otherwise read both vectors again to form it.
+function _prolong!(y::Vector, agg::Vector, xc::Vector, x::Vector, inv_lambda, partial)
+    n = length(agg)
+    nchunks = length(partial)
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        ilo, ihi = _host_chunk_bounds(n, nchunks, chunk)
+        acc = zero(eltype(partial))
+        @inbounds @simd for i in ilo:ihi
+            a = agg[i]
+            yi = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+            y[i] = yi
+            acc += x[i] * yi
+        end
+        partial[chunk] = acc
+    end
+    return sum(partial)
 end
 
 # Prolongation is already a gather over the forward map, so the adjacency has
@@ -1020,9 +1092,21 @@ function _prolong!(y, agg::Aggregation, xc, x, inv_lambda)
     return _prolong!(y, agg.fwd, xc, x, inv_lambda)
 end
 
+function _prolong!(y, agg::Aggregation, xc, x, inv_lambda, partial)
+    return _prolong!(y, agg.fwd, xc, x, inv_lambda, partial)
+end
+
 function LinearAlgebra.ldiv!(
     y::AbstractVector, P::TwoLevelPreconditioner, x::AbstractVector
 )
+    _ldiv_dot!(y, P, x, nothing)
+    return y
+end
+
+# The one apply, shared with HostCG: handed a host chunk buffer as `partial`,
+# the prolongation also returns `xᵀy`, so the solver need not re-read both
+# vectors to form it.
+function _ldiv_dot!(y, P::TwoLevelPreconditioner, x, partial)
     _restrict!(P.rc, P.agg, x)
     copyto!(P.rc_host, P.rc)
     # The coarse solve is always double precision: the fine problem may run in
@@ -1036,8 +1120,8 @@ function LinearAlgebra.ldiv!(
     P.rc_host .= P.coarse_sol
     copyto!(P.xc, P.rc_host)
 
-    _prolong!(y, P.agg, P.xc, x, P.inv_lambda)
-    return y
+    isnothing(partial) && return _prolong!(y, P.agg, P.xc, x, P.inv_lambda)
+    return _prolong!(y, P.agg, P.xc, x, P.inv_lambda, partial)
 end
 
 LinearAlgebra.ldiv!(P::TwoLevelPreconditioner, x::AbstractVector) = ldiv!(x, P, copy(x))

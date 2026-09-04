@@ -1,10 +1,10 @@
 """Sample our own CPU path's core occupancy, at two sizes.
 
 Companion to `measure_occupancy.py`, which covers PuMA. Split out because the two
-tools need different sampling: a PuMA solve at $200^3$ runs for six minutes and
-gives hundreds of samples, while ours finishes the same case in three seconds and
-gives six. Six samples is not a measurement, so this samples ten times a second at
-the small size and adds a larger case where the solve dominates outright.
+tools need different sampling: a PuMA solve at $200^3$ runs for six minutes,
+while ours finishes in seconds. The Julia child marks the benchmark-case phase
+after warm-up, samples outside it are discarded, and the small case is sampled
+ten times a second.
 
 Julia has been seen to die on SIGSEGV during exit cleanup under this harness,
 after the solve has completed and the results row has been written. The exit code
@@ -13,24 +13,27 @@ samples cover a real solve, which the sample count and the child log show.
 """
 
 import argparse
-import hashlib
-import os
 import json
-import shutil
+import os
+import socket
 import statistics
-import subprocess
-import time
+import tempfile
 from pathlib import Path
 
 import psutil
 
-TRIM = 0.20
-TOUCHED = Path("results/timings/tortuosity-cpu-matrixfree.csv")
+from benchkit.occupancy import (
+    benchmark_measurement_lock,
+    install_termination_handler,
+    latest_environment,
+    require_target_result,
+    sample_cpu_occupancy,
+    timestamp,
+)
 
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-
+# The result file and JSON label of the configuration sampled here — what
+# `bench_tortuosity.jl` names a CPU matrix-free timing run.
+TOOL = "tortuosity-cpu-matrixfree-hostcg"
 
 # pixi exports LD_LIBRARY_PATH and CONDA_PREFIX pointing at its own lib directory.
 # A child Julia inherits them, and once it loads the full package stack those
@@ -39,56 +42,59 @@ def digest(path):
 POISON = ("LD_LIBRARY_PATH", "LD_PRELOAD", "CONDA_PREFIX", "PYTHONHOME", "PYTHONPATH")
 
 
-def clean_env():
-    return {k: v for k, v in os.environ.items() if k not in POISON}
+def clean_env(output_dir, marker):
+    env = {k: v for k, v in os.environ.items() if k not in POISON}
+    env["TORTUOSITY_BENCHMARK_OUTPUT_DIR"] = output_dir
+    env["TORTUOSITY_BENCHMARK_PHASE_MARKER"] = str(marker)
+    return env
 
 
-def sample(cmd, interval, logpath):
-    log = open(logpath, "wb")
-    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=clean_env())
-    parent = psutil.Process(proc.pid)
-    parent.cpu_percent(None)
-    samples = []
-    started = time.perf_counter()
-    while proc.poll() is None:
-        time.sleep(interval)
-        total = 0.0
-        try:
-            total += parent.cpu_percent(None)
-            for child in parent.children(recursive=True):
-                try:
-                    total += child.cpu_percent(None)
-                except psutil.Error:
-                    pass
-        except psutil.Error:
-            break
-        samples.append(total / 100.0)
-    log.close()
-    return proc.returncode, time.perf_counter() - started, samples
+def sample(cmd, interval, logpath, output_dir, marker, case):
+    start_marker = Path(f"{marker}.start")
+    active_marker = Path(f"{marker}.active")
+    transition_marker = Path(f"{marker}.transitions")
+    success_marker = Path(f"{marker}.success")
+    end_marker = Path(f"{marker}.end")
+
+    def measured_phase():
+        # Truthy only while the child is inside its measured phase; a sample
+        # spanning a phase transition is dropped because the value changes.
+        if not active_marker.is_file():
+            return None
+        size = transition_marker.stat().st_size if transition_marker.is_file() else 0
+        return (size,)
+
+    code, elapsed, samples = sample_cpu_occupancy(
+        cmd, interval, logpath, clean_env(output_dir, marker), window=measured_phase
+    )
+    if (
+        not start_marker.is_file()
+        or not success_marker.is_file()
+        or not end_marker.is_file()
+        or not transition_marker.is_file()
+    ):
+        raise RuntimeError("benchmark child did not mark its measured phase")
+    require_target_result(output_dir, TOOL, case)
+    provenance = latest_environment(output_dir)
+    return code, elapsed, samples, provenance
 
 
 def summarise(samples):
     if len(samples) < 8:
         return {"note": f"only {len(samples)} samples -- not a measurement"}
-    lo = int(len(samples) * TRIM)
-    hi = max(lo + 1, int(len(samples) * (1 - TRIM)))
-    mid = samples[lo:hi]
     return {
-        "n_samples": len(samples), "n_used": len(mid),
-        "median_cores": round(statistics.median(mid), 2),
-        "mean_cores": round(statistics.fmean(mid), 2),
+        "n_samples": len(samples), "n_used": len(samples),
+        "median_cores": round(statistics.median(samples), 2),
+        "mean_cores": round(statistics.fmean(samples), 2),
         "peak_cores": round(max(samples), 2),
     }
 
 
 def main():
+    install_termination_handler()
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="results/core-occupancy-ours.json")
     args = ap.parse_args()
-
-    before = digest(TOUCHED)
-    backup = TOUCHED.with_suffix(TOUCHED.suffix + ".occupancy-backup")
-    shutil.copy2(TOUCHED, backup)
 
     plan = [
         # (label, case, sampling interval): the small case needs a fast interval
@@ -96,28 +102,43 @@ def main():
         ("n200_b100_p040", "n200_b100_p040", 0.1),
         ("n600_b100_p040", "n600_b100_p040", 0.5),
     ]
-    out = {"tool": "tortuosity-cpu-matrixfree",
-           "host_physical_cores": psutil.cpu_count(logical=False),
-           "host_logical_cores": psutil.cpu_count(logical=True),
-           "cases": {}}
-    try:
-        for label, case, interval in plan:
-            cmd = ["julia", "-t", "auto", "--project=.", "bench_tortuosity.jl",
-                   "--device=cpu", "--operator=matrixfree", "--measure=time",
-                   f"--cases={case}", "--overwrite"]
-            child_log = f"results/occupancy-ours-{label}.log"
-            print(f"running {label} (interval {interval}s) ...", flush=True)
-            code, elapsed, samples = sample(cmd, interval, child_log)
-            out["cases"][label] = {"exit": code, "elapsed_s": round(elapsed, 1),
-                                   "interval_s": interval, "child_log": child_log,
-                                   **summarise(samples)}
-            print(f"  exit={code} {elapsed:.1f}s {out['cases'][label]}\n", flush=True)
-    finally:
-        shutil.move(str(backup), str(TOUCHED))
-        out["published_results_unchanged"] = digest(TOUCHED) == before
-        print(f"results restored and verified: {out['published_results_unchanged']}")
-
-    Path(args.out).write_text(json.dumps(out, indent=2))
+    out = {
+        "tool": TOOL,
+        "host": socket.gethostname(),
+        "started_at": timestamp(),
+        "host_physical_cores": psutil.cpu_count(logical=False),
+        "host_logical_cores": psutil.cpu_count(logical=True),
+        "cases": {},
+    }
+    with benchmark_measurement_lock():
+        with tempfile.TemporaryDirectory(
+            prefix="tortuosity-occupancy-"
+        ) as output_dir:
+            for label, case, interval in plan:
+                cmd = ["julia", "-t", "auto", "--project=.",
+                       "bench_tortuosity.jl", "--device=cpu",
+                       "--operator=matrixfree", "--measure=time",
+                       f"--cases={case}", "--overwrite"]
+                child_log = f"results/occupancy-ours-{label}.log"
+                marker = Path(output_dir) / f"phase-{label}"
+                print(f"running {label} (interval {interval}s) ...", flush=True)
+                code, elapsed, samples, provenance = sample(
+                    cmd, interval, child_log, output_dir, marker, case
+                )
+                out["cases"][label] = {
+                    "exit": code, "elapsed_s": round(elapsed, 1),
+                    "interval_s": interval,
+                    "child_log": child_log,
+                    "benchmark_environment": provenance,
+                    **summarise(samples),
+                }
+                print(f"  exit={code} {elapsed:.1f}s "
+                      f"{out['cases'][label]}\n", flush=True)
+        out["results_mode"] = "isolated"
+        out["published_results_unchanged"] = True
+        out["completed_at"] = timestamp()
+        print("published results were not opened by occupancy children")
+        Path(args.out).write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
 
 

@@ -1,0 +1,4 @@
+measured_at,host,stage,tool,device,variant,runtime,runtime_version,cpu_threads,accelerator,notes
+2026-08-21T13:47:50,pmeal-hpc,time,tortuosity,cpu,matrixfree,julia,1.12.6,16,,"ladder=18 rungs, target=0.001, timeout=1800.0s"
+2026-08-21T13:53:50,pmeal-hpc,time,tortuosity,cpu,matrixfree,julia,1.12.6,16,,"ladder=18 rungs, target=0.001, timeout=1800.0s"
+2026-08-21T13:54:44,pmeal-hpc,time,tortuosity,cpu,matrixfree,julia,1.12.6,16,,"ladder=18 rungs, target=0.001, timeout=1800.0s"

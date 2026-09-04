@@ -165,6 +165,203 @@ already had, which is what [`_steady_fill_kernel!`](@ref) writes.
     end
 end
 
+@inline function _cpu_apply_range!(
+    y, x, idx, D, nx, ny, nz, nbc, D0, alpha, beta, j, k, ilo, ihi,
+    ::Val{B}, ::Val{Z}, ::Val{Q},
+) where {B,Z,Q}
+    Ty = eltype(y)
+    Tv = typeof(D0)
+    total = zero(Ty)
+
+    @inbounds for i in ilo:ihi
+        c0 = idx[i, j, k]
+        c0 > 0 || continue
+
+        self_bc = _is_bc(_face_coord(i, j, k, B), nbc)
+        da = _node_diffusivity(D, D0, i, j, k)
+        deg = zero(Tv)
+        acc_lo = zero(Ty)
+        acc_hi = zero(Ty)
+
+        if k > 1
+            q = idx[i, j, k - 1]
+            if q > 0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j, k - 1))
+                deg += w
+                (self_bc || _is_bc(_face_coord(i, j, k - 1, B), nbc)) ||
+                    (acc_lo += Ty(-w * x[q]))
+            end
+        end
+        if j > 1
+            q = idx[i, j - 1, k]
+            if q > 0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j - 1, k))
+                deg += w
+                (self_bc || _is_bc(_face_coord(i, j - 1, k, B), nbc)) ||
+                    (acc_lo += Ty(-w * x[q]))
+            end
+        end
+        if i > 1
+            q = idx[i - 1, j, k]
+            if q > 0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i - 1, j, k))
+                deg += w
+                (self_bc || _is_bc(_face_coord(i - 1, j, k, B), nbc)) ||
+                    (acc_lo += Ty(-w * x[q]))
+            end
+        end
+        if i < nx
+            q = idx[i + 1, j, k]
+            if q > 0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i + 1, j, k))
+                deg += w
+                (self_bc || _is_bc(_face_coord(i + 1, j, k, B), nbc)) ||
+                    (acc_hi += Ty(-w * x[q]))
+            end
+        end
+        if j < ny
+            q = idx[i, j + 1, k]
+            if q > 0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j + 1, k))
+                deg += w
+                (self_bc || _is_bc(_face_coord(i, j + 1, k, B), nbc)) ||
+                    (acc_hi += Ty(-w * x[q]))
+            end
+        end
+        if k < nz
+            q = idx[i, j, k + 1]
+            if q > 0
+                w = _edge_weight(D, D0, da, _node_diffusivity(D, D0, i, j, k + 1))
+                deg += w
+                (self_bc || _is_bc(_face_coord(i, j, k + 1, B), nbc)) ||
+                    (acc_hi += Ty(-w * x[q]))
+            end
+        end
+
+        val = zero(Ty)
+        if self_bc
+            d = iszero(deg) ? one(Tv) : deg
+            val = Ty(d * x[c0])
+        elseif !iszero(deg)
+            val = Ty((acc_lo + deg * x[c0]) + acc_hi)
+        end
+        result = Z ? alpha * val : alpha * val + beta * y[c0]
+        y[c0] = result
+        Q && (total += x[c0] * result)
+    end
+    return total
+end
+
+# Threads take contiguous chunks of the grid: whole z-slabs when there are
+# enough of them, (j, k) lines otherwise, and x-ranges of lines when even the
+# lines are too few. `@threads` splits its range statically, so a tier is taken
+# only once it holds `_CHUNKS_PER_THREAD` items per thread — one slab over the
+# thread count would otherwise hand a task double the work — and its items are
+# grouped into at most `maxchunks` chunks. With `Q` the per-chunk `xᵀ(A x)` sums
+# land in `partial` and their total is returned.
+function _cpu_mul_chunked!(
+    y, A, x, α, β, partial, ::Val{B}, ::Val{Z}, ::Val{Q},
+) where {B,Z,Q}
+    nx, ny, nz = size(A.idx)
+    nthreads = Threads.nthreads()
+    balanced = _CHUNKS_PER_THREAD * nthreads
+    maxchunks = Q ? length(partial) : balanced
+    if nz >= balanced
+        nchunks = min(nz, maxchunks)
+        Threads.@threads :dynamic for chunk in 1:nchunks
+            klo, khi = _host_chunk_bounds(nz, nchunks, chunk)
+            total = zero(eltype(y))
+            for k in klo:khi, j in 1:ny
+                total += _cpu_apply_range!(
+                    y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
+                    j, k, 1, nx, Val(B), Val(Z), Val(Q),
+                )
+            end
+            Q && (partial[chunk] = total)
+        end
+        return Q ? _cpu_partial_sum(partial, nchunks) : zero(eltype(y))
+    end
+
+    nlines = ny * nz
+    if nlines >= balanced
+        nchunks = min(nlines, maxchunks)
+        Threads.@threads :dynamic for chunk in 1:nchunks
+            line_lo, line_hi = _host_chunk_bounds(nlines, nchunks, chunk)
+            total = zero(eltype(y))
+            for line in line_lo:line_hi
+                j = (line - 1) % ny + 1
+                k = (line - 1) ÷ ny + 1
+                total += _cpu_apply_range!(
+                    y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
+                    j, k, 1, nx, Val(B), Val(Z), Val(Q),
+                )
+            end
+            Q && (partial[chunk] = total)
+        end
+        return Q ? _cpu_partial_sum(partial, nchunks) : zero(eltype(y))
+    end
+
+    xchunks = min(nx, max(1, cld(2 * nthreads, nlines)))
+    xchunk_size = cld(nx, xchunks)
+    nwork = nlines * xchunks
+    nchunks = min(nwork, maxchunks)
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        work_lo, work_hi = _host_chunk_bounds(nwork, nchunks, chunk)
+        total = zero(eltype(y))
+        for work in work_lo:work_hi
+            line = (work - 1) ÷ xchunks + 1
+            xchunk = (work - 1) % xchunks
+            ilo = xchunk * xchunk_size + 1
+            ihi = min(ilo + xchunk_size - 1, nx)
+            j = (line - 1) % ny + 1
+            k = (line - 1) ÷ ny + 1
+            total += _cpu_apply_range!(
+                y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
+                j, k, ilo, ihi, Val(B), Val(Z), Val(Q),
+            )
+        end
+        Q && (partial[chunk] = total)
+    end
+    return Q ? _cpu_partial_sum(partial, nchunks) : zero(eltype(y))
+end
+
+function _cpu_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
+    _cpu_mul_chunked!(y, A, x, α, β, nothing, Val(B), Val(Z), Val(false))
+    return y
+end
+
+@inline function _cpu_partial_sum(partial, n)
+    total = zero(eltype(partial))
+    @inbounds for i in 1:n
+        total += partial[i]
+    end
+    return total
+end
+
+function _cpu_mul_dot!(y, A, x, partial, ::Val{B}) where {B}
+    return _cpu_mul_chunked!(
+        y, A, x, one(eltype(y)), zero(eltype(y)), partial, Val(B), Val(true), Val(true),
+    )
+end
+
+function LinearAlgebra.mul!(
+    y::Vector, A::MaskedLaplacian{T,Ti,AI,DT}, x::Vector,
+    alpha::Number, beta::Number,
+) where {T,Ti,AI<:Array{Ti,3},DT<:Union{Nothing,Array}}
+    if length(y) != A.nnodes || length(x) != A.nnodes
+        throw(DimensionMismatch(
+            "operator is $(A.nnodes)×$(A.nnodes) but y has length $(length(y)) \
+             and x has length $(length(x))"
+        ))
+    end
+    A.nnodes == 0 && return y
+
+    Ty = eltype(y)
+    α = convert(Ty, alpha)
+    β = convert(Ty, beta)
+    return _cpu_mul!(y, A, x, α, β, Val(A.bcdim), Val(iszero(β)))
+end
+
 function LinearAlgebra.mul!(
     y::AbstractVector, A::MaskedLaplacian, x::AbstractVector
 )
@@ -194,13 +391,11 @@ function LinearAlgebra.mul!(
     Ty = eltype(y)
     nx, ny, nz = size(A.idx)
     backend = get_backend(A.idx)
-    # 256 threads laid out along the contiguous dimension, the same shape the
-    # assembly kernels launch with.
-    _steady_apply_kernel!(backend, (64, 4, 1))(
+    _steady_apply_kernel!(backend, _steady_workgroup(A.idx))(
         y, x, A.idx, A.D, nx, ny, nz, A.bcdim, A.nbc, A.D0,
         convert(Ty, alpha), convert(Ty, beta); ndrange=(nx, ny, nz),
     )
-    KernelAbstractions.synchronize(backend)
+    _async_return_safe(A.idx) || KernelAbstractions.synchronize(backend)
     return y
 end
 
@@ -316,7 +511,10 @@ every apply.
 - `owns_D`: hand the operator ownership of `D`, so that `_free!` releases it.
   Set this only when `D` is a copy made for the operator and held nowhere else.
 """
-function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::Bool=false)
+function build_steady_operator(
+    img; nnodes, axis, D=nothing, T=Float64, owns_D::Bool=false,
+    return_flux::Bool=false, checkpoint_readout::Bool=false,
+)
     nx, ny, nz = size(img)
     bcdim = axis_dim(axis)
     nbc = size(img, bcdim)
@@ -341,12 +539,12 @@ function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::
     # pore/solid test — the same idiom `build_steady_system` uses, so the two
     # paths number the nodes identically.
     idx = similar(img, Ti)
-    cumsum!(vec(idx), vec(img))
-    idx .*= img
+    _pore_index!(idx, img)
     backend = get_backend(idx)
-    # 256 threads laid out along the contiguous dimension, so a warp reads one
-    # run of `idx` and its two in-plane neighbour rows coalesced.
-    wg = (64, 4, 1)
+    inlet_flux = return_flux ?
+        _build_inlet_flux(idx, D, bcdim, D0; checkpoint_readout) : nothing
+    # The backend-selected shape is shared with assembly and operator applies.
+    wg = _steady_workgroup(idx)
 
     b = similar(idx, T, nnodes)
     _steady_rhs_kernel!(backend, wg)(
@@ -356,7 +554,7 @@ function build_steady_operator(img; nnodes, axis, D=nothing, T=Float64, owns_D::
 
     # `idx` is not released here: it is the operator's state, not scratch.
     A = MaskedLaplacian(idx, nnodes, bcdim, nbc, D, D0, owns_D)
-    return A, b
+    return return_flux ? (A, b, inlet_flux) : (A, b)
 end
 
 # --- LinearSolve integration ---

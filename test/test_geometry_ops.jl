@@ -26,6 +26,7 @@ using Tortuosity:
     overlap_indices,
     overlap_indices_fast,
     overlap_indices_slow,
+    _pore_index!,
     reconstruct_field,
     reconstruct_slice,
     slice_indices
@@ -110,6 +111,41 @@ end
         @test length(lookup) == count(img)
         @test all(lookup[linear_idx] == pidx[linear_idx] for linear_idx in lin)
     end
+end
+
+@testset "threaded pore numbering matches the serial scan" begin
+    img = reshape(mod.(1:101^3, 7) .!= 0, 101, 101, 101)
+    for mask in (img, BitArray(img)), Ti in (Int32, Int64)
+        expected = similar(mask, Ti)
+        cumsum!(vec(expected), vec(mask))
+        expected .*= mask
+        actual = similar(mask, Ti)
+        _pore_index!(actual, mask)
+        @test actual == expected
+    end
+
+    nested = Vector{Array{Int32,3}}(undef, 2)
+    Threads.@threads for i in eachindex(nested)
+        nested[i] = similar(img, Int32)
+        _pore_index!(nested[i], img)
+    end
+    @test all(==(nested[1]), nested)
+
+    ready = Channel{Nothing}(2)
+    start = Channel{Nothing}(2)
+    concurrent = map(1:2) do _
+        Threads.@spawn begin
+            put!(ready, nothing)
+            take!(start)
+            result = similar(img, Int32)
+            _pore_index!(result, img)
+        end
+    end
+    take!(ready)
+    take!(ready)
+    put!(start, nothing)
+    put!(start, nothing)
+    @test all(==(nested[1]), fetch.(concurrent))
 end
 
 @testset "slice_indices" begin
