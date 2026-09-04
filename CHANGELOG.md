@@ -2,6 +2,36 @@
 
 All notable changes to Tortuosity.jl are recorded here. Versions follow [Julia's SemVer rules](https://pkgdocs.julialang.org/v1/compatibility/), under which a change to the leftmost non-zero version component is breaking.
 
+## v0.2.0 — 2026-09-04
+
+The steady-state pipeline rebuilt around a host solver written for it. Time to reach 0.1% relative error in `τ` on the CPU falls by a geometric mean of **3.25×** on the matrix-free path and **4.29×** on the assembled path, measured over 74 cases spanning `200³` to `1000³` and five porosities. The GPU path gained kernel, preconditioner and refinement tuning in the same span; its published benchmark figures are being re-measured and are not restated here.
+
+### Breaking
+
+`SteadyDiffusionProblem` carries four type parameters instead of one — `SteadyDiffusionProblem{A,P,R,F}` rather than `SteadyDiffusionProblem{A}` — and two new fields, `D0` and `flux`. The `prob` field is now concretely typed instead of held as an abstract `LinearProblem`, which is what lets the observables reduce on the solution backend without a dynamic dispatch per element.
+
+Code that constructs the struct positionally, or that dispatches on `SteadyDiffusionProblem{SomeArrayType}`, must be updated. Construction through `SteadyDiffusionProblem(img; axis, ...)` and every exported entry point are unchanged, and no export was added or removed in this release.
+
+### Added
+
+- `Tortuosity.HostCG`, a threaded conjugate gradient registered as a `LinearSolve.jl` algorithm. Because the host steady iteration is limited by memory bandwidth rather than arithmetic, it fuses the vector kernels of the standard preconditioned iteration: the solution and residual updates are combined, and the preconditioner prolongation is folded into the residual inner product. It is selected automatically for `Float64` host systems of at least 10,000 unknowns; smaller host problems and all GPU problems continue to use `KrylovJL_CG`. It is not exported — reach it as `Tortuosity.HostCG()`.
+- Transport-property readouts that take the solution and the problem: `tortuosity(sol.u, sim)`, `effective_diffusivity(sol.u, sim)` and `formation_factor(sol.u, sim)`. The problem now retains a compact inlet-edge map and reference diffusivity, so these reduce physical flux on the solution backend instead of copying and allocating an image-sized concentration field. The `(c, img; axis)` forms are unchanged.
+
+### Performance
+
+On the host: the conjugate-gradient kernels are fused; the uniform and variable steady stencils are specialized separately; pore numbering, sparse column-pointer construction and the assembled products are threaded; dense matrix-free products are fused; and the preconditioner's restriction and prolongation are parallelized at size. Automatic preconditioning now also pays off on solves down to about eight thousand nodes.
+
+On CUDA: steady kernel workgroups are tuned, the auto-selection crossover and the direct-solve ceiling for three-dimensional problems are lowered, the coarse-space ceiling scales with the device, redundant hot-path synchronization is removed, and refinement corrections are neither oversolved nor left unadapted at large sizes.
+
+On both devices: transport scalars are computed without reconstructing the concentration field, percolating voxels are counted without trimming the image, and diffusivity validation no longer allocates a full-grid temporary at construction.
+
+### Fixed
+
+- Automatic preconditioning is no longer applied across short transport axes. At 17 voxels it made the measured CPU solve about four times slower, so the conservative threshold is held through four default coarse blocks.
+- Iterative refinement enforces its tolerance contract: loose corrections continue while the true residual improves, success is derived from the returned vector under Krylov's combined tolerances, and `retcode` is decided on the `Float64` iterate that `_refine` controls — so rounding back to `Float32` can no longer turn a converged answer into a failure.
+- A steady checkpoint over an empty boundary face yields `NaN`, matching the field readout, instead of throwing inside the callback.
+- AMDGPU synchronization barriers are retained.
+
 ## v0.1.0 — 2026-08-22
 
 The first release since v0.0.7 in April 2026, and the version the JOSS paper describes. It adds a second way to represent the steady operator, a preconditioner whose iteration count no longer tracks image size, and a rebuilt assembly path. Together those take an 800³ image from `OutOfGPUMemoryError` to a 20.7 s end-to-end solve on a 24 GiB card.
