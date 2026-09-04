@@ -1,7 +1,6 @@
 # CPU-specialized conjugate gradient with deterministic threaded vector kernels.
 
 const HOST_CG_MIN_NODES = 10_000
-const _HOST_CG_CHUNKS_PER_THREAD = 4
 
 _host_cg_continue(_) = false
 
@@ -57,16 +56,6 @@ mutable struct HostCGCache{A,B,P,Alg,W,T}
     symmetric_sparse::Bool
 end
 
-@inline function _host_chunks(n)
-    return min(n, max(1, _HOST_CG_CHUNKS_PER_THREAD * Threads.nthreads()))
-end
-
-@inline function _host_chunk_bounds(n, nchunks, chunk)
-    chunk_size = cld(n, nchunks)
-    ilo = (chunk - 1) * chunk_size + 1
-    return ilo, min(ilo + chunk_size - 1, n)
-end
-
 function _host_dot(x, y, partial)
     n = length(x)
     nchunks = length(partial)
@@ -81,22 +70,15 @@ function _host_dot(x, y, partial)
     return sum(partial)
 end
 
-function _host_sparse_mul!(y, A::SparseMatrixCSC, x)
-    colptr = SparseArrays.getcolptr(A)
-    rowval = SparseArrays.rowvals(A)
-    nzval = SparseArrays.nonzeros(A)
-    Threads.@threads :dynamic for j in axes(A, 2)
-        acc = zero(eltype(y))
-        @inbounds @simd for k in colptr[j]:(colptr[j + 1] - 1)
-            acc += nzval[k] * x[rowval[k]]
-        end
-        @inbounds y[j] = acc
-    end
-    return y
-end
-
+# `symmetric_sparse` sends the assembled system through `_coarse_mul!`, the
+# threaded column gather that reads column `j` as row `j`. That is `A * x` only
+# because `build_steady_system` (src/assembly.jl) emits a bit-symmetric CSC —
+# Dirichlet elimination empties a boundary node's column as well as its row —
+# which is why `LinearSolve.solve(sim, ::HostCG)` sets the flag solely for
+# matrices this package assembled from an image. `test_hostcg.jl` pins the
+# invariant with `issymmetric`.
 function _host_mul!(y, A, x, symmetric_sparse)
-    symmetric_sparse && return _host_sparse_mul!(y, A, x)
+    symmetric_sparse && return _coarse_mul!(y, A, x)
     return mul!(y, A, x)
 end
 
@@ -111,9 +93,6 @@ _host_mul_dot!(y, A, x, partial, symmetric_sparse) =
 function _host_mul_dot!(
     y, A::MaskedLaplacian{T,Ti,AI,DT}, x, partial, symmetric_sparse,
 ) where {T,Ti,AI<:Array{Ti,3},DT<:Union{Nothing,Array}}
-    dense_enough = 2 * A.nnodes >= length(A.idx)
-    dense_enough ||
-        return _host_mul_dot_separate!(y, A, x, partial, symmetric_sparse)
     return _cpu_mul_dot!(y, A, x, partial, Val(A.bcdim))
 end
 
@@ -142,31 +121,12 @@ function _host_update_xr!(x, r, p, Ap, alpha)
     return nothing
 end
 
-function _host_prolong_dot!(y, agg, xc, x, inv_lambda, partial)
-    n = length(agg)
-    nchunks = length(partial)
-    Threads.@threads :dynamic for chunk in 1:nchunks
-        ilo, ihi = _host_chunk_bounds(n, nchunks, chunk)
-        acc = zero(eltype(partial))
-        @inbounds @simd for i in ilo:ihi
-            a = agg[i]
-            yi = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
-            y[i] = yi
-            acc += x[i] * yi
-        end
-        partial[chunk] = acc
-    end
-    return sum(partial)
-end
-
 function _host_precondition_dot!(y, P, x, partial)
     if P isa TwoLevelPreconditioner && P.agg isa Aggregation &&
        P.agg.fwd isa Vector && P.rc isa Vector && P.xc isa Vector
-        _restrict!(P.rc, P.agg, x)
-        copyto!(P.coarse_rhs, P.rc)
-        _vcycle!(P.coarse_sol, P.levels, 1, P.coarse_rhs, P.fact)
-        copyto!(P.xc, P.coarse_sol)
-        return _host_prolong_dot!(y, P.agg.fwd, P.xc, x, P.inv_lambda, partial)
+        # The preconditioner owns its apply; handed the chunk buffer, it fuses
+        # `xᵀy` into the prolongation.
+        return _ldiv_dot!(y, P, x, partial)
     end
 
     ldiv!(y, P, x)

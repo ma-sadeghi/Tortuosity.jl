@@ -252,48 +252,81 @@ end
     return total
 end
 
-function _cpu_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
+# Threads take contiguous chunks of the grid: whole z-slabs when there are
+# enough of them, (j, k) lines otherwise, and x-ranges of lines when even the
+# lines are too few. `@threads` splits its range statically, so a tier is taken
+# only once it holds `_CHUNKS_PER_THREAD` items per thread — one slab over the
+# thread count would otherwise hand a task double the work — and its items are
+# grouped into at most `maxchunks` chunks. With `Q` the per-chunk `xᵀ(A x)` sums
+# land in `partial` and their total is returned.
+function _cpu_mul_chunked!(
+    y, A, x, α, β, partial, ::Val{B}, ::Val{Z}, ::Val{Q},
+) where {B,Z,Q}
     nx, ny, nz = size(A.idx)
     nthreads = Threads.nthreads()
-    if nz >= nthreads
-        Threads.@threads :dynamic for k in 1:nz
-            for j in 1:ny
-                _cpu_apply_range!(
+    balanced = _CHUNKS_PER_THREAD * nthreads
+    maxchunks = Q ? length(partial) : balanced
+    if nz >= balanced
+        nchunks = min(nz, maxchunks)
+        Threads.@threads :dynamic for chunk in 1:nchunks
+            klo, khi = _host_chunk_bounds(nz, nchunks, chunk)
+            total = zero(eltype(y))
+            for k in klo:khi, j in 1:ny
+                total += _cpu_apply_range!(
                     y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
-                    j, k, 1, nx, Val(B), Val(Z), Val(false),
+                    j, k, 1, nx, Val(B), Val(Z), Val(Q),
                 )
             end
+            Q && (partial[chunk] = total)
         end
-        return y
+        return Q ? _cpu_partial_sum(partial, nchunks) : zero(eltype(y))
     end
 
     nlines = ny * nz
-    if nlines >= nthreads
-        Threads.@threads :dynamic for line in 1:nlines
-            j = (line - 1) % ny + 1
-            k = (line - 1) ÷ ny + 1
-            _cpu_apply_range!(
-                y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
-                j, k, 1, nx, Val(B), Val(Z), Val(false),
-            )
+    if nlines >= balanced
+        nchunks = min(nlines, maxchunks)
+        Threads.@threads :dynamic for chunk in 1:nchunks
+            line_lo, line_hi = _host_chunk_bounds(nlines, nchunks, chunk)
+            total = zero(eltype(y))
+            for line in line_lo:line_hi
+                j = (line - 1) % ny + 1
+                k = (line - 1) ÷ ny + 1
+                total += _cpu_apply_range!(
+                    y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
+                    j, k, 1, nx, Val(B), Val(Z), Val(Q),
+                )
+            end
+            Q && (partial[chunk] = total)
         end
-        return y
+        return Q ? _cpu_partial_sum(partial, nchunks) : zero(eltype(y))
     end
 
     xchunks = min(nx, max(1, cld(2 * nthreads, nlines)))
-    chunk_size = cld(nx, xchunks)
-    Threads.@threads :dynamic for work in 1:(nlines * xchunks)
-        line = (work - 1) ÷ xchunks + 1
-        chunk = (work - 1) % xchunks
-        ilo = chunk * chunk_size + 1
-        ihi = min(ilo + chunk_size - 1, nx)
-        j = (line - 1) % ny + 1
-        k = (line - 1) ÷ ny + 1
-        _cpu_apply_range!(
-            y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
-            j, k, ilo, ihi, Val(B), Val(Z), Val(false),
-        )
+    xchunk_size = cld(nx, xchunks)
+    nwork = nlines * xchunks
+    nchunks = min(nwork, maxchunks)
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        work_lo, work_hi = _host_chunk_bounds(nwork, nchunks, chunk)
+        total = zero(eltype(y))
+        for work in work_lo:work_hi
+            line = (work - 1) ÷ xchunks + 1
+            xchunk = (work - 1) % xchunks
+            ilo = xchunk * xchunk_size + 1
+            ihi = min(ilo + xchunk_size - 1, nx)
+            j = (line - 1) % ny + 1
+            k = (line - 1) ÷ ny + 1
+            total += _cpu_apply_range!(
+                y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0, α, β,
+                j, k, ilo, ihi, Val(B), Val(Z), Val(Q),
+            )
+        end
+        Q && (partial[chunk] = total)
     end
+    return Q ? _cpu_partial_sum(partial, nchunks) : zero(eltype(y))
+end
+
+function _cpu_mul!(y, A, x, α, β, ::Val{B}, ::Val{Z}) where {B,Z}
+    _cpu_mul_chunked!(y, A, x, α, β, nothing, Val(B), Val(Z), Val(false))
     return y
 end
 
@@ -306,74 +339,9 @@ end
 end
 
 function _cpu_mul_dot!(y, A, x, partial, ::Val{B}) where {B}
-    nx, ny, nz = size(A.idx)
-    nthreads = Threads.nthreads()
-    if nz >= nthreads
-        nchunks = min(nz, length(partial))
-        chunk_size = cld(nz, nchunks)
-        Threads.@threads :dynamic for chunk in 1:nchunks
-            klo = (chunk - 1) * chunk_size + 1
-            khi = min(klo + chunk_size - 1, nz)
-            total = zero(eltype(partial))
-            for k in klo:khi, j in 1:ny
-                total += _cpu_apply_range!(
-                    y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0,
-                    one(eltype(y)), zero(eltype(y)), j, k, 1, nx,
-                    Val(B), Val(true), Val(true),
-                )
-            end
-            partial[chunk] = total
-        end
-        return _cpu_partial_sum(partial, nchunks)
-    end
-
-    nlines = ny * nz
-    if nlines >= nthreads
-        nchunks = min(nlines, length(partial))
-        chunk_size = cld(nlines, nchunks)
-        Threads.@threads :dynamic for chunk in 1:nchunks
-            line_lo = (chunk - 1) * chunk_size + 1
-            line_hi = min(line_lo + chunk_size - 1, nlines)
-            total = zero(eltype(partial))
-            for line in line_lo:line_hi
-                j = (line - 1) % ny + 1
-                k = (line - 1) ÷ ny + 1
-                total += _cpu_apply_range!(
-                    y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0,
-                    one(eltype(y)), zero(eltype(y)), j, k, 1, nx,
-                    Val(B), Val(true), Val(true),
-                )
-            end
-            partial[chunk] = total
-        end
-        return _cpu_partial_sum(partial, nchunks)
-    end
-
-    xchunks = min(nx, max(1, cld(2 * nthreads, nlines)))
-    xchunk_size = cld(nx, xchunks)
-    nwork = nlines * xchunks
-    nchunks = min(nwork, length(partial))
-    work_size = cld(nwork, nchunks)
-    Threads.@threads :dynamic for task in 1:nchunks
-        work_lo = (task - 1) * work_size + 1
-        work_hi = min(work_lo + work_size - 1, nwork)
-        total = zero(eltype(partial))
-        for work in work_lo:work_hi
-            line = (work - 1) ÷ xchunks + 1
-            xchunk = (work - 1) % xchunks
-            ilo = xchunk * xchunk_size + 1
-            ihi = min(ilo + xchunk_size - 1, nx)
-            j = (line - 1) % ny + 1
-            k = (line - 1) ÷ ny + 1
-            total += _cpu_apply_range!(
-                y, x, A.idx, A.D, nx, ny, nz, A.nbc, A.D0,
-                one(eltype(y)), zero(eltype(y)), j, k, ilo, ihi,
-                Val(B), Val(true), Val(true),
-            )
-        end
-        partial[task] = total
-    end
-    return _cpu_partial_sum(partial, nchunks)
+    return _cpu_mul_chunked!(
+        y, A, x, one(eltype(y)), zero(eltype(y)), partial, Val(B), Val(true), Val(true),
+    )
 end
 
 function LinearAlgebra.mul!(

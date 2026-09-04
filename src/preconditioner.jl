@@ -1067,15 +1067,46 @@ function _prolong!(y, agg, xc, x, inv_lambda)
     return y
 end
 
+# The host prolongation with `xᵀy` fused into the same pass, for HostCG, which
+# would otherwise read both vectors again to form it.
+function _prolong!(y::Vector, agg::Vector, xc::Vector, x::Vector, inv_lambda, partial)
+    n = length(agg)
+    nchunks = length(partial)
+    Threads.@threads :dynamic for chunk in 1:nchunks
+        ilo, ihi = _host_chunk_bounds(n, nchunks, chunk)
+        acc = zero(eltype(partial))
+        @inbounds @simd for i in ilo:ihi
+            a = agg[i]
+            yi = (a > 0 ? xc[a] : zero(eltype(y))) + inv_lambda * x[i]
+            y[i] = yi
+            acc += x[i] * yi
+        end
+        partial[chunk] = acc
+    end
+    return sum(partial)
+end
+
 # Prolongation is already a gather over the forward map, so the adjacency has
 # nothing to add to it.
 function _prolong!(y, agg::Aggregation, xc, x, inv_lambda)
     return _prolong!(y, agg.fwd, xc, x, inv_lambda)
 end
 
+function _prolong!(y, agg::Aggregation, xc, x, inv_lambda, partial)
+    return _prolong!(y, agg.fwd, xc, x, inv_lambda, partial)
+end
+
 function LinearAlgebra.ldiv!(
     y::AbstractVector, P::TwoLevelPreconditioner, x::AbstractVector
 )
+    _ldiv_dot!(y, P, x, nothing)
+    return y
+end
+
+# The one apply, shared with HostCG: handed a host chunk buffer as `partial`,
+# the prolongation also returns `xᵀy`, so the solver need not re-read both
+# vectors to form it.
+function _ldiv_dot!(y, P::TwoLevelPreconditioner, x, partial)
     _restrict!(P.rc, P.agg, x)
     copyto!(P.rc_host, P.rc)
     # The coarse solve is always double precision: the fine problem may run in
@@ -1089,8 +1120,8 @@ function LinearAlgebra.ldiv!(
     P.rc_host .= P.coarse_sol
     copyto!(P.xc, P.rc_host)
 
-    _prolong!(y, P.agg, P.xc, x, P.inv_lambda)
-    return y
+    isnothing(partial) && return _prolong!(y, P.agg, P.xc, x, P.inv_lambda)
+    return _prolong!(y, P.agg, P.xc, x, P.inv_lambda, partial)
 end
 
 LinearAlgebra.ldiv!(P::TwoLevelPreconditioner, x::AbstractVector) = ldiv!(x, P, copy(x))

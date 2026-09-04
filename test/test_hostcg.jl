@@ -19,6 +19,9 @@ using Tortuosity: HostCG, HOST_CG_MIN_NODES
         @test host.u ≈ krylov.u rtol=1e-11
         @test tortuosity(host.u, sim) ≈ tortuosity(krylov.u, sim) rtol=1e-11
         @test host.cache.symmetric_sparse == !matrixfree
+        # `symmetric_sparse` reads the assembled CSC down its columns as rows,
+        # which is `A * x` only while assembly keeps the matrix bit-symmetric.
+        matrixfree || @test issymmetric(sim.prob.A)
     end
 end
 

@@ -32,6 +32,9 @@ _device_backend(x::Base.ReinterpretArray) = _device_backend(parent(x))
 _device_backend(x::PermutedDimsArray) = _device_backend(parent(x))
 _device_backend(x::Adjoint) = _device_backend(parent(x))
 _device_backend(x::Transpose) = _device_backend(parent(x))
+# Same device, host included: a host array's backend is `nothing`, and
+# `typeof(nothing) === typeof(nothing)`.
+_same_device(a, b) = typeof(_device_backend(a)) === typeof(_device_backend(b))
 
 """
     _free!(x)

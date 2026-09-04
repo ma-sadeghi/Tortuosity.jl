@@ -314,16 +314,20 @@ What it decides:
   recurrence that drifts away from `b - A*x`: without this the solver reports
   success on a low-porosity image whose tortuosity is wrong by 2e-3. `sol.resid[]`
   is then the true relative residual and `sol.iters` counts every iteration
-  spent, correction rounds included. `sol.retcode` likewise describes the vector
-  returned, so a base solve that hit its iteration cap and was then refined below
-  `reltol` reports `Success`. `sol.stats` stays a record of the base solve alone —
+  spent, correction rounds included. `sol.retcode` reports whether refinement
+  met `reltol` — judged on the `Float64` iterate, because narrowing back to
+  `Float32` leaves a rounding floor under the true residual — so a base solve
+  that hit its iteration cap and was then refined below `reltol` reports
+  `Success`. `sol.stats` stays a record of the base solve alone —
   its `niter` and `residuals` are that solve's, because a correction's residuals
   belong to a different system and cannot be appended. Pass `refine=false` for the
   unrepaired behaviour.
 
 # Arguments
 - `sim`: the problem, from [`SteadyDiffusionProblem`](@ref).
-- `alg`: any LinearSolve algorithm. Default: `KrylovJL_CG()`.
+- `alg`: any LinearSolve algorithm. Default: `HostCG()` for a `Float64` host
+  system with at least 10,000 unknowns, `KrylovJL_CG()` otherwise (see
+  **Algorithm** above).
 
 # Keyword Arguments
 - `precond`: `:auto`, `:none`, or a preconditioner to use as `Pl`.
@@ -378,6 +382,17 @@ _refines_by_default(::Type{T}) where {T} = false
 # Widen or narrow a vector without assuming which array type it is, so the same
 # code serves the host and every device backend.
 _as(::Type{T}, v) where {T} = (w = similar(v, T); w .= v; w)
+
+# Narrow the `Float64` iterate to the working precision of `scratch` and back,
+# so that `x64` holds exactly the vector a caller would receive, and return that
+# vector's true residual relative to `‖b‖`. `r64` is the residual workspace.
+function _narrowed_residual!(scratch, x64, r64, A, b, nb)
+    scratch .= x64
+    x64 .= scratch
+    mul!(r64, A, x64)
+    r64 .= b .- r64
+    return norm(r64) / nb
+end
 
 # Iterative refinement needs each correction to reduce the residual, not solve
 # the correction equation accurately. At 0.1 those inner solves were
@@ -495,20 +510,6 @@ function _refine(
             # `Float64` copy of its own.
             r64 .= b .- r64
             resid = norm(r64) / nb
-            # A fallback stage exists only to recover a primary correction that
-            # stalled above tolerance. If the last primary correction reached
-            # the contract at its round limit, do not tighten and oversolve it.
-            if stage > 1 && k == 1
-                correction_rhs .= x64
-                x64 .= correction_rhs
-                mul!(r64, A, x64)
-                r64 .= b .- r64
-                resid = norm(r64) / nb
-                if converged(resid)
-                    finished = true
-                    break
-                end
-            end
             # Deliberately not stopping at `reltol`. The error in tortuosity is
             # the residual times the conditioning, and that factor reaches ~760
             # on a low-porosity image. Continue until improvement weakens so the
@@ -542,13 +543,25 @@ function _refine(
             x64 .+= correction.u
             iters += correction.iters
         end
-        if finished && stage < length(correction_reltols)
-            # Enter the fallback once so its first-iteration guard can validate
-            # the exact working-precision candidate before deciding it is done.
-            finished = false
+        if stage < length(correction_reltols)
+            # A fallback stage exists only to recover a primary correction that
+            # stalled above tolerance, so decide from the candidate narrowed to
+            # working precision — the vector that would be returned. When the
+            # primary stage reached the contract at its round limit, this is
+            # also what keeps the fallback from tightening and oversolving it.
+            resid = _narrowed_residual!(correction_rhs, x64, r64, A, b, nb)
+            finished = converged(resid)
         end
         finished && break
     end
+    # `retcode` follows the `Float64` iterate, the thing refinement controls:
+    # narrowing to working precision puts a floor of a few `eps(Float32)` under
+    # the true residual that no correction can lower, and at benchmark sizes
+    # that floor reaches the default `reltol`. One extra apply here keeps a
+    # rounding-decided `Failure` off an answer that met the contract.
+    mul!(r64, A, x64)
+    r64 .= b .- r64
+    iterate_converged = converged(norm(r64) / nb)
     # Report the residual of the vector actually returned, which is narrowed back
     # to the working precision and so is slightly worse than the `Float64` iterate
     # refinement carried internally. Reporting the iterate's residual instead
@@ -560,16 +573,13 @@ function _refine(
     # allocation refinement makes inside the guard above. A fourth allocation after
     # the guard is a fourth way to throw where the guard promised a warning.
     u = sol.u
-    u .= x64
-    x64 .= u
-    mul!(r64, A, x64)
-    r64 .= b .- r64
-    resid = norm(r64) / nb
+    resid = _narrowed_residual!(u, x64, r64, A, b, nb)
     # Hand the cache back as it was found. The rounds above pointed its right-hand
     # side at a scratch vector and loosened its tolerance, and a caller who reuses
     # the cache should not inherit either.
     cache.b, cache.reltol, cache.abstol = b_before, reltol_before, abstol_before
-    # `retcode` describes the vector returned, for the same reason `resid` does.
+    # `retcode` describes the refined iterate, judged by the same contract that
+    # `resid` is reported against.
     # A base solve that stopped at its iteration cap and was then refined below
     # the requested tolerance did reach that tolerance, and reporting `MaxIters`
     # for it is the same class of defect this function exists to remove: a field
@@ -578,7 +588,7 @@ function _refine(
     # worse than the fields claim, so it is the one that forces a failure.
     retcode = if !corrections_ok
         LinearSolve.SciMLBase.ReturnCode.Failure
-    elseif converged(resid)
+    elseif iterate_converged
         LinearSolve.SciMLBase.ReturnCode.Success
     elseif sol.retcode == LinearSolve.SciMLBase.ReturnCode.Success
         LinearSolve.SciMLBase.ReturnCode.Failure

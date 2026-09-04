@@ -13,15 +13,11 @@ samples cover a real solve, which the sample count and the child log show.
 """
 
 import argparse
-import csv
 import json
 import os
 import socket
 import statistics
-import subprocess
 import tempfile
-import time
-from datetime import datetime
 from pathlib import Path
 
 import psutil
@@ -29,8 +25,15 @@ import psutil
 from benchkit.occupancy import (
     benchmark_measurement_lock,
     install_termination_handler,
-    measurement_process,
+    latest_environment,
+    require_target_result,
+    sample_cpu_occupancy,
+    timestamp,
 )
+
+# The result file and JSON label of the configuration sampled here — what
+# `bench_tortuosity.jl` names a CPU matrix-free timing run.
+TOOL = "tortuosity-cpu-matrixfree-hostcg"
 
 # pixi exports LD_LIBRARY_PATH and CONDA_PREFIX pointing at its own lib directory.
 # A child Julia inherits them, and once it loads the full package stack those
@@ -46,97 +49,24 @@ def clean_env(output_dir, marker):
     return env
 
 
-def timestamp():
-    return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-def latest_environment(output_dir):
-    """Runtime provenance written by the child that just completed."""
-    path = Path(output_dir) / "environment.csv"
-    with path.open(encoding="utf-8", newline="") as stream:
-        rows = list(csv.DictReader(stream))
-    if not rows:
-        raise RuntimeError("benchmark child wrote no environment record")
-    keys = (
-        "measured_at", "host", "stage", "tool", "device", "variant",
-        "runtime", "runtime_version", "cpu_threads", "accelerator", "notes",
-    )
-    return {key: rows[-1][key] for key in keys}
-
-
-def require_target_result(output_dir, case):
-    """Require the isolated case to have reached the benchmark target."""
-    path = (
-        Path(output_dir)
-        / "timings"
-        / "tortuosity-cpu-matrixfree-hostcg.csv"
-    )
-    with path.open(encoding="utf-8", newline="") as stream:
-        rows = [
-            row
-            for row in csv.DictReader(stream)
-            if row["case_id"] == case and row["stop_reason"]
-        ]
-    if len(rows) != 1 or rows[0]["stop_reason"] != "target_reached":
-        raise RuntimeError(f"{case} did not reach the target in isolated output")
-
-
 def sample(cmd, interval, logpath, output_dir, marker, case):
     start_marker = Path(f"{marker}.start")
     active_marker = Path(f"{marker}.active")
     transition_marker = Path(f"{marker}.transitions")
     success_marker = Path(f"{marker}.success")
     end_marker = Path(f"{marker}.end")
-    with open(logpath, "wb") as log:
-        with measurement_process(
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=clean_env(output_dir, marker),
-        ) as (proc, tracked):
-            parent = psutil.Process(proc.pid)
-            tracked[parent.pid] = parent
-            parent.cpu_percent(None)
-            samples = []
-            started = time.perf_counter()
-            while proc.poll() is None:
-                active_before = active_marker.is_file()
-                transitions_before = (
-                    transition_marker.stat().st_size
-                    if transition_marker.is_file()
-                    else 0
-                )
-                time.sleep(interval)
-                total = 0.0
-                try:
-                    total += parent.cpu_percent(None)
-                    for child in parent.children(recursive=True):
-                        if child.pid not in tracked:
-                            tracked[child.pid] = child
-                            try:
-                                child.cpu_percent(None)
-                            except psutil.Error:
-                                pass
-                            continue
-                        try:
-                            total += child.cpu_percent(None)
-                        except psutil.Error:
-                            pass
-                except psutil.Error:
-                    break
-                active_after = active_marker.is_file()
-                transitions_after = (
-                    transition_marker.stat().st_size
-                    if transition_marker.is_file()
-                    else 0
-                )
-                if (
-                    active_before
-                    and active_after
-                    and transitions_before == transitions_after
-                ):
-                    samples.append(total / 100.0)
-            code = proc.wait()
+
+    def measured_phase():
+        # Truthy only while the child is inside its measured phase; a sample
+        # spanning a phase transition is dropped because the value changes.
+        if not active_marker.is_file():
+            return None
+        size = transition_marker.stat().st_size if transition_marker.is_file() else 0
+        return (size,)
+
+    code, elapsed, samples = sample_cpu_occupancy(
+        cmd, interval, logpath, clean_env(output_dir, marker), window=measured_phase
+    )
     if (
         not start_marker.is_file()
         or not success_marker.is_file()
@@ -144,9 +74,9 @@ def sample(cmd, interval, logpath, output_dir, marker, case):
         or not transition_marker.is_file()
     ):
         raise RuntimeError("benchmark child did not mark its measured phase")
-    require_target_result(output_dir, case)
+    require_target_result(output_dir, TOOL, case)
     provenance = latest_environment(output_dir)
-    return code, time.perf_counter() - started, samples, provenance
+    return code, elapsed, samples, provenance
 
 
 def summarise(samples):
@@ -173,7 +103,7 @@ def main():
         ("n600_b100_p040", "n600_b100_p040", 0.5),
     ]
     out = {
-        "tool": "tortuosity-cpu-matrixfree-hostcg",
+        "tool": TOOL,
         "host": socket.gethostname(),
         "started_at": timestamp(),
         "host_physical_cores": psutil.cpu_count(logical=False),

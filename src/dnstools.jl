@@ -13,14 +13,8 @@ function _inlet_edge_flux(u, flux::InletFlux)
     isempty(flux.targets) && return zero(eltype(flux.weights))
 
     targets, weights = flux.targets, flux.weights
-    nodes_backend = _device_backend(targets)
     u_backend = _device_backend(u)
-    same_backend = if isnothing(nodes_backend) || isnothing(u_backend)
-        isnothing(nodes_backend) && isnothing(u_backend)
-    else
-        typeof(nodes_backend) === typeof(u_backend)
-    end
-    if same_backend
+    if _same_device(targets, u)
         return mapreduce(
             (i, w) -> w * (one(eltype(u)) - u[i]), +, targets, weights,
         )
@@ -53,23 +47,19 @@ function _checkpoint_tortuosity(u, sim::SteadyDiffusionProblem)
         "construct the SteadyDiffusionProblem with `checkpoint_readout=true` to inspect \
          unconverged iterates"
     ))
-    u_backend = _device_backend(u)
-    flux_backend = _device_backend(flux.targets)
-    same_backend = if isnothing(u_backend) || isnothing(flux_backend)
-        isnothing(u_backend) && isnothing(flux_backend)
-    else
-        typeof(u_backend) === typeof(flux_backend)
-    end
-    same_backend || throw(ArgumentError(
+    _same_device(u, flux.targets) || throw(ArgumentError(
         "checkpoint readout requires the solution and boundary metadata on the same backend"
     ))
 
+    # `init` so that an empty face reduces to zero and the ratio below comes out
+    # NaN, as the field-based readout does, instead of throwing in a callback.
+    zero_u = zero(eltype(u))
     edge_flux = mapreduce(
         (source, target, weight) -> weight * (u[source] - u[target]),
-        +, flux.sources, flux.targets, flux.weights,
+        +, flux.sources, flux.targets, flux.weights; init=zero_u,
     )
-    inlet_mean = mapreduce(i -> u[i], +, flux.inlet) / length(flux.inlet)
-    outlet_mean = mapreduce(i -> u[i], +, flux.outlet) / length(flux.outlet)
+    inlet_mean = mapreduce(i -> u[i], +, flux.inlet; init=zero_u) / length(flux.inlet)
+    outlet_mean = mapreduce(i -> u[i], +, flux.outlet; init=zero_u) / length(flux.outlet)
     dc = inlet_mean - outlet_mean
 
     ax = axis_dim(sim.axis)
@@ -233,12 +223,29 @@ end
 # construction retain `D0` without copying a device diffusivity to the host.
 _reference_diffusivity(D::Number, img) = D
 function _reference_diffusivity(D, img)
-    axes(D) == axes(img) || throw(DimensionMismatch(
-        "diffusivity has axes $(axes(D)) but the pore mask has axes $(axes(img))"
-    ))
+    _check_reference_axes(D, img)
     return mapreduce(
         (d, pore) -> ifelse(pore, d, typemin(typeof(d))), max, D, img,
     )
+end
+
+# Only GPUArrays fuses the two-array `mapreduce`. Base lowers it to
+# `reduce(op, map(f, A, B))`, which materialises a full-grid temporary — 8 GB at
+# 1000³ in `Float64` — so host arrays take a plain loop instead.
+function _reference_diffusivity(D::Array, img::Union{Array,BitArray})
+    _check_reference_axes(D, img)
+    best = typemin(eltype(D))
+    @inbounds for i in eachindex(D, img)
+        best = ifelse(img[i], max(best, D[i]), best)
+    end
+    return best
+end
+
+function _check_reference_axes(D, img)
+    axes(D) == axes(img) || throw(DimensionMismatch(
+        "diffusivity has axes $(axes(D)) but the pore mask has axes $(axes(img))"
+    ))
+    return nothing
 end
 
 """

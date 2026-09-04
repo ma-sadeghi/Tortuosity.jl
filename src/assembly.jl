@@ -57,19 +57,9 @@ function _free!(flux::InletFlux)
     return nothing
 end
 
+# The `p`-th inlet-face voxel and the one behind it, as `i1, j1, k1, i2, j2, k2`.
 @inline function _inlet_pair(p, nx, ny, bcdim)
-    if bcdim == 1
-        j = (p - 1) % ny + 1
-        k = (p - 1) ÷ ny + 1
-        return 1, j, k, 2, j, k
-    elseif bcdim == 2
-        i = (p - 1) % nx + 1
-        k = (p - 1) ÷ nx + 1
-        return i, 1, k, i, 2, k
-    end
-    i = (p - 1) % nx + 1
-    j = (p - 1) ÷ nx + 1
-    return i, j, 1, i, j, 2
+    return (_face_point(p, nx, ny, bcdim, 1)..., _face_point(p, nx, ny, bcdim, 2)...)
 end
 
 @kernel function _inlet_flags_kernel!(flags, @Const(idx), nx, ny, bcdim)
@@ -394,35 +384,11 @@ function _host_colptr!(colptr, counts)
         return colptr
     end
 
-    nchunks = min(n, 4 * Threads.nthreads())
-    chunk_size = cld(n, nchunks)
-    offsets = zeros(eltype(colptr), nchunks)
-    Threads.@threads :dynamic for chunk in 1:nchunks
-        ilo = (chunk - 1) * chunk_size + 1
-        ihi = min(ilo + chunk_size - 1, n)
-        chunk_total = zero(eltype(colptr))
-        @inbounds for j in ilo:ihi
-            chunk_total += counts[j]
-            colptr[j + 1] = chunk_total
-        end
-        offsets[chunk] = chunk_total
-    end
-
-    running_offset = one(eltype(colptr))
-    @inbounds for chunk in eachindex(offsets)
-        completed_total = offsets[chunk]
-        offsets[chunk] = running_offset
-        running_offset += completed_total
-    end
     colptr[1] = one(eltype(colptr))
-    Threads.@threads :dynamic for chunk in 1:nchunks
-        ilo = (chunk - 1) * chunk_size + 1
-        ihi = min(ilo + chunk_size - 1, n)
-        chunk_offset = offsets[chunk]
-        @inbounds @simd for j in ilo:ihi
-            colptr[j + 1] += chunk_offset
-        end
-    end
+    _threaded_scan!(
+        view(colptr, 2:(n + 1)), j -> counts[j], one(eltype(colptr)),
+        (j, offset) -> offset,
+    )
     return colptr
 end
 
@@ -435,10 +401,10 @@ end
 
 function _column_pointers(counts)
     n = length(counts)
+    backend = get_backend(counts)
     scan = accumulate(+, counts)
     _free!(counts)
     colptr = similar(scan, n + 1)
-    backend = get_backend(counts)
     _build_colptr_kernel!(backend)(colptr, scan, n; ndrange=max(n, 1))
     KernelAbstractions.synchronize(backend)
     _free!(scan)

@@ -1,15 +1,19 @@
 """Coordinate benchmark measurements that require exclusive host access."""
 
 import contextlib
+import csv
 import os
 import signal
 import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import psutil
+
+from benchkit.results import ENVIRONMENT_COLUMNS
 
 if os.name == "nt":
     DEFAULT_LOCK_PATH = (
@@ -29,6 +33,91 @@ if not LOCK_PATH.is_absolute():
 
 class ProcessGroupCleanupError(RuntimeError):
     """A measurement process group survived cleanup."""
+
+
+def timestamp():
+    """Local wall-clock time with its offset, for the occupancy summaries."""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def latest_environment(output_dir):
+    """Runtime provenance written by the child that just completed."""
+    path = Path(output_dir) / "environment.csv"
+    with path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    if not rows:
+        raise RuntimeError("benchmark child wrote no environment record")
+    return {key: rows[-1][key] for key in ENVIRONMENT_COLUMNS}
+
+
+def require_target_result(output_dir, name, case):
+    """Require the isolated case of tool `name` to have reached the target."""
+    path = Path(output_dir) / "timings" / f"{name}.csv"
+    with path.open(encoding="utf-8", newline="") as stream:
+        rows = [
+            row
+            for row in csv.DictReader(stream)
+            if row["case_id"] == case and row["stop_reason"]
+        ]
+    if len(rows) != 1 or rows[0]["stop_reason"] != "target_reached":
+        raise RuntimeError(f"{name} did not reach the target in isolated output")
+
+
+def sample_cpu_occupancy(cmd, interval, logpath, env, window=None):
+    """Run `cmd`, sampling total CPU occupancy of its process tree until it exits.
+
+    Returns the exit status, the elapsed seconds and the samples, each the
+    number of cores busy over one `interval`. `window`, when given, is called
+    before and after each interval; a sample is kept only when both calls
+    return the same truthy value, which is how a caller keeps the samples
+    inside one marked phase of the child.
+
+    The child's output goes to a file rather than to /dev/null: a tool that dies
+    on a signal reports only its exit code, and without its stderr there is
+    nothing to diagnose from.
+
+    Every process is kept and reused between samples. `cpu_percent` reports the
+    share used since that same object's previous call, so its first call always
+    returns 0.0; building the child objects afresh each iteration would make
+    every call a first call and report a solve that used no CPU at all. This
+    matters only when the work happens below the process we launched — a tool run
+    through `pixi run` — which is why it went unnoticed while every tool here was
+    launched directly.
+    """
+    with open(logpath, "wb") as log:
+        with measurement_process(
+            cmd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        ) as (proc, tracked):
+            parent = psutil.Process(proc.pid)
+            tracked[parent.pid] = parent
+            parent.cpu_percent(None)  # prime; first call always returns 0.0
+            samples = []
+            started = time.perf_counter()
+            while proc.poll() is None:
+                before = None if window is None else window()
+                time.sleep(interval)
+                try:
+                    for child in parent.children(recursive=True):
+                        if child.pid not in tracked:
+                            tracked[child.pid] = child
+                            with contextlib.suppress(psutil.Error):
+                                child.cpu_percent(None)
+                except psutil.Error:
+                    pass
+                total = 0.0
+                for pid, process in list(tracked.items()):
+                    try:
+                        total += process.cpu_percent(None)
+                    except psutil.Error:
+                        del tracked[pid]
+                after = None if window is None else window()
+                if window is None or (before and before == after):
+                    samples.append(total / 100.0)
+            code = proc.wait()
+    return code, time.perf_counter() - started, samples
 
 
 @contextmanager

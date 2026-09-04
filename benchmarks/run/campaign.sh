@@ -96,7 +96,6 @@ case "$LOCK" in
 esac
 PRESERVE_LOCK=0
 CHILD_PID=""
-CHILD_GROUP=0
 TEMP_FILE=""
 LAUNCHING=1
 PENDING_SIGNAL=0
@@ -138,8 +137,7 @@ release_lock() {
 terminate_child() {
   [ -n "$CHILD_PID" ] || return 0
   TERMINATING=1
-  local target=$CHILD_PID
-  [ "$CHILD_GROUP" -eq 0 ] || target="-$CHILD_PID"
+  local target="-$CHILD_PID"
   if kill -0 -- "$target" 2> /dev/null; then
     kill -TERM -- "$target" 2> /dev/null || true
     local attempt=0
@@ -164,7 +162,6 @@ terminate_child() {
   wait "$CHILD_PID" 2> /dev/null || true
   rm -f "$LOCK/child_pgid"
   CHILD_PID=""
-  CHILD_GROUP=0
   TERMINATING=0
   replay_pending_signal
 }
@@ -193,7 +190,6 @@ replay_pending_signal() {
 
 register_child_group() {
   CHILD_PID=$!
-  CHILD_GROUP=1
   local attempt=0
   while ! kill -0 -- "-$CHILD_PID" 2> /dev/null &&
         kill -0 "$CHILD_PID" 2> /dev/null &&
@@ -230,33 +226,33 @@ wait_child() {
   return "$status"
 }
 
-run_child_truncate() {
-  local log=$1
-  shift
-  LAUNCHING=1
-  setsid "$@" > "$log" 2>&1 &
-  register_child_group || exit 125
-  wait_child
-}
-
-run_child_append() {
-  local log=$1
-  shift
-  LAUNCHING=1
-  setsid "$@" >> "$log" 2>&1 &
-  register_child_group || exit 125
-  wait_child
-}
-
-run_child_capture() {
-  local output=$1
-  local log=$2
+# Launch a command in its own session, so the whole tree is one process group,
+# and wait for it. `mode` says where its output goes: `truncate` and `append`
+# send both streams to `log`; `capture OUTPUT LOG` sends stdout to OUTPUT and
+# stderr to LOG.
+run_child() {
+  local mode=$1 log=$2
   shift 2
   LAUNCHING=1
-  setsid "$@" > "$output" 2>> "$log" &
+  case "$mode" in
+    truncate) setsid "$@" > "$log" 2>&1 & ;;
+    append)   setsid "$@" >> "$log" 2>&1 & ;;
+    capture)
+      local output=$log
+      log=$1
+      shift
+      setsid "$@" > "$output" 2>> "$log" & ;;
+    *) echo "run_child: unknown mode $mode" >&2; exit 2 ;;
+  esac
   register_child_group || exit 125
   wait_child
 }
+
+# A child that ended on INT or TERM was stopped on purpose, so the campaign stops
+# with it. Any other signal death — the OOM killer's KILL at the largest size, a
+# SEGV during exit cleanup after the rows are written — is a failed case like
+# any other non-zero exit: the stages are independent and the sweep goes on.
+stopped_on_purpose() { [ "$1" -eq 130 ] || [ "$1" -eq 143 ]; }
 
 has_stage() { case ",$STAGES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 has_tool()  { case ",$TOOLS,"  in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
@@ -272,10 +268,10 @@ has_device() {
 step() {
   local name=$1; shift
   echo "=== $name  ($(date '+%H:%M:%S'))"
-  run_child_truncate "$LOGS/$name.log" "$@"
+  run_child truncate "$LOGS/$name.log" "$@"
   local status=$?
   echo "    exit $status — $(date '+%H:%M:%S')  → $LOGS/$name.log"
-  [ "$status" -lt 128 ] || exit "$status"
+  ! stopped_on_purpose "$status" || exit "$status"
 }
 
 # ── Images ───────────────────────────────────────────────────────────
@@ -359,13 +355,13 @@ isolated() {
   local cases status case_file
   case_file="$LOGS/.$name.cases.$$"
   TEMP_FILE=$case_file
-  run_child_capture "$case_file" "$LOGS/$name.log" \
+  run_child capture "$case_file" "$LOGS/$name.log" \
     "$@" $SELECT --list-cases
   status=$?
   cases=$(cat "$case_file")
   rm -f "$case_file"
   TEMP_FILE=""
-  [ "$status" -lt 128 ] || exit "$status"
+  ! stopped_on_purpose "$status" || exit "$status"
   if [ $status -ne 0 ] || [ -z "$cases" ]; then
     echo "    could not enumerate cases (exit $status) — see $LOGS/$name.log"
     return
@@ -391,10 +387,10 @@ isolated() {
     # `$SELECT` is passed alongside `--cases` for `--grid`, which is what tells
     # the harness which grid to resolve the id against. `--cases` overrides the
     # size, porosity and blobiness filters, so repeating them is harmless.
-    run_child_append "$LOGS/$name.log" \
+    run_child append "$LOGS/$name.log" \
       "$@" $SELECT --cases="$case_id"
     status=$?
-    [ "$status" -lt 128 ] || exit "$status"
+    ! stopped_on_purpose "$status" || exit "$status"
     if [ "$status" -ne 0 ]; then
       failed=$((failed + 1))
       echo "    !! $case_id exited non-zero"
