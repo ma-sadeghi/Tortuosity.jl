@@ -284,6 +284,25 @@ end
     @test default_sim.flux.direct == 42
 end
 
+@testset "an empty boundary face reads out as NaN rather than throwing" begin
+    # A pore space touching neither Dirichlet face: both face node lists are
+    # empty and no edge leaves the inlet. The readout runs inside a solver
+    # callback, so an empty reduction must come back as NaN — the value the
+    # field-based readout gives — not as an exception that ends the solve.
+    img = falses(16, 8, 8)
+    img[3:14, 3:6, 3:6] .= true
+    for matrixfree in (false, true)
+        sim = SteadyDiffusionProblem(
+            img; axis=:x, gpu=false, matrixfree, checkpoint_readout=true,
+            warn_nonpercolating=false,
+        )
+        @test isempty(sim.flux.inlet)
+        @test isempty(sim.flux.outlet)
+        @test isempty(sim.flux.targets)
+        @test isnan(Tortuosity._checkpoint_tortuosity(fill(0.5, count(img)), sim))
+    end
+end
+
 # --- Scaling laws ---
 
 @testset "D_eff scales linearly with the intrinsic diffusivity" begin
@@ -391,6 +410,26 @@ end
     @test tortuosity(c, img; axis=:x, D=D_hot_solid) == tortuosity(c, img; axis=:x, D=D)
     @test formation_factor(c, img; axis=:x, D=D_hot_solid) ==
           formation_factor(c, img; axis=:x, D=D)
+end
+
+@testset "the host reference diffusivity is a loop, not a materialised map" begin
+    # Base's two-array `mapreduce` on host arrays is `reduce(op, map(f, A, B))`,
+    # a full-grid temporary that only GPUArrays fuse away. The host method must
+    # agree with that generic reduction and allocate nothing.
+    img = falses(16, 8, 8)
+    img[:, 3:6, 3:6] .= true
+    D = fill(50.0, size(img))             # a hot solid phase that must not count
+    D[:, 3:4, 3:6] .= 2.0
+    D[:, 5:6, 3:6] .= 0.6
+    generic = invoke(Tortuosity._reference_diffusivity, Tuple{Any,Any}, D, img)
+    @test generic == 2.0
+    @test Tortuosity._reference_diffusivity(D, img) == generic
+    @test Tortuosity._reference_diffusivity(D, BitArray(img)) == generic
+    Tortuosity._reference_diffusivity(D, img)   # compile before measuring
+    @test @allocated(Tortuosity._reference_diffusivity(D, img)) == 0
+    # An empty pore space has no fastest phase; both paths report `typemin`.
+    @test Tortuosity._reference_diffusivity(D, falses(size(img))) == -Inf
+    @test_throws DimensionMismatch Tortuosity._reference_diffusivity(D, trues(16, 8, 7))
 end
 
 @testset "scaling the whole diffusivity field scales D_eff by the same factor" begin
