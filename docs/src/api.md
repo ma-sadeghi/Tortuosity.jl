@@ -44,6 +44,7 @@ On Float64 host systems with at least 10,000 unknowns, `solve(sim)` selects [`To
 
 ```@docs
 Tortuosity.HostCG
+Tortuosity.HostCGWorkspace
 ```
 
 The automatic coarse space starts at 3,000 pore nodes on CUDA, 8,000 on CPU, and 100,000 on Metal or AMDGPU. Domains with at most 32 voxels along the transport axis retain the 100,000-node threshold because their unpreconditioned solve is already short. These thresholds reflect where setup plus refinement becomes cheaper than the unpreconditioned iteration count on each measured path.

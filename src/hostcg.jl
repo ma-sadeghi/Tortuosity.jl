@@ -21,6 +21,13 @@ end
 
 HostCG(; callback=_host_cg_continue) = HostCG(callback)
 
+"""
+    HostCGWorkspace
+
+Live solver state passed to a [`HostCG`](@ref) callback after each iteration.
+The vector fields are working buffers; callbacks should inspect rather than
+modify or retain them.
+"""
 struct HostCGWorkspace{V,S}
     x::V
     r::V
