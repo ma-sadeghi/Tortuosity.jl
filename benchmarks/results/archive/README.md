@@ -18,6 +18,14 @@ This is the load-bearing one. `docs/src/benchmark.md` cites it as the operator-c
 
 CPU Tortuosity.jl timings, memory, occupancy, and matching environment rows from the 2026-08-17 to 2026-08-18 campaign, before the benchmark harness switched from `KrylovJL_CG` to the bandwidth-fused `HostCG` implementation. The active result directories accept only variants carrying `-hostcg`; loading one of these archived rows as current data raises an error instead of silently publishing the superseded solver.
 
+## `pre-gpu-remeasure-2026-09-04/`
+
+GPU timings and memory for both operators, plus the 52 matching invocation records, from the 2026-08-17 to 2026-08-18 campaign. Taken before the 2026-09-04 re-measurement of the GPU half against the merged steady-pipeline work (`ddefedf`, `0b3f6c3`, `3ba1972`), which the CPU half had already been re-run for but the GPU half had not.
+
+This one supports the drift check. Comparing these rows against the current files at *identical case and rung* gives a geometric mean within 6% of unity at ``N \ge 600``, which is what establishes that the machine did not drift between August and September — and that in turn is what licenses comparing freshly measured Tortuosity.jl timings against taufactor's August rows instead of re-running taufactor too. Without this directory the current GPU comparison rests on an unverified assumption. `benchmarks/drift_check.py` reads it directly.
+
+The same comparison is what shows the speedup at ``200^3`` to be fixed-cost removal rather than faster convergence: the ladder rung needed to reach the target is unchanged in 68 of 74 cases.
+
 ## `unmatched-environment.csv`
 
 Three CPU matrix-free timing invocations from 2026-08-21 whose output rows are not present in any committed result file. They remain available as an audit trail but are kept separate rather than assigned to a campaign they cannot substantiate.
