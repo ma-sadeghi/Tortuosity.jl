@@ -15,8 +15,8 @@
 # voxel on the inlet face keeps `c = 0` while sitting on a `c = 1` face, which
 # drags the inlet-slice mean below the imposed drop, inflates `D_eff`, and
 # reports a tortuosity below 1 — impossible, from a solve that reports success.
-# Reachable on any untrimmed image: 33 of the 36 blob fixtures in
-# `test/test_gpu_parity.jl` contain such a voxel.
+# Reachable on any untrimmed image: measured over a sweep of 36 blob fixtures,
+# 33 of them contained such a voxel.
 #
 # Scaling those rows by 1 instead enforces `x[i] = val[i]` exactly and keeps `A`
 # symmetric, since such a row and column are empty apart from the diagonal. It

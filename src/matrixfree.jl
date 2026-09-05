@@ -559,14 +559,35 @@ end
 
 # --- LinearSolve integration ---
 #
-# Deliberately the same method `PortableSparseCSC` has in `sparse_type.jl`, for
-# the two reasons documented there: LinearSolve's placeholder costs a full
-# workspace for any matrix type it does not recognise, and the real workspace's
-# own solution vector is replaced by `u` the line after it is allocated. The two
-# methods are one behaviour written twice — keep them in step.
+# One method for both of this package's operator types, the assembled
+# `PortableSparseCSC` and the matrix-free `MaskedLaplacian`; it lives here
+# because that is where both names are in scope.
+#
+# `init_cacheval` is called twice per solve: `init` asks for a placeholder with
+# `zeroinit=true`, then `solve!` asks for the real workspace with
+# `zeroinit=false`. LinearSolve's generic path costs a full solution vector on
+# each call for either of these types:
+#
+#  1. The placeholder is only built empty for `Matrix` and `SparseMatrixCSC`;
+#     anything else falls through to `KS(A, b)`, so the full workspace — four
+#     n-length vectors for CG — is allocated twice, both live at the moment the
+#     second one is built. Building it at zero length costs nothing, taking the
+#     storage type from `b` so it stays on the right device.
+#  2. The real workspace's own solution vector is dead on arrival: LinearSolve
+#     replaces it with `u` (`solver.x = u`) as soon as the constructor returns.
+#     Releasing it afterwards is not enough — it is allocated *before* the
+#     workspace's other vectors, so by then the device is already holding all
+#     four and the peak has been reached. On a pooled allocator a release only
+#     hands the block back to the pool, which the driver still counts as in use.
+#     It has to not be allocated at all: worth 0.95 GiB at 800³.
+#
+# Doing (2) means knowing which of a workspace's vectors the algorithm actually
+# uses, so it is done for CG — the algorithm this package ships — and every
+# other algorithm keeps LinearSolve's generic path and only gets (1).
 function LinearSolve.init_cacheval(
-    alg::LinearSolve.KrylovJL, A::MaskedLaplacian, b, u, Pl, Pr, maxiters::Int,
-    abstol, reltol, verbose::Union{LinearSolve.LinearVerbosity,Bool},
+    alg::LinearSolve.KrylovJL, A::Union{MaskedLaplacian,PortableSparseCSC},
+    b, u, Pl, Pr, maxiters::Int, abstol, reltol,
+    verbose::Union{LinearSolve.LinearVerbosity,Bool},
     assumptions::LinearSolve.OperatorAssumptions; zeroinit=true,
 )
     if zeroinit

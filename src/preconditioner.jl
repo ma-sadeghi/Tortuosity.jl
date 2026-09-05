@@ -856,6 +856,21 @@ function _two_level_from_aggregates(A, agg, bs, nbx, nby, nbz, shift, max_coarse
     )
 end
 
+# The preamble both `two_level_preconditioner` methods share: check the shift,
+# promote the mask to 3D, and lay the coarse block grid over it. Returns the
+# promoted mask together with the block edge, the block counts along each axis,
+# and the resolved direct-solve ceiling. Each method's own mask-consistency
+# assertion and empty-operator guard belong at its call site, not here — they
+# read the operator in ways the two forms do not share.
+function _coarse_setup(A, img, block, max_coarse, shift)
+    @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
+    img = atleast_3d(img)
+    nx, ny, nz = size(img)
+    bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
+    nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
+    return img, bs, nbx, nby, nbz, _resolve_max_coarse(A, max_coarse, (nbx, nby, nbz))
+end
+
 """
     two_level_preconditioner(A, img; block=nothing, max_coarse, shift, verbose=false)
     two_level_preconditioner(sim::SteadyDiffusionProblem; kwargs...)
@@ -929,8 +944,7 @@ function two_level_preconditioner(
     block=nothing, max_coarse=nothing, shift=DEFAULT_COARSE_SHIFT,
     verbose=false,
 )
-    @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
-    img = atleast_3d(img)
+    img, bs, nbx, nby, nbz, max_coarse = _coarse_setup(A, img, block, max_coarse, shift)
     n = size(A, 1)
     # `agg` is sized from `n` but filled at the pore ordinals `img` produces, so a
     # mask that disagrees with the matrix leaves entries unwritten — and `agg` is
@@ -938,11 +952,6 @@ function two_level_preconditioner(
     # is an out-of-bounds device write, not a wrong answer, so refuse up front.
     @assert count(img) == n "`img` must be the pore mask `A` was built from: it has $(count(img)) pore voxels against `A`'s $(n) rows"
     nnz(A) == 0 && return nothing
-
-    nx, ny, nz = size(img)
-    bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
-    nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
-    max_coarse = _resolve_max_coarse(A, max_coarse, (nbx, nby, nbz))
 
     # Pore ordinals are the prefix sum of the mask, exactly as in
     # `build_steady_system`; both scratch arrays go before the coarse operator
@@ -962,18 +971,12 @@ function two_level_preconditioner(
     block=nothing, max_coarse=nothing, shift=DEFAULT_COARSE_SHIFT,
     verbose=false,
 )
-    @assert shift > 0 "`shift` must be positive; the coarse operator is only positive semi-definite"
-    img = atleast_3d(img)
+    img, bs, nbx, nby, nbz, max_coarse = _coarse_setup(A, img, block, max_coarse, shift)
     @assert size(img) == size(A.idx) "`img` must be the pore mask `A` was built from"
     # An operator of order zero is the matrix-free reading of `nnz(A) == 0`.
     # Every other degenerate pore space — isolated voxels, whose columns are all
     # empty — leaves no block carrying a coarse unknown, and falls out below.
     A.nnodes == 0 && return nothing
-
-    nx, ny, nz = size(img)
-    bs = isnothing(block) ? DEFAULT_COARSE_BLOCK : block
-    nbx, nby, nbz = cld(nx, bs), cld(ny, bs), cld(nz, bs)
-    max_coarse = _resolve_max_coarse(A, max_coarse, (nbx, nby, nbz))
 
     # The operator's index array is the pore numbering the aggregation needs, so
     # it stands in for the scratch array the assembled path builds here. It is

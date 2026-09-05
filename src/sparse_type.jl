@@ -249,46 +249,10 @@ end
 
 # --- LinearSolve integration ---
 #
-# `init_cacheval` is called twice per solve: `init` asks for a placeholder with
-# `zeroinit=true`, then `solve!` asks for the real workspace with
-# `zeroinit=false`. LinearSolve's generic path costs a full solution vector on
-# each call when the matrix is a `PortableSparseCSC`:
-#
-#  1. The placeholder is only built empty for `Matrix` and `SparseMatrixCSC`;
-#     anything else falls through to `KS(A, b)`, so the full workspace — four
-#     n-length vectors for CG — is allocated twice, both live at the moment the
-#     second one is built. Building it at zero length costs nothing, taking the
-#     storage type from `b` so it stays on the right device.
-#  2. The real workspace's own solution vector is dead on arrival: LinearSolve
-#     replaces it with `u` (`solver.x = u`) as soon as the constructor returns.
-#     Releasing it afterwards is not enough — it is allocated *before* the
-#     workspace's other vectors, so by then the device is already holding all
-#     four and the peak has been reached. On a pooled allocator a release only
-#     hands the block back to the pool, which the driver still counts as in use.
-#     It has to not be allocated at all: worth 0.95 GiB at 800³.
-#
-# Doing (2) means knowing which of a workspace's vectors the algorithm actually
-# uses, so it is done for CG — the algorithm this package ships — and every
-# other algorithm keeps LinearSolve's generic path and only gets (1).
-function LinearSolve.init_cacheval(
-    alg::LinearSolve.KrylovJL, A::PortableSparseCSC, b, u, Pl, Pr, maxiters::Int,
-    abstol, reltol, verbose::Union{LinearSolve.LinearVerbosity,Bool},
-    assumptions::LinearSolve.OperatorAssumptions; zeroinit=true,
-)
-    if zeroinit
-        KS = LinearSolve.get_KrylovJL_solver(alg.KrylovAlg)
-        workspace = KS(0, 0, LinearSolve.Krylov.ktypeof(b))
-        workspace.x = u
-        return workspace
-    end
-    alg.KrylovAlg === LinearSolve.Krylov.cg! && return _cg_workspace(A, b, u)
-    return @invoke LinearSolve.init_cacheval(
-        alg::LinearSolve.KrylovJL, A::Any, b::Any, u::Any, Pl::Any, Pr::Any,
-        maxiters::Int, abstol::Any, reltol::Any,
-        verbose::Union{LinearSolve.LinearVerbosity,Bool},
-        assumptions::LinearSolve.OperatorAssumptions; zeroinit=false,
-    )
-end
+# `LinearSolve.init_cacheval` for this type is in `matrixfree.jl`: it is one
+# method covering `PortableSparseCSC` and `MaskedLaplacian`, and the `Union` can
+# only be written where both names exist. `_cg_workspace`, which it calls, stays
+# here.
 
 """
     _cg_workspace(A, b, u)
