@@ -1,0 +1,13 @@
+# Why Consider Tortuosity.jl?  
+
+[taufactor](https://github.com/tldr-group/taufactor) is an excellent package for computing the tortuosity factor of porous media and has been a great source of inspiration for `Tortuosity.jl`. However, `Tortuosity.jl` introduces some refinements that may be beneficial in certain cases:  
+
+## Concentration Field Accuracy  
+
+`taufactor` solves the Laplace equation in a way that ensures the inlet and outlet fluxes match to a prescribed precision. While this approach works well in many situations, it can sometimes lead to less accurate concentration fields, especially in strongly heterogeneous media—such as when the image size is comparable to the [representative elementary volume](https://en.wikipedia.org/wiki/Representative_elementary_volume). Even when the computed tortuosity factor is correct, the concentration field itself may not always be as precise.  
+
+## Computational Efficiency  
+
+While `taufactor` benefits from GPU acceleration, it always treats the entire image as the computational domain. This is efficient when the porosity (void fraction) is high but can slow down calculations at lower porosities. `Tortuosity.jl` takes a different approach by focusing only on the void space, leading to potential speedups of up to 5x in low-porosity cases.  
+
+Both tools have their strengths, and `Tortuosity.jl` builds on the solid foundation that `taufactor` provides while introducing optimizations for specific scenarios.
