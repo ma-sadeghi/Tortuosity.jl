@@ -2,6 +2,10 @@
 
 Thank you for your interest in contributing to Tortuosity.jl.
 
+## Code of Conduct
+
+This project is governed by the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating, you are expected to uphold it.
+
 ## Reporting issues
 
 If you find a bug or have a feature request, please open an issue on [GitHub](https://github.com/ma-sadeghi/Tortuosity.jl/issues). Include:

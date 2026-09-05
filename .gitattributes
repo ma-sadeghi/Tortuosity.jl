@@ -1,0 +1,16 @@
+# Line endings are normalised to LF in the repository and in the working tree on
+# every platform. Every tracked text file is already stored as LF, so this
+# changes no committed content — it stops Windows checkouts from producing CRLF
+# working copies, which is what makes git warn on every commit and what breaks
+# shebangs when the same tree is used on Linux.
+* text=auto eol=lf
+
+# Windows tooling requires CRLF in these, so they are the deliberate exception.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.reg text eol=crlf
+
+# Binary assets: never normalised, never diffed as text.
+*.png binary
+*.jld2 binary
+*.h5 binary
