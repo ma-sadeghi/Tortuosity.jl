@@ -99,6 +99,17 @@ formation_factor
 reconstruct_field
 ```
 
+## Cavern detection
+
+Porosity counts a blind pocket exactly as it counts a through-going channel, so part of a pore space can be fully connected and still carry no transport at all. Cavern detection separates the two: it solves the steady problem, thresholds the per-voxel flux, and returns a mask of the stagnant volume — the "caverns" — along with the fraction of pore volume they account for. Reach for it when you want to know where a tortuosity number comes from, to report the transporting share of a pore space rather than its porosity, or to strip dead ends before a further analysis.
+
+Both names are unexported; call them as `Tortuosity.find_caverns` and `Tortuosity.flux_out`.
+
+```@docs
+Tortuosity.find_caverns
+Tortuosity.flux_out
+```
+
 ## Transient solver
 
 The transient solver follows the SciML convention: build a

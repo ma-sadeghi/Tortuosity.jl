@@ -75,10 +75,10 @@ end
     @testset "a prismatic duct has no stagnant volume" begin
         img = falses(16, 8, 8)
         img[:, 3:6, 3:6] .= true
-        caverns, kai = find_caverns(BitArray(img); vmin=-2, iter=1, axis=:x,
-                                    reltol=1e-10, gpu=false)
+        caverns, cavern_fraction = find_caverns(BitArray(img); vmin=-2, iter=1,
+                                                axis=:x, reltol=1e-10, gpu=false)
         @test !any(caverns)
-        @test kai == [0.0, 0.0]
+        @test cavern_fraction == [0.0, 0.0]
     end
 
     @testset "a blind side branch is classified as a cavern" begin
@@ -94,11 +94,11 @@ end
         pocket[8, 7:8, 4] .= true
         img .|= pocket
 
-        caverns, kai = find_caverns(BitArray(img); vmin=-2, iter=1, axis=:x,
-                                    reltol=1e-10, gpu=false)
+        caverns, cavern_fraction = find_caverns(BitArray(img); vmin=-2, iter=1,
+                                                axis=:x, reltol=1e-10, gpu=false)
         @test caverns == BitArray(pocket)
-        @test kai[1] == 0.0
-        @test kai[2] ≈ count(pocket) / count(img)
+        @test cavern_fraction[1] == 0.0
+        @test cavern_fraction[2] ≈ count(pocket) / count(img)
     end
 
     @testset "raising vmin classifies more volume" begin
@@ -119,15 +119,15 @@ end
         count(img) > 100 || @warn "cavern fixture unexpectedly small"
 
         iters = 3
-        caverns, kai = find_caverns(img; vmin=-2, iter=iters, axis=:z,
-                                    reltol=1e-8, gpu=false)
+        caverns, cavern_fraction = find_caverns(img; vmin=-2, iter=iters, axis=:z,
+                                                reltol=1e-8, gpu=false)
         @test size(caverns) == size(img)
         @test all(caverns .<= img)                 # never marks solid voxels
-        @test length(kai) == iters + 1
-        @test kai[1] == 0.0
+        @test length(cavern_fraction) == iters + 1
+        @test cavern_fraction[1] == 0.0
         # Cavern voxels are only ever added, never cleared.
-        @test issorted(kai)
-        @test all(0 .<= kai .<= 1)
-        @test kai[end] ≈ count(caverns) / count(img)
+        @test issorted(cavern_fraction)
+        @test all(0 .<= cavern_fraction .<= 1)
+        @test cavern_fraction[end] ≈ count(caverns) / count(img)
     end
 end
