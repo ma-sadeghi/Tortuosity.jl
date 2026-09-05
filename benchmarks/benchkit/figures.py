@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Rectangle
 
 # ── Publication style ────────────────────────────────────────────────
 
@@ -322,12 +323,16 @@ def blank_aware_cmap():
     return cmap
 
 
-def draw_speedup_heatmap(ax, matrix, sizes, porosities, span=None):
+def draw_speedup_heatmap(ax, matrix, sizes, porosities, span=None, projected=None):
     """Render a speedup matrix on a log colour scale diverging about parity.
 
     Speedup is multiplicative, so 0.5x and 2x are equal and opposite departures
     from parity. A linear scale floored at 0.5 flattens every loss into one
     colour, hiding the cases where Tortuosity.jl is the slower tool.
+
+    `projected` marks cells whose competitor time was estimated rather than
+    measured. Those are hatched, the same mark the scaling panels use for a
+    projected point, so one convention covers estimates everywhere in the figure.
     """
     span = span if span is not None else speedup_span([matrix])
     image = None
@@ -345,6 +350,9 @@ def draw_speedup_heatmap(ax, matrix, sizes, porosities, span=None):
             value = matrix[i, j]
             strong = np.isfinite(value) and span and abs(np.log10(value)) > span * 0.6
             color = ("white" if strong else "black") if np.isfinite(value) else "0.45"
+            if projected is not None and projected[i, j]:
+                ax.add_patch(Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False,
+                                       hatch="////", edgecolor="0.25", linewidth=0.0))
             ax.text(j, i, format_speedup(value), ha="center", va="center",
                     fontsize=8, fontweight="bold", color=color)
     return image

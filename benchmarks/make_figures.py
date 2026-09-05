@@ -49,12 +49,12 @@ MEMORY_LABEL = {
 # result. `speedup_taufactor_gpu` publishes under the unsuffixed name for the
 # same reason: it is the comparison the docs linked before taufactor was also run
 # on the CPU.
-# Only the two figures `paper.md` embeds are published into `paper/`. JOSS builds
-# the manuscript from that directory, so every other figure goes to the docs alone
+# Only the figure `paper.md` embeds is published into `paper/`. JOSS builds the
+# manuscript from that directory, so every other figure goes to the docs alone
 # rather than leaving an unreferenced image beside the paper.
 PUBLISH = {
     "summary.png": ("benchmark_summary.png", ["paper", "docs/src/assets"]),
-    "memory_gpu.png": ("benchmark_memory_gpu.png", ["paper", "docs/src/assets"]),
+    "memory_gpu.png": ("benchmark_memory_gpu.png", ["docs/src/assets"]),
     "memory_cpu.png": ("benchmark_memory_cpu.png", ["docs/src/assets"]),
     "blobiness.png": ("benchmark_blobiness.png", ["docs/src/assets"]),
     "scaling_gpu.png": ("benchmark_scaling_gpu.png", ["docs/src/assets"]),
@@ -158,6 +158,33 @@ def out_of_memory(timings, *, device, series, size, porosity, blobiness):
     return bool((cell["stop_reason"] == "error").any())
 
 
+def porosity_power_laws(times, sizes, porosities, node_count, probe):
+    """One power law per porosity, for filling cells a tool never reached.
+
+    Returned as `{porosity: (a, exponent, r2)}`, so a missing cell is
+    `a * n ** exponent` in that porosity's own transporting-voxel count. A
+    porosity with too few measured sizes and no probe to borrow an exponent from
+    is absent rather than guessed at.
+
+    Both the scaling panels and the speedup maps fill their gaps from this, so
+    the two agree by construction. Two projection methods in one figure would
+    disagree at some cell, and the reader has no way to tell which they are
+    looking at.
+    """
+    fits = {}
+    for por in porosities:
+        measured = [n for n in sizes if np.isfinite(times[(n, por)])]
+        if len(measured) >= PROJECTION_MIN_SIZES:
+            counts = [node_count(n, por) for n in measured]
+            fits[por] = fig.power_law(counts, [times[(n, por)] for n in measured])
+        elif probe is not None and measured:
+            anchor = max(measured)
+            anchor_voxels = node_count(anchor, por)
+            fits[por] = (times[(anchor, por)] / anchor_voxels ** probe,
+                         probe, np.nan)
+    return fits
+
+
 def scaling_points(campaign, device, target, sizes, series, *, project_oom=False):
     """Time against size for one series: `(points, projected_sizes, exponent)`.
 
@@ -195,17 +222,7 @@ def scaling_points(campaign, device, target, sizes, series, *, project_oom=False
     # an estimate and is drawn as one, dashed and hollow at every projected size,
     # exactly as a projected porosity is.
     probe = fig.probe_exponent(campaign.probes, series, device)
-    fits = {}
-    for por in campaign.porosities:
-        measured = [n for n in sizes if np.isfinite(times[(n, por)])]
-        if len(measured) >= PROJECTION_MIN_SIZES:
-            counts = [node_count(n, por) for n in measured]
-            fits[por] = fig.power_law(counts, [times[(n, por)] for n in measured])
-        elif probe is not None and measured:
-            anchor = max(measured)
-            anchor_voxels = node_count(anchor, por)
-            fits[por] = (times[(anchor, por)] / anchor_voxels ** probe,
-                         probe, np.nan)
+    fits = porosity_power_laws(times, sizes, campaign.porosities, node_count, probe)
 
     # `probed` records that a filled-in value came from the probe rather than
     # from this series' own per-porosity fit, which is what the log below has to
@@ -658,11 +675,32 @@ def figure_single_size(campaign):
 
 # ── Speedup regime maps ──────────────────────────────────────────────
 
-def speedup_matrix(campaign, device, competitor, target, sizes):
+def unconverged_time(campaign, device, series, size, porosity, blobiness):
+    """Longest run this series spent on the image without reaching the target.
+
+    A tool that ran and stopped short still proves its matched-accuracy time
+    exceeds what it already spent. That makes the number a floor a projection has
+    to clear: an estimate below it is contradicted by a measurement.
+    """
+    rows = campaign.timings
+    cell = rows[(rows["device"] == device) & (rows["series"] == series)
+                & (rows["size"] == size) & np.isclose(rows["porosity_target"], porosity)
+                & np.isclose(rows["blobiness"], blobiness) & (rows["time_s"] > 0)]
+    return float(cell["time_s"].max()) if len(cell) else None
+
+
+def speedup_matrix(campaign, device, competitor, target, sizes, *, project=False):
     """Speedup of the reference series over `competitor`, porosity by size.
 
-    A cell is NaN when either tool never reached the target on that image, which
-    is a real outcome and is drawn blank rather than filled with a guess.
+    Returns `(matrix, projected)`. A cell is NaN when either tool never reached
+    the target on that image. Without `project` that stays blank, which is the
+    honest reading of a cell nobody measured.
+
+    With `project`, a cell the competitor never reached is filled from its own
+    per-porosity power law — the same fit the scaling panels use — and flagged in
+    `projected` so the caller can draw it as an estimate. A cell we ourselves
+    never reached is never filled: the ratio would then rest on two estimates,
+    and the panel exists to report our margin, not to model both sides of it.
     """
     reference = fig.series_label(*fig.REFERENCE_SERIES)
     ours = fig.target_times(campaign.timings, target, device=device, series=reference,
@@ -672,12 +710,43 @@ def speedup_matrix(campaign, device, competitor, target, sizes):
                               sizes=sizes, porosities=campaign.porosities,
                               blobiness=campaign.reference_blobiness)
     matrix = np.full((len(campaign.porosities), len(sizes)), np.nan)
+    projected = np.zeros(matrix.shape, dtype=bool)
+
+    fits, node_count = {}, None
+    if project:
+        nodes = pore_counts(campaign)
+
+        def node_count(size, porosity):
+            return nodes.get((size, porosity, campaign.reference_blobiness), 0)
+
+        probe = fig.probe_exponent(campaign.probes, competitor, device)
+        fits = porosity_power_laws(theirs, sizes, campaign.porosities, node_count, probe)
+
     for i, por in enumerate(campaign.porosities):
         for j, size in enumerate(sizes):
             mine, other = ours[(size, por)], theirs[(size, por)]
-            if np.isfinite(mine) and np.isfinite(other) and mine > 0:
+            if not np.isfinite(mine) or mine <= 0:
+                continue
+            if np.isfinite(other):
                 matrix[i, j] = other / mine
-    return matrix
+                continue
+            fit = fits.get(por)
+            if fit is None or node_count(size, por) <= 0:
+                continue
+            a, exponent, _ = fit
+            estimate = a * node_count(size, por) ** exponent
+            floor = unconverged_time(campaign, device, competitor, size, por,
+                                     campaign.reference_blobiness)
+            if floor is not None and estimate < floor:
+                logger.warning(
+                    f"{competitor} on the {device} at N={size}, eps={por:g}: projected "
+                    f"{estimate:.0f} s is below the {floor:.0f} s it already spent "
+                    "without converging — reporting the measured floor instead"
+                )
+                estimate = floor
+            matrix[i, j] = estimate / mine
+            projected[i, j] = True
+    return matrix, projected
 
 
 def figure_speedups(campaign):
@@ -695,8 +764,9 @@ def figure_speedups(campaign):
                 logger.info(f"{competitor} on the {device} was measured at "
                             f"{one_size[competitor]}³ only — bar chart instead of a size map")
                 continue
-            matrices = [speedup_matrix(campaign, device, competitor, t, sizes)
-                        for t in fig.THRESHOLDS]
+            drawn = [speedup_matrix(campaign, device, competitor, t, sizes, project=True)
+                     for t in fig.THRESHOLDS]
+            matrices = [matrix for matrix, _ in drawn]
             span = fig.speedup_span(matrices)
             if span is None:
                 logger.warning(f"no overlapping runs for {reference} vs {competitor} on the {device}")
@@ -704,8 +774,9 @@ def figure_speedups(campaign):
             figure, axes = plt.subplots(1, len(fig.THRESHOLDS), sharey=True, layout="constrained",
                                         figsize=(3.3 * len(fig.THRESHOLDS) + 0.8, 2.9))
             image = None
-            for ax, matrix, label in zip(axes, matrices, fig.THRESHOLD_LABELS):
-                image = fig.draw_speedup_heatmap(ax, matrix, sizes, campaign.porosities, span=span)
+            for ax, (matrix, estimated), label in zip(axes, drawn, fig.THRESHOLD_LABELS):
+                image = fig.draw_speedup_heatmap(ax, matrix, sizes, campaign.porosities,
+                                                 span=span, projected=estimated)
                 ax.set_title(f"target $\\leq {label}$")
             for ax in axes[1:]:
                 ax.set_ylabel("")
@@ -1092,8 +1163,10 @@ def figure_summary(campaign):
             continue
 
         competitor = preferred if preferred in rivals else rivals[0]
-        matrix = speedup_matrix(campaign, device, competitor, fig.PAPER_TARGET, sizes)
-        fig.draw_speedup_heatmap(ax_map, matrix, sizes, campaign.porosities)
+        matrix, estimated = speedup_matrix(campaign, device, competitor, fig.PAPER_TARGET,
+                                           sizes, project=True)
+        fig.draw_speedup_heatmap(ax_map, matrix, sizes, campaign.porosities,
+                                 projected=estimated)
         ax_map.set_title(f"({next(tag)}) vs {competitor}, both on the {device.upper()}", loc="left")
 
     campaign.save(figure, "summary.png")
