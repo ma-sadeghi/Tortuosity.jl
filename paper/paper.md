@@ -1,5 +1,5 @@
 ---
-title: 'Tortuosity.jl: GPU-accelerated tortuosity calculations from porous-media images'
+title: 'Tortuosity.jl: billion-voxel diffusion simulations in seconds on a GPU, minutes on a CPU'
 tags:
   - Julia
   - porous media
