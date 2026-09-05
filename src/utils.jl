@@ -1,31 +1,4 @@
 """
-    args_to_dict(args)
-
-Parse command-line arguments of the form `--key=value` into a `Dict{String,String}`.
-"""
-function args_to_dict(args)
-    s = join(args, " ")
-    # Parse command-line arguments in the form of "--key=value"
-    regex = r"--(\w+)=([^\s]+)"
-    matches = eachmatch(regex, s)
-    pairs = Dict(m.captures[1] => m.captures[2] for m in matches)
-    return pairs
-end
-
-"""
-    format_args_dict(args_dict) -> (fpath, path_export, gpu_id)
-
-Extract and parse standard CLI arguments from a dict returned by [`args_to_dict`](@ref).
-Returns `(fpath::String, path_export::String, gpu_id::Int)`.
-"""
-function format_args_dict(args_dict)
-    fpath = args_dict["fpath"]
-    path_export = args_dict["path_export"]
-    gpu_id = parse(Int, args_dict["gpu_id"])
-    return fpath, path_export, gpu_id
-end
-
-"""
     export_to_hdf5(fname; kwargs...)
 
 Write keyword arguments as datasets to an HDF5 file. Each keyword becomes a
@@ -152,31 +125,4 @@ function _pore_index!(idx::Array{Ti}, img::Union{Array{Bool},BitArray}) where {T
         vec(idx), i -> img[i], zero(Ti), (i, ordinal) -> img[i] ? ordinal : zero(Ti),
     )
     return idx
-end
-
-"""
-    find_true_indices(a::AbstractArray{Bool})
-
-Return the linear indices of all `true` elements in `a` as a `Vector{Int}`.
-"""
-function find_true_indices(a::AbstractArray{Bool})
-    j = 0
-    indices = Vector{Int}(undef, count(a))
-    @inbounds for i in eachindex(a)
-        @inbounds if a[i]
-            j += 1
-            indices[j] = i
-        end
-    end
-    return indices
-end
-
-"""
-    build_reverse_lookup(img::AbstractArray{Bool})
-
-Build a `Dict` mapping each `true`-element's linear index in `img` to its
-sequential pore-voxel number (1, 2, …, `count(img)`).
-"""
-function build_reverse_lookup(img::AbstractArray{Bool})
-    return Dict(zip(find_true_indices(img), 1:count(img)))
 end

@@ -2,8 +2,7 @@ using HDF5
 using Test
 using Tortuosity
 using Tortuosity.Imaginator: phase_fraction
-import Tortuosity: args_to_dict, build_reverse_lookup, export_to_hdf5,
-    find_true_indices, format_args_dict
+import Tortuosity: export_to_hdf5
 
 # Set up fixtures
 img = ones(UInt8, (32, 32, 32))
@@ -39,46 +38,6 @@ img[:, :, 21:32] .= 5
         @test phase_fraction(img, [5]) ≈ ε5 atol=1e-4
     end
 
-end
-
-@testset "Boolean index helpers" begin
-    mat = Bool[
-        true  false;
-        false true;
-        true  true
-    ]
-    expected = LinearIndices(mat)[findall(mat)]
-
-    @test find_true_indices(mat) == expected
-
-    lookup = build_reverse_lookup(mat)
-    for (i, idx) in enumerate(expected)
-        @test lookup[idx] == i
-    end
-end
-
-# --- Command-line argument plumbing ---
-#
-# Nothing in the package calls these; they exist for the batch-run scripts. Kept
-# to one round trip through the pair — the `--key=value` grammar the regex
-# implements, and the two ways `format_args_dict` is asked for something it
-# cannot produce.
-
-@testset "args_to_dict / format_args_dict" begin
-    # Only `--key=value` is a pair: bare flags and positionals are skipped, and
-    # a value runs to the next space, so paths and punctuation survive.
-    d = args_to_dict(["--verbose", "positional", "--fpath=/tmp/in-1.h5",
-                      "--path_export=out.h5", "--gpu_id=3", "--axis=:x"])
-    @test d == Dict("fpath" => "/tmp/in-1.h5", "path_export" => "out.h5",
-                    "gpu_id" => "3", "axis" => ":x")
-    @test isempty(args_to_dict(String[]))
-
-    @test format_args_dict(d) == ("/tmp/in-1.h5", "out.h5", 3)
-    @test format_args_dict(d)[3] === 3          # parsed to Int, not left a String
-
-    @test_throws KeyError format_args_dict(Dict("fpath" => "in.h5"))
-    bad = Dict("fpath" => "in.h5", "path_export" => "out.h5", "gpu_id" => "first")
-    @test_throws ArgumentError format_args_dict(bad)
 end
 
 # --- HDF5 export ---

@@ -16,11 +16,9 @@ using Tortuosity:
     axis_faces,
     orthogonal_dims,
     build_pore_index,
-    build_reverse_lookup,
     exclusive_scan!,
     find_boundary_nodes,
     find_chunk_bounds,
-    find_true_indices,
     isin_slow,
     multihotvec,
     overlap_indices,
@@ -99,17 +97,15 @@ end
     @test pidx[img] == 1:count(img)
     @test all(iszero, pidx[.!img])
 
-    @testset "agrees with find_true_indices / build_reverse_lookup" begin
-        lin = find_true_indices(img)
+    @testset "agrees with an independent walk over the linear indices" begin
+        # `findall` is a second route to the same numbering: it visits the pore
+        # voxels in ascending linear-index order, which is the order the pore
+        # ordinals are handed out in.
+        lin = LinearIndices(img)[findall(img)]
         @test length(lin) == count(img)
-        @test issorted(lin)
-        # The three helpers are independent routes to the same numbering.
         for (ordinal, linear_idx) in enumerate(lin)
             @test pidx[linear_idx] == ordinal
         end
-        lookup = build_reverse_lookup(img)
-        @test length(lookup) == count(img)
-        @test all(lookup[linear_idx] == pidx[linear_idx] for linear_idx in lin)
     end
 end
 

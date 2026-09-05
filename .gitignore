@@ -42,6 +42,14 @@ Manifest.toml
 LocalPreferences.toml
 images/
 temp/
+tmp/
+
+# Tool caches. Ruff writes a self-ignoring `.gitignore` inside its cache, so
+# this is belt and braces: it also covers a cache created by a ruff version
+# that does not, and it documents the directory as an artifact.
+.ruff_cache/
+__pycache__/
+.DS_Store
 
 # System prompts
 .github/copilot-commit-message-instructions.md
