@@ -8,7 +8,12 @@ We compare `Tortuosity.jl` against three established image-based tortuosity tool
 - [PuMA](https://github.com/nasa/puma) — C++ with Python bindings (`pumapy`), finite volume with SciPy's conjugate gradient on the full grid, CPU only.
 - [PoreSpy](https://github.com/PMEAL/porespy) — Python, `tortuosity_fd`: the image becomes an OpenPNM cubic network over the pore voxels alone, and Fickian diffusion on it is solved by Ruge-Stuben algebraic multigrid from PyAMG. CPU only.
 
-Every number below is traceable to a file under [`benchmarks/results/`](https://github.com/ma-sadeghi/Tortuosity.jl/tree/main/benchmarks/results). Where something is not recorded, this page says so rather than filling the gap.
+Every number below is traceable to a file under [`benchmarks/results/`](https://github.com/ma-sadeghi/Tortuosity.jl/tree/main/benchmarks/results). Where something is not recorded, this page says so rather than filling the gap. If you want the answer rather than the method, go straight to [Results](@ref); everything before it is protocol.
+
+```@contents
+Pages = ["benchmark.md"]
+Depth = 2
+```
 
 ## Setup
 

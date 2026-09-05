@@ -2,6 +2,24 @@
 
 All notable changes to Tortuosity.jl are recorded here. Versions follow [Julia's SemVer rules](https://pkgdocs.julialang.org/v1/compatibility/), under which a change to the leftmost non-zero version component is breaking.
 
+## Unreleased
+
+A maintainability pass over the package, the benchmark harness and the documentation. No solver, preconditioner or numerical result changed, and every published benchmark figure regenerates byte-identical from the unchanged result tables.
+
+### Changed
+
+- GPU auto-detection uses one crossover of 100,000 pore voxels on every backend. `SteadyDiffusionProblem` previously took 20,000 on CUDA while `TransientDiffusionProblem` took 100,000 everywhere, which meant the same image could be placed on different devices by the two constructors. On CUDA, a steady problem built from an image with between 20,000 and 100,000 pore voxels now runs on CPU by default; pass `gpu=true` to keep it on the device. The threshold is `Tortuosity.GPU_MIN_NODES`.
+- `Tortuosity.find_caverns` defaults to `gpu=nothing`, matching every other entry point. It previously defaulted to `gpu=true`, which errors outright in a session with no GPU backend registered — so the call could not be made with its own defaults on a CPU-only machine.
+
+### Added
+
+- `Tortuosity.find_caverns` and `Tortuosity.flux_out` appear in the API reference. Neither is exported and neither changed behaviour; they were simply undiscoverable.
+- A Theory page in the documentation, covering what the tortuosity factor is and how it is computed. The text already existed but sat outside the documentation source tree and was never published.
+
+### Removed
+
+- The unused `src/plottools.jl`, and the internal helpers `args_to_dict`, `format_args_dict`, `find_true_indices` and `build_reverse_lookup`. None was exported, documented or called from anywhere in the package.
+
 ## v0.2.0 — 2026-09-04
 
 The steady-state pipeline rebuilt around a host solver written for it. Time to reach 0.1% relative error in `τ` on the CPU falls by a geometric mean of **3.25×** on the matrix-free path and **4.29×** on the assembled path, measured over 74 cases spanning `200³` to `1000³` and five porosities. The GPU path gained kernel, preconditioner and refinement tuning in the same span; its published benchmark figures are being re-measured and are not restated here.

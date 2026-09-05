@@ -1,8 +1,8 @@
 ---
 title: Float32 CG stagnation on the GPU path
 created: 2026-08-19
-updated: 2026-08-20
-status: fix landed, gated and measured at scale; open items are the GPU campaign re-run and paper.md — see "Where this stands"
+updated: 2026-09-04
+status: complete
 outcome: "Float32 CG stagnation traced to finite-precision Krylov breakdown, not to the format, the geometry or the preconditioner. Fixed by iterative refinement against a Float64 residual: 200 cubed grid 1/15 failures to 0/15, 1000 cubed 1.5e-3 to 4.1e-6, 800 cubed assembled 1.2e-3 to 4.1e-8. Time-to-target unchanged for 14 of 15 cases, so the taufactor margin holds. Memory guard measured on a real 950M-node image: it fires, warns and returns the unrefined solution. Refinement costs 20 B per pore node. Suite green at 12,644 assertions."
 branch: joss
 supersedes: "-"
@@ -564,7 +564,7 @@ First result in, and it is the case this whole document exists for. `n200_b050_p
 
 170x more accurate for 3% more wall clock, and $200^3$ coverage goes 14/15 to **15/15**. The 0.361 s was never a time-to-target — that solve never reached the target at any rung.
 
-**1. Re-run the GPU half of the campaign.** Amin's call, roughly 3.7 h of the 27 h campaign. Every GPU timing predates the fix; CPU is unaffected, because refinement is off at `Float64` by design and by measurement.
+**1. Re-run the GPU half of the campaign.** Amin's call, roughly 3.7 h of the 27 h campaign. Every GPU timing predates the fix; CPU is unaffected, because refinement is off at `Float64` by design and by measurement. **Done** — the GPU half was re-measured in `f765ce6`, with the superseded files archived under `results/archive/pre-gpu-remeasure-2026-09-04/`.
 
 Before anything overwrites them, archive the current result files:
 
@@ -590,7 +590,7 @@ Driver shape, one size per invocation: `./run/campaign.sh --grid=full --sizes=$s
 ssh pmealsrv1 'git -C ~/Tortuosity.jl checkout -- src/simulations.jl'
 ```
 
-**2. Then `paper/paper.md`.** `paper/NUMBERS-TO-VERIFY.md` carries the detail. Three things change, and one thing must *not* be written:
+**2. Then `paper/paper.md`.** **Done** — the GPU results were rewritten from the re-measured data in `96ad160`. `paper/NUMBERS-TO-VERIFY.md` carries the detail. Three things change, and one thing must *not* be written:
 
 - GPU coverage at $1000^3$ becomes 14 of 14, matching the CPU. (14, not 15, because `n1000_b050_p020` trims to **zero** pore nodes — it does not percolate at all, so there is nothing to solve. It is absent from the CPU sweep for the same reason. That is a degenerate image, not a failure, and the paper should not imply a missing case.)
 - The accuracy caveat the paper was going to carry — use `Float64` on the CPU for strongly tortuous images — is no longer true and **must not be written**.
@@ -614,8 +614,8 @@ Modified and **uncommitted**: `src/simulations.jl` (the fix, plus today's 20 B/n
 - [x] Memory guard measured on a real 950 M-node image: fires, warns, returns the unrefined solution, exits 0.
 - [x] The fourth, unguarded allocation found by that measurement and removed — refinement is 20 B/node and fully guarded.
 - [x] `Pkg.test()` green with every edit in place — **12,644 assertions across 20 top-level testsets, 0 failures, 0 errors** — including three new regression testsets.
-- [ ] Re-run the GPU half of the campaign and recompute the taufactor margin per size. Amin's call.
-- [ ] Update `paper/paper.md` itself.
+- [x] Re-run the GPU half of the campaign and recompute the taufactor margin per size — `f765ce6`.
+- [x] Update `paper/paper.md` itself — `96ad160`.
 
 ## Orchestration note
 

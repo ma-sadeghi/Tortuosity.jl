@@ -25,6 +25,7 @@ makedocs(;
     warnonly=[:missing_docs],
     pages=[
         "Home" => "index.md",
+        "Theory" => "theory.md",
         "Tutorials" => [
             "Steady-State Tortuosity" => "tutorials/steady_state.md",
             "Variable Diffusivity" => "tutorials/variable_diffusivity.md",

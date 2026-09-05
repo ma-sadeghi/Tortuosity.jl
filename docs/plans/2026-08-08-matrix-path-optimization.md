@@ -1,7 +1,7 @@
 ---
 title: Matrix path optimization
 created: 2026-08-08
-updated: 2026-08-09
+updated: 2026-08-21
 status: complete
 outcome: 800³ went from OutOfGPUMemoryError to a 20.7 s end-to-end solve; setup 939× faster; 39 commits, suite green at 11576 assertions.
 branch: perf/matrix-path (merged to main 2026-08-09 as ed7e2b9)

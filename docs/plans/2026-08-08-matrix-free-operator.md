@@ -3,6 +3,7 @@ title: Matrix-free operator
 created: 2026-08-08
 updated: 2026-08-09
 status: complete
+outcome: The matrix-free stencil operator ships beside the assembled path as a first-class peer. 1000³ is certified end to end at 14.16 bytes per grid voxel against an assembled path structurally finished near 850³, the apply is 1.97× the CUSPARSE CSR apply at 800³ and 6.76× threaded SparseArrays on CPU, and 800³ runs 26 % faster end to end on 44 % of the peak memory at identical iteration counts.
 branch: perf/matrix-free
 supersedes: "-"
 superseded-by: "-"

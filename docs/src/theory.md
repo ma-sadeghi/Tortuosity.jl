@@ -18,16 +18,18 @@ To compute $\tau$, solve the steady state heat equation, that is, the Laplace eq
 \nabla \cdot (D_b \nabla c) = 0
 ```
 
-on a voxel image with Dirichlet boundary conditions imposed on opposing faces, for example $c(x=0) = c_i$ and $c(x=\ell_x) = c_o$. The tortuosity factor, $\tau$, is then defined as:
+where $c$ is the concentration field and $D_b$ the bulk diffusivity. Solve it on a voxel image with Dirichlet boundary conditions imposed on opposing faces, for example $c(x=0) = c_i$ and $c(x=\ell_x) = c_o$. The tortuosity factor, $\tau$, is then defined as:
 
 ```math
 \tau = \frac{D_b}{D_{eff}} \varepsilon
 ```
 
-where $D_{eff}$ is the effective diffusivity, computed as:
+where $\varepsilon$ is the porosity and $D_{eff}$ is the effective diffusivity, computed as:
 
 ```math
 D_{eff} = \frac{\dot{m} \cdot \ell_x}{\Delta c \cdot A}
 ```
 
 where $\dot{m}$ is the mass flow rate, $\Delta c$ is the concentration difference, and $A$ is the cross-sectional area.
+
+Tortuosity.jl carries out these steps for you; [Steady-State Tortuosity](@ref) walks through them on a generated image.

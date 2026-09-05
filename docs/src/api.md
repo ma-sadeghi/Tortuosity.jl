@@ -43,6 +43,7 @@ sol = solve(sim; precond=:none)     # or opt out
 On Float64 host systems with at least 10,000 unknowns, `solve(sim)` selects [`Tortuosity.HostCG`](@ref), a deterministic threaded conjugate-gradient implementation that fuses bandwidth-bound vector operations and uses a row-parallel gather for image-built assembled matrices. Smaller hosts and GPU systems retain `KrylovJL_CG`. Passing an algorithm explicitly always honors it, and `solve(sim.prob, alg; ...)` remains the unopinionated LinearSolve form.
 
 ```@docs
+solve(::SteadyDiffusionProblem, ::Any)
 Tortuosity.HostCG
 Tortuosity.HostCGWorkspace
 ```

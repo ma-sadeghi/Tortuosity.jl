@@ -3,6 +3,7 @@ title: Development loop latency
 created: 2026-08-09
 updated: 2026-08-09
 status: complete
+outcome: The latency was the process model, not the package. A persistent Julia session reached over MCP takes the edit-to-green-test-file loop from 173.9 s to 1.13 s (154×) with no source change, and the full suite is green at 11576 / 11576 in 222.93 s against a 265.41 s baseline. L2 (-O1) was rejected on execution because it turns the suite red, and ImageMorphology is left blocked.
 branch: perf/dev-loop
 supersedes: "-"
 superseded-by: "-"
