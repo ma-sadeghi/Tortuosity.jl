@@ -4,6 +4,10 @@
 # runs without raising — outputs and accuracy are covered elsewhere.
 
 examples_dir = joinpath(@__DIR__, "..", "examples")
+# Listed explicitly rather than globbed: only plain scripts can be evaluated
+# this way. `examples/` also holds a Pluto notebook, which carries its own
+# embedded environment and a cell order that only Pluto can resolve, so
+# including it here would fail on the harness rather than on the code.
 scripts = ("demo_basic.jl", "demo_variable_diffusivity.jl", "demo_transient.jl")
 
 # Sanitize each script for headless CI:
