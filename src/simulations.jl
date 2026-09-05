@@ -136,9 +136,9 @@ image. Builds the graph Laplacian, applies Dirichlet boundary conditions
   the physical units. Pass the same value to that and to [`tortuosity`](@ref),
   whose reference diffusivity divides it back out.
 - `gpu`: `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect
-  (uses GPU when a backend package is loaded and the image clears that backend's
-  crossover: 20k pore voxels for CUDA and 100k for Metal or AMDGPU). See
-  [GPU backends](@ref) for how to activate each backend.
+  (uses GPU when a backend package is loaded and the image has ≥ 100 000 pore
+  voxels, the same crossover on every backend). See [GPU backends](@ref) for how
+  to activate each backend.
 - `warn_nonpercolating`: warn when part of the pore space does not span the
   domain along `axis`. Nothing is changed either way — such voxels carry no
   steady flux but still count toward porosity, so `τ` includes stagnant volume.
@@ -201,25 +201,7 @@ function SteadyDiffusionProblem(
     # arrives here. `TransientDiffusionProblem` already rejects this.
     @assert size(img, axis_dim(axis)) > 1 "Image must have at least 2 voxels along the chosen axis"
     _warn_nonpercolating(img, axis, warn_nonpercolating)
-    # Auto-detect GPU: use if backend is available and image is large enough.
-    # When the image is big enough to benefit from GPU but no backend has been
-    # loaded, nudge the user once — the alternative is a silent CPU fallback
-    # where the caller thinks they're getting GPU performance but aren't.
-    if isnothing(gpu)
-        has_backend = !isnothing(_preferred_gpu_backend[])
-        gpu_min_nodes = has_backend ? _gpu_min_nodes(_preferred_gpu_backend[]) : 100_000
-        if !has_backend && nnodes >= 100_000
-            @warn "Image has $(nnodes) pore voxels but no GPU backend is loaded; \
-                   running on CPU. To enable GPU kernels, load a backend package \
-                   (`using CUDA`, `using Metal`, or `using AMDGPU`) before \
-                   constructing the simulation. Pass `gpu=false` explicitly to \
-                   silence this message." maxlog = 1
-        end
-        gpu = has_backend && nnodes >= gpu_min_nodes
-    elseif gpu && isnothing(_preferred_gpu_backend[])
-        error("`gpu=true` was requested but no GPU backend is registered. \
-               Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
-    end
+    gpu = _resolve_gpu(gpu, nnodes, "SteadyDiffusionProblem")
 
     # Move to GPU if needed. Keep `img` on CPU for the struct (postprocessing
     # helpers like tortuosity() expect a CPU mask); `img_dev` is the copy

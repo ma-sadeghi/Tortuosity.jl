@@ -70,8 +70,7 @@ sim = SteadyDiffusionProblem(img; axis=:x)     # auto-detects the loaded backend
 
 The `gpu` keyword of [`SteadyDiffusionProblem`](@ref) and [`TransientDiffusionProblem`](@ref) controls whether solver kernels run on GPU:
 
-- **Steady `gpu=nothing`** (default) — auto-detect. Uses GPU when a backend package is loaded and the image has at least 20,000 pore voxels for CUDA or 100,000 for Metal and AMDGPU; otherwise it runs on CPU.
-- **Transient `gpu=nothing`** (default) — auto-detect. Uses GPU when any backend package is loaded and the image has at least 100,000 pore voxels; otherwise it runs on CPU.
+- **`gpu=nothing`** (default) — auto-detect. Uses GPU when a backend package is loaded and the image has at least 100,000 pore voxels; otherwise it runs on CPU. The crossover is the same for both problem types and on every backend.
 - **`gpu=true`** — force GPU. Errors immediately if no backend is loaded.
 - **`gpu=false`** — force CPU, even when a backend is available.
 

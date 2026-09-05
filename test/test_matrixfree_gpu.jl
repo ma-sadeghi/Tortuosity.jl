@@ -268,7 +268,6 @@ end
     @test Tortuosity._async_return_safe(op.idx) == (pkgversion(CUDA) >= v"5.4")
     @test Tortuosity._steady_workgroup(op.idx) == (32, 2, 2)
     @test Tortuosity._steady_workgroup(CUDA.ones(Bool, 4, 4, 1)) == (64, 4, 1)
-    @test Tortuosity._gpu_min_nodes(CUDABackend()) == 20_000
     @test Tortuosity._precond_min_nodes(b) == 3_000
     @test _gpu_max_coarse(249_999_999) == 14_000
     @test _gpu_max_coarse(250_000_000) == 16_000

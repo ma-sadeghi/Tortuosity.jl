@@ -25,7 +25,6 @@ Tortuosity._on_gpu(::CUDA.CUSPARSE.CuSparseMatrix) = true
 end
 Tortuosity._steady_workgroup(a::CuArray) =
     size(a, 3) == 1 ? (64, 4, 1) : (32, 2, 2)
-Tortuosity._gpu_min_nodes(::CUDABackend) = 20_000
 Tortuosity._precond_min_nodes(::CuArray) = 3_000
 function Tortuosity._refinement_correction_reltol(::CUDABackend, n, nvoxels)
     small = n < Tortuosity.LOOSE_CORRECTION_MIN_NODES

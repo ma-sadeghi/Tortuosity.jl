@@ -113,22 +113,7 @@ function TransientDiffusionProblem(
 
     nnodes = count(img)
     @assert nnodes > 0 "Image must contain at least one pore voxel (got all-solid)"
-    # Auto-detect GPU: see the matching block in SteadyDiffusionProblem for the
-    # rationale behind the one-time warning on silent CPU fallback.
-    if isnothing(gpu)
-        has_backend = !isnothing(_preferred_gpu_backend[])
-        if !has_backend && nnodes >= 100_000
-            @warn "Image has $(nnodes) pore voxels but no GPU backend is loaded; \
-                   running on CPU. To enable GPU kernels, load a backend package \
-                   (`using CUDA`, `using Metal`, or `using AMDGPU`) before \
-                   constructing the problem. Pass `gpu=false` explicitly to \
-                   silence this message." maxlog = 1
-        end
-        gpu = has_backend && nnodes >= 100_000
-    elseif gpu && isnothing(_preferred_gpu_backend[])
-        error("`gpu=true` was requested but no GPU backend is registered. \
-               Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
-    end
+    gpu = _resolve_gpu(gpu, nnodes, "TransientDiffusionProblem")
 
     T = gpu ? Float32 : Float64
     D = D isa Number ? T(D) : T.(D)

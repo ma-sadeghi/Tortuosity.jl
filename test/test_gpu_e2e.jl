@@ -19,8 +19,8 @@ using Tortuosity: PortableSparseCSC, Imaginator, _on_gpu, _gpu_adapt, reconstruc
 # Steady-state
 # ---------------------------------------------------------------------------
 
-@testset "automatic GPU selection follows the registered backend crossover" begin
-    threshold = Tortuosity._gpu_min_nodes(Tortuosity._preferred_gpu_backend[])
+@testset "automatic GPU selection follows the pore-voxel crossover" begin
+    threshold = Tortuosity.GPU_MIN_NODES
     n = max(ceil(Int, cbrt(threshold)), 4 * Tortuosity.DEFAULT_COARSE_BLOCK + 1)
     img = ones(Bool, n, n, n)
     sim = SteadyDiffusionProblem(img; axis=:x, matrixfree=true, warn_nonpercolating=false)

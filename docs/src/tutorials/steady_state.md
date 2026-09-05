@@ -48,7 +48,7 @@ sim = SteadyDiffusionProblem(img; axis=:x, gpu=false)
 
 Key parameters:
 - **`axis`** — direction of the concentration gradient (`:x`, `:y`, or `:z`). The inlet is the first face, the outlet is the last face along this axis.
-- **`gpu`** — `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect. Auto-detect uses GPU when a loaded backend reaches its measured crossover: 20,000 pore voxels for CUDA and 100,000 for Metal or AMDGPU. See [GPU backends](@ref) for how to activate each backend.
+- **`gpu`** — `true` to force GPU, `false` for CPU, `nothing` (default) to auto-detect. Auto-detect uses GPU when a backend is loaded and the image has at least 100,000 pore voxels — the same crossover on every backend. See [GPU backends](@ref) for how to activate each backend.
 - **`D`** — diffusivity (scalar or array). Defaults to `1.0`. See [Variable Diffusivity](variable_diffusivity.md) for non-uniform cases.
 
 ## Step 3: Solve

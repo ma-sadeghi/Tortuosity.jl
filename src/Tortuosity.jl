@@ -22,8 +22,42 @@ _async_return_safe(::AbstractArray) = false
 """Workgroup shape for steady grid kernels; backend extensions may tune it."""
 _steady_workgroup(::AbstractArray) = (64, 4, 1)
 
-"""Pore-node count above which steady construction selects an available GPU."""
-_gpu_min_nodes(::Any) = 100_000
+"""
+Pore-voxel count above which auto-detection selects an available GPU. The same
+on every backend: below it the transfer and launch overhead outweighs what the
+device kernels save, and that crossover does not move enough between vendors to
+be worth tracking separately.
+"""
+const GPU_MIN_NODES = 100_000
+
+"""
+    _resolve_gpu(gpu, nnodes, what) -> Bool
+
+Settle the `gpu` keyword shared by the problem constructors. `nothing` means
+auto-detect: run on GPU when a backend is registered and the image clears
+`GPU_MIN_NODES`. `what` names the object being built, for the warning.
+
+When the image is big enough to benefit from GPU but no backend has been loaded,
+nudge the caller once — the alternative is a silent CPU fallback where they think
+they're getting GPU performance but aren't.
+"""
+function _resolve_gpu(gpu, nnodes, what)
+    if isnothing(gpu)
+        has_backend = !isnothing(_preferred_gpu_backend[])
+        if !has_backend && nnodes >= GPU_MIN_NODES
+            @warn "Image has $(nnodes) pore voxels but no GPU backend is loaded; \
+                   running on CPU. To enable GPU kernels, load a backend package \
+                   (`using CUDA`, `using Metal`, or `using AMDGPU`) before \
+                   constructing a $(what). Pass `gpu=false` explicitly to \
+                   silence this message." maxlog = 1
+        end
+        return has_backend && nnodes >= GPU_MIN_NODES
+    elseif gpu && isnothing(_preferred_gpu_backend[])
+        error("`gpu=true` was requested but no GPU backend is registered. \
+               Load a GPU package first (e.g. `using CUDA`, `using Metal`, or `using AMDGPU`).")
+    end
+    return gpu
+end
 
 _device_backend(x) = _on_gpu(x) ? get_backend(x) : nothing
 _device_backend(x::SubArray) = _device_backend(parent(x))
