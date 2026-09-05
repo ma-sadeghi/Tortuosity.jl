@@ -13,20 +13,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 
-from benchkit import config as bkconfig
+from benchkit import campaign as bkcampaign
 from benchkit import figures as fig
 
 TARGET = 0.001
-cfg = bkconfig.load_config()
-timings = fig.load_results(cfg.resultsdir, "timings")
-memory = fig.load_results(cfg.resultsdir, "memory")
 
-porosities = sorted(timings["porosity_target"].unique())
-blobinesses = sorted(timings["blobiness"].unique())
+run = bkcampaign.load()
+cfg, timings, memory = run.cfg, run.timings, run.memory
+porosities, blobinesses = run.porosities, run.blobinesses
+ours, tau = run.ours, run.tau
+
 configured = [float(b) for b in cfg["image"]["blobinesses"]]
 ref_blob = 1.0 if 1.0 in configured else configured[len(configured) // 2]
-ours = fig.series_label(*fig.REFERENCE_SERIES)
-tau = fig.series_label("taufactor", "sor")
 
 
 def times(device, series, sizes, blobiness):
@@ -34,7 +32,7 @@ def times(device, series, sizes, blobiness):
                             sizes=sizes, porosities=porosities, blobiness=blobiness)
 
 
-gpu_sizes = sorted(timings[timings.device == "gpu"]["size"].unique())
+gpu_sizes = run.sizes
 print(f"sizes on gpu: {gpu_sizes}")
 print(f"porosities: {porosities}   blobinesses: {blobinesses}   reference blobiness: {ref_blob}")
 
