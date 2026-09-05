@@ -36,15 +36,15 @@ that stopped at that iteration.
 
 import contextlib
 import io
-import statistics
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# `benchkit.driver` is the run skeleton and ladder verdict all three drivers share.
 from benchkit import config as bkconfig  # noqa: E402
-from benchkit import images as bkimages  # noqa: E402
+from benchkit import driver as bkdriver  # noqa: E402
 from benchkit import memory as bkmemory  # noqa: E402
 from benchkit import results as bkresults  # noqa: E402
 from loguru import logger  # noqa: E402
@@ -86,9 +86,7 @@ memory_iters = int(cfg["memory"]["iters"])
 sample_interval = float(cfg["memory"]["sample_interval_ms"])
 
 device_label = "gpu" if device.startswith("cuda") else "cpu"
-subdir = "timings" if args.measure == "time" else "memory"
-outpath = cfg.outputdir / subdir / f"taufactor-{device_label}.csv"
-columns = bkresults.TIMING_COLUMNS if args.measure == "time" else bkresults.MEMORY_COLUMNS
+PREFIX = dict(tool="taufactor", device=device_label, variant="sor", cpu_threads=cpu_threads)
 
 # taufactor applies its Dirichlet faces across the first array axis and reports
 # tortuosity for that direction; this harness never transposes the image, so the
@@ -103,39 +101,10 @@ if cfg.axis != "x":
         "Solve along x, or transpose the image to the requested axis first."
     )
 
-manifest = bkimages.read_manifest(cfg)
-refs = bkresults.read_references(cfg)
-cases = bkconfig.select_cases(cfg, args)
-if args.measure == "memory":
-    cases = bkconfig.restrict_memory_blobiness(cfg, args, cases)
-
-if args.list_cases:
-    print("\n".join(c.id for c in cases))
-    raise SystemExit(0)
-
-gaps = [c.id for c in cases if c.id not in manifest]
-if gaps:
-    raise SystemExit(f"no image for {', '.join(gaps)} — run generate_images.jl first")
-
-done = set() if args.overwrite else (
-    bkresults.completed_cases(outpath, knob_name="iters") if args.measure == "time" else bkresults.measured_cases(outpath)
+plan = bkdriver.plan_run(
+    cfg, args, filename=f"taufactor-{device_label}.csv", knob_name="iters",
+    stage=f"bench_taufactor --device={device} --measure={args.measure}",
 )
-solvable = [c for c in cases if manifest[c.id].nnodes > 0]
-# A timing row is meaningless without ground truth to state its error against; a
-# memory row needs no reference at all.
-runnable = [c for c in solvable if c.id in refs] if args.measure == "time" else solvable
-no_reference = [c.id for c in solvable if c.id not in refs]
-pending = [c for c in runnable if c.id not in done]
-
-if args.dry_run:
-    bkconfig.report_plan(pending, f"bench_taufactor --device={device} --measure={args.measure}", done)
-    if no_reference:
-        print(f"no reference yet, skipped: {', '.join(no_reference)}")
-    print(f"writing to {outpath}")
-    raise SystemExit(0)
-
-if no_reference:
-    logger.warning(f"skipping {len(no_reference)} case(s) with no ground truth — run compute_references.jl")
 
 
 def _settle():
@@ -202,65 +171,22 @@ def trace_once(img, tau_ref, rungs=None):
 
 def sweep_case(writer, case, entry, img, tau_ref):
     """Trace one image once per repeat, writing a row per rung reached."""
-    prefix = dict(tool="taufactor", device=device_label, variant="sor", cpu_threads=cpu_threads)
-    traces = []
-    for rep in range(n_repeats):
-        rows = trace_once(img, tau_ref)
-        if not rows:
-            # Raised rather than returned: the caller's handler writes an error
-            # row. Returning would leave the case with no row at all, and since
-            # resume keys on a `stop_reason`, it would be retried on every resume
-            # with nothing anywhere to say why.
-            raise RuntimeError("solve produced no checkpoints")
-        traces.append(rows)
-        if rep == 0 and rows[-1][2] > repeat_threshold:
-            break
-
-    # Repeats can stop one rung apart when a tau near the target lands either
-    # side of it, so only rungs every repeat reached can be aggregated.
-    n_rungs = min(len(t) for t in traces)
-    for rung in range(n_rungs):
-        iters = traces[0][rung][0]
-        assert all(t[rung][0] == iters for t in traces), "repeats disagree about the ladder"
-        taus = [t[rung][1] for t in traces]
-        times = [t[rung][2] for t in traces]
-
-        t_median = statistics.median(times)
-        tau_val = statistics.median(taus)
-        spread = (max(taus) - min(taus)) / tau_val if len(taus) > 1 else float("nan")
-        rel_error = abs(tau_val - tau_ref) / tau_ref
-
-        stop_reason = ""
-        if rel_error <= target_error:
-            stop_reason = "target_reached"
-        elif t_median > timeout_s:
-            stop_reason = "timeout"
-        elif iters == ladder[-1]:
-            stop_reason = "ladder_exhausted"
-        elif rung == n_rungs - 1:
-            # The case that would otherwise leave no verdict at all: repeats that
-            # disagree about whether the target was met stop at different rungs,
-            # only their common prefix can be aggregated, and if the target is not
-            # met inside it the loop ends with nothing written. Silence then reads
-            # as "not measured" when what happened is that tau straddled the target.
-            stop_reason = "repeats_diverged"
-
+    traces = bkdriver.collect_traces(lambda: trace_once(img, tau_ref), n_repeats, repeat_threshold)
+    rows, verdict = bkdriver.ladder_verdict(traces, ladder, tau_ref, target_error, timeout_s)
+    for rung, row in enumerate(rows):
         writer.write_row({
-            **bkresults.row_prefix(cfg, case, entry, **prefix),
-            "knob_name": "iters", "knob": iters, "tau": tau_val, "tau_ref": tau_ref,
-            "rel_error": rel_error, "time_s": t_median, "tau_spread": spread,
-            "repeats": len(times), "stop_reason": stop_reason, "note": "",
+            **bkresults.row_prefix(cfg, case, entry, **PREFIX),
+            "knob_name": "iters", "knob": row.knob, "tau": row.tau, "tau_ref": tau_ref,
+            "rel_error": row.rel_error, "time_s": row.time_s, "tau_spread": row.tau_spread,
+            "repeats": row.repeats, "stop_reason": row.stop_reason, "note": "",
         })
-        logger.info(f"  [{rung + 1:2d}/{len(ladder)}] iters={iters:<6d} tau={tau_val:.4f} "
-                    f"err={rel_error:.2e} t={t_median:.3f}s {stop_reason}")
-        if stop_reason:
-            return stop_reason
-    return "ladder_exhausted"
+        logger.info(f"  [{rung + 1:2d}/{len(ladder)}] iters={row.knob:<6d} tau={row.tau:.4f} "
+                    f"err={row.rel_error:.2e} t={row.time_s:.3f}s {row.stop_reason}")
+    return verdict
 
 
 def probe_case(writer, case, entry, img):
     """Measure one case's peak memory at a fixed iteration count."""
-    prefix = dict(tool="taufactor", device=device_label, variant="sor", cpu_threads=cpu_threads)
     usage, status, note = None, "ok", ""
     try:
         usage = bkmemory.with_peak_sampling(
@@ -276,7 +202,7 @@ def probe_case(writer, case, entry, img):
 
     ok = usage is not None
     writer.write_row({
-        **bkresults.row_prefix(cfg, case, entry, **prefix),
+        **bkresults.row_prefix(cfg, case, entry, **PREFIX),
         "iters": memory_iters,
         "time_s": usage.elapsed if ok else float("nan"),
         "peak_rss_bytes": usage.peak_rss if ok else 0,
@@ -294,6 +220,19 @@ def probe_case(writer, case, entry, img):
     del usage
     bkmemory.release_device(device)
     return status
+
+
+def diagnose_failure(case, exc):
+    """Classify a failed case, log it, and say what its row should record."""
+    # taufactor holds several full-grid tensors, so the largest images can
+    # exhaust the card. That is a result about the full-grid approach, not
+    # a harness failure — record it and keep the images queued behind it.
+    # Not only device memory: the chequerboard is built host-side from an
+    # N³ float64 array and a three-way N³ meshgrid, so a host MemoryError
+    # is the more likely of the two at the largest sizes.
+    oom = isinstance(exc, (torch.cuda.OutOfMemoryError, MemoryError))
+    logger.warning(f"  {'out of memory' if oom else type(exc).__name__} on {case.id}")
+    return ("oom" if oom else "error"), str(exc)[:200]
 
 
 # Warmed on an image of its own: no reported number may include a first-call
@@ -315,41 +254,8 @@ bkresults.record_environment(
     notes=f"torch {torch.__version__}, {len(ladder)} rungs, target={target_error}, timeout={timeout_s}s",
 )
 
-logger.info(f"Starting: {len(pending)} pending, {len(done)} already done → {outpath}")
-with bkresults.ResultsWriter(outpath, columns, overwrite=args.overwrite,
-                            replace_cases={c.id for c in pending}) as writer:
-    for i, case in enumerate(pending, start=1):
-        entry = manifest[case.id]
-        logger.info(f"[{i}/{len(pending)}] {case.id}  N={case.size}  blobiness={case.blobiness:.2f}  "
-                    f"porosity={entry.porosity:.4f}  nodes={entry.nnodes}")
-        img = bkimages.load_image(cfg, case)
-        try:
-            if args.measure == "time":
-                sweep_case(writer, case, entry, img, refs[case.id])
-            else:
-                probe_case(writer, case, entry, img)
-        except Exception as exc:  # noqa: BLE001 - one case must not end the run
-            # taufactor holds several full-grid tensors, so the largest images can
-            # exhaust the card. That is a result about the full-grid approach, not
-            # a harness failure — record it and keep the images queued behind it.
-            # Not only device memory: the chequerboard is built host-side from an
-            # N³ float64 array and a three-way N³ meshgrid, so a host MemoryError
-            # is the more likely of the two at the largest sizes.
-            oom = isinstance(exc, (torch.cuda.OutOfMemoryError, MemoryError))
-            logger.warning(f"  {'out of memory' if oom else type(exc).__name__} on {case.id}")
-            if args.measure == "time":
-                writer.write_row({
-                    **bkresults.row_prefix(cfg, case, entry, tool="taufactor",
-                                           device=device_label, variant="sor",
-                                           cpu_threads=cpu_threads),
-                    "knob_name": "iters", "knob": 0, "tau": float("nan"),
-                    "tau_ref": refs[case.id], "rel_error": float("nan"), "time_s": float("nan"),
-                    "tau_spread": float("nan"), "repeats": 0,
-                    "stop_reason": "oom" if oom else "error",
-                    "note": str(exc)[:200],
-                })
-        finally:
-            del img
-            bkmemory.release_device(device)
-
-logger.success(f"Done → {outpath}")
+bkdriver.run_cases(
+    cfg, args, plan, prefix=PREFIX, knob_name="iters",
+    sweep=sweep_case, probe=probe_case, diagnose=diagnose_failure,
+    cleanup=lambda: bkmemory.release_device(device),
+)
