@@ -150,7 +150,7 @@ The GPU model comes from the `accelerator` column of `environment.csv`, and the 
 
 ![Scaling at matched accuracy and the Tortuosity.jl-vs-competitor regime maps](assets/benchmark_summary.png)
 
-Panels (a) and (b) are the GPU: scaling at matched accuracy, and the speedup against taufactor resolved by size and porosity. Panels (c) and (d) are the CPU. Panel (d) is bars rather than a second regime map because the two CPU-only tools were run at ``200^3`` alone, and a size-by-porosity map of one measured column is four-fifths blank — which reads as a tool that tried and failed rather than as a sweep nobody could afford. Every panel is drawn at blobiness 1.0, and a blank heatmap cell means one or both tools never reached the target — the CSV carries a `stop_reason` for each.
+Panels (a) and (b) are the GPU: scaling at matched accuracy, and the speedup against taufactor resolved by size and porosity. Panels (c) and (d) are the CPU. Panel (d) is bars rather than a second regime map because the two CPU-only tools were run at ``200^3`` alone, and a size-by-porosity map of one measured column is four-fifths blank — which reads as a tool that tried and failed rather than as a sweep nobody could afford. Every panel is drawn at blobiness 1.0. A hatched heatmap cell is one taufactor never reached, where its time is projected from the same per-porosity power law the scaling panels use; a cell stays blank only where `Tortuosity.jl` itself has no measurement, since a ratio between two estimates would report nothing. The CSV carries a `stop_reason` for each.
 
 In the scaling panels a solid segment joins measurements, and a dashed segment with a hollow marker means at least one porosity there was projected rather than measured; the warning under *Against taufactor on the CPU* lists every projected value and how far each one reaches. A series stops where a porosity ran out of memory instead, since no mean over the porosities that remain covers the same images: that is why the assembled operator ends at ``600^3`` on the GPU. The legend carries the exponent of a power law fitted to the measured points, which is the comparison the panel exists for. taufactor comes to ``N^{3.3}`` on the GPU and ``N^{4.6}`` on the CPU, against ``N^{2.5}`` and ``N^{3.1}`` for the matrix-free path. Three is linear in voxel count, so ours is close to a fixed iteration count per solve while taufactor's rises with the edge length — the same effect the preconditioner section measures directly.
 
@@ -162,42 +162,42 @@ Speedup of `Tortuosity.jl` (matrix-free operator with the two-level precondition
 
 | Porosity | ``N=200`` | ``N=400`` | ``N=600`` | ``N=800`` | ``N=1000`` |
 |---|---|---|---|---|---|
-| ε ≈ 0.20 | **38.9×** | **136×** | **155×** | **188×** | — |
-| ε ≈ 0.40 | **3.39×** | **17.8×** | **25.9×** | **3.81×** | **32.0×** |
-| ε ≈ 0.60 | **1.72×** | **8.19×** | **7.81×** | **20.7×** | **7.29×** |
-| ε ≈ 0.80 | **1.26×** | **4.51×** | **6.53×** | **4.61×** | **4.24×** |
-| ε ≈ 0.95 | 0.47× | **1.82×** | **3.11×** | **3.10×** | **1.40×** |
-| geometric mean | 2.67× | 11.0× | 14.5× | 11.6× | 6.09× |
+| ε ≈ 0.20 | **83.9×** | **145×** | **171×** | **194×** | — |
+| ε ≈ 0.40 | **5.39×** | **18.3×** | **25.9×** | **3.89×** | **33.4×** |
+| ε ≈ 0.60 | **5.10×** | **10.5×** | **8.05×** | **20.6×** | **8.22×** |
+| ε ≈ 0.80 | **2.20×** | **5.71×** | **6.57×** | **4.60×** | **4.58×** |
+| ε ≈ 0.95 | **1.66×** | **2.29×** | **3.06×** | **3.10×** | **1.51×** |
+| geometric mean | 6.09× | 13.0× | 14.8× | 11.7× | 6.60× |
 
-The dash at ``N = 1000``, ε ≈ 0.20 is not a missing measurement: taufactor gave up after 2349.2 s at 8.61e-3 relative error, while `Tortuosity.jl` reached the target in 72.0 s. Blank cells throughout this page mean one tool never got there, never that the run was not attempted.
+The dash at ``N = 1000``, ε ≈ 0.20 is not a missing measurement: taufactor gave up after 2349.2 s at 8.61e-3 relative error, while `Tortuosity.jl` reached the target in 31.8 s. Blank cells throughout this page mean one tool never got there, never that the run was not attempted.
 
-Pooling all three microstructures rather than one gives 70 paired cases at the 0.1% target and a **pooled geometric mean of 6.55×**, ranging from 0.39× to 188×:
+Pooling all three microstructures rather than one gives 70 paired cases at the 0.1% target and a **pooled geometric mean of 8.40×**, ranging from 1.34× to 194×:
 
 | | ``N=200`` | ``N=400`` | ``N=600`` | ``N=800`` | ``N=1000`` | row |
 |---|---|---|---|---|---|---|
-| ε ≈ 0.20 | 29.4× | 53.5× | 83.8× | 128× | 58.7× | **58.3×** |
-| ε ≈ 0.40 | 2.66× | 11.2× | 14.3× | 12.7× | 28.5× | **10.2×** |
-| ε ≈ 0.60 | 1.44× | 6.72× | 10.4× | 13.9× | 13.3× | **7.13×** |
-| ε ≈ 0.80 | 0.69× | 2.77× | 6.14× | 4.18× | 4.86× | **2.99×** |
-| ε ≈ 0.95 | 0.47× | 1.64× | 3.19× | 3.18× | 2.17× | **1.76×** |
-| column | **2.05×** | **7.12×** | **10.4×** | **10.6×** | **8.44×** | **6.55×** |
+| ε ≈ 0.20 | 45.9× | 73.5× | 89.5× | 105× | 62.9× | **70.5×** |
+| ε ≈ 0.40 | 6.06× | 14.9× | 15.1× | 13.1× | 29.4× | **13.2×** |
+| ε ≈ 0.60 | 3.11× | 8.06× | 10.5× | 13.8× | 14.8× | **8.83×** |
+| ε ≈ 0.80 | 1.80× | 3.53× | 6.05× | 4.17× | 5.25× | **3.85×** |
+| ε ≈ 0.95 | 1.60× | 2.09× | 3.16× | 3.19× | 2.34× | **2.40×** |
+| column | **4.78×** | **9.18×** | **10.6×** | **10.3×** | **9.11×** | **8.40×** |
 
 Two things in this table matter beyond the headline.
 
-**Porosity moves the result more than size does.** The margin is set by how much solid there is to exclude and falls monotonically with porosity at every size — from 58× near ε ≈ 0.2 to 1.8× at ε ≈ 0.95. At ``N = 600``, ε ≈ 0.19 taufactor needs its entire 20 000-sweep budget and 867.9 s to reach the target, against 189 preconditioned CG iterations and 5.6 s.
+**Porosity moves the result more than size does.** The margin is set by how much solid there is to exclude and falls monotonically with porosity at every size — from 70× near ε ≈ 0.2 to 2.4× at ε ≈ 0.95. At ``N = 600``, ε ≈ 0.19 taufactor needs its entire 20 000-sweep budget and 867.9 s to reach the target, against 189 preconditioned CG iterations and 5.1 s.
 
 **The size trend rises steeply and then plateaus; it does not keep widening.** The column means above mix a changing case set as taufactor drops out, so they overstate the trend. On a fixed set of 12 microstructure/porosity families that both tools solve at *every* size:
 
 | | ``N=200`` | ``N=400`` | ``N=600`` | ``N=800`` | ``N=1000`` |
 |---|---|---|---|---|---|
-| geometric mean | 1.11× | 4.57× | 8.18× | 7.52× | 8.44× |
-| worst case | 0.39× | 1.55× | 2.53× | 2.51× | 1.40× |
-| best case | 13.4× | 18.4× | 45.2× | 87.9× | 58.6× |
+| geometric mean | 2.79× | 5.92× | 8.16× | 7.30× | 9.11× |
+| worst case | 1.34× | 1.96× | 2.48× | 2.52× | 1.51× |
+| best case | 15.5× | 24.5× | 46.7× | 56.7× | 62.9× |
 
 That fixed set is a stricter subset than the pooled table, because a family has to pair at ``1000^3`` as well, which excludes the low-porosity families where the margin is largest. Both are honest; only this one supports a five-size scaling claim. The margin rises to about 8× by ``600^3`` and holds. Meanwhile the **spread keeps opening** while the mean stays flat, so the geometric mean alone hides the shape.
 
 !!! note "Restricting to cases both tools solve biases against us"
-    A speedup ratio needs both tools to have produced an answer, and the cases taufactor cannot finish are exactly the ones we win biggest. Four such cases exist at the 0.1% target and appear in no speedup figure: `n600_b050_p020` (taufactor exhausted its ladder at 868.3 s and 1.52e-3 error; ours 2.66 s), `n800_b050_p020` (2060.4 s, 1.75e-3; ours 9.41 s), `n1000_b050_p040` (timed out at 2351.8 s, 2.18e-3; ours 20.6 s) and `n1000_b100_p020` (2349.2 s, 8.61e-3; ours 72.0 s). As lower bounds those are 326×, 219×, 114× and 33×, and in each one taufactor never produced the answer at all.
+    A speedup ratio needs both tools to have produced an answer, and the cases taufactor cannot finish are exactly the ones we win biggest. Four such cases exist at the 0.1% target and appear in no speedup figure: `n600_b050_p020` (taufactor exhausted its ladder at 868.3 s and 1.52e-3 error; ours 2.51 s), `n800_b050_p020` (2060.4 s, 1.75e-3; ours 9.31 s), `n1000_b050_p040` (timed out at 2351.8 s, 2.18e-3; ours 19.9 s) and `n1000_b100_p020` (2349.2 s, 8.61e-3; ours 31.8 s). As lower bounds those are 345×, 221×, 118× and 74×, and in each one taufactor never produced the answer at all.
 
     There are no cases in the other direction: `Tortuosity.jl` reaches the 0.1% target on all 74 GPU cases (`stop_reason = target_reached` in every row of `results/timings/tortuosity-gpu-matrixfree.csv`).
 
@@ -207,15 +207,15 @@ Reporting a single accuracy target flatters whichever solver happens to suit it.
 
 | target | paired cases | pooled geometric mean | cases taufactor wins | where |
 |---|---|---|---|---|
-| 10% | 74 | 4.19× | 10 | all at ``N = 200`` |
-| 1% | 74 | 5.20× | 10 | all at ``N = 200`` |
-| 0.1% | 70 | 6.55× | 7 | all at ``N = 200`` |
+| 10% | 74 | 5.35× | 0 | — |
+| 1% | 74 | 6.45× | 0 | — |
+| 0.1% | 70 | 8.40× | 0 | — |
 
 (GPU, all five sizes, all three microstructures.) The case count drops to 70 at the tightest target because that is where taufactor's four failures land; those four are dropped from the mean rather than counted as wins.
 
-taufactor is faster **only** at ``N = 200``, on 10 of 74 paired cases at the loosest target and 7 of 70 at the tightest, always at ε ≥ 0.4. Its worst-case-for-us cell is `n200_b200_p095`, where 6 SOR sweeps and 0.381 s beat 59 CG iterations and 0.976 s — 0.39×.
+taufactor is no longer faster in any paired case, at any of the three targets. The narrowest cell is `n200_b200_p095`, where 6 SOR sweeps and 0.381 s now lose to 59 CG iterations and 0.284 s — 1.34×. Both iteration counts are unchanged from the earlier campaign; what moved was our fixed cost per solve.
 
-Both ends have a mechanism. taufactor's SOR starts from a linear concentration profile, which for an open medium is already close to the answer, so when little accuracy is demanded it has little left to do. `Tortuosity.jl` meanwhile pays a fixed setup cost — assembling the operator and building the coarse space — that is charged even to a solve which then runs for one iteration. At ``200^3`` that fixed cost is a large fraction of a sub-second solve. As the image grows, or the target tightens, the convergence rate of the method decides the outcome, which is where a Krylov method separates from a stationary one.
+The narrow margin at ``200^3`` has a mechanism. taufactor's SOR starts from a linear concentration profile, which for an open medium is already close to the answer, so when little accuracy is demanded it has little left to do. `Tortuosity.jl` meanwhile pays a fixed setup cost — assembling the operator and building the coarse space — that is charged even to a solve which then runs for one iteration. At ``200^3`` that fixed cost is a large fraction of a sub-second solve, though the steady-pipeline work has cut it far enough to turn those cells from losses into wins. As the image grows, or the target tightens, the convergence rate of the method decides the outcome, which is where a Krylov method separates from a stationary one.
 
 ![Accuracy vs solve time on the GPU](assets/benchmark_pareto.png)
 
@@ -243,21 +243,21 @@ Pooled over all three microstructures, 56 paired cases, geometric mean 10.3×, r
 !!! warning "The taufactor CPU dataset has two gaps, and the scaling panel fills them by projection"
     There is **no taufactor CPU data at ``1000^3``**, and none at ``800^3`` for ε ≈ 0.2. The ``800^3`` cases were excluded from the sweep that ran and the follow-up never happened — a sequencing gap, not a decision. Filling it was judged not worth the machine time: the worst ``600^3`` CPU case took 6.02 h and exhausted its ladder without reaching the target.
 
-    The tables above and the heatmaps report measurements only, so those cells stay blank. The scaling panels do not, because a mean over whichever porosities a tool happened to reach is a different quantity at every size, and biased in one direction: the porosity taufactor loses first is the densest, which is the one it is slowest on. Dropping it drew taufactor levelling off on the GPU and speeding up on the CPU, neither of which happens. Each missing cell is therefore projected from a power law fitted to that porosity's own measured sizes, and every point on those panels averages over the same five porosities.
+    The tables above report measurements only, so those cells stay blank. The heatmaps and the scaling panels do not, because a mean over whichever porosities a tool happened to reach is a different quantity at every size, and biased in one direction: the porosity taufactor loses first is the densest, which is the one it is slowest on. Dropping it drew taufactor levelling off on the GPU and speeding up on the CPU, neither of which happens. Each missing cell is therefore projected from a power law fitted to that porosity's own measured sizes, and every point on those panels averages over the same five porosities.
 
     A power law is the right form here — cost per unknown is fixed, and both the unknown count and the sweep count are powers of the edge length — and it fits taufactor tightly, at ``R^2`` from 0.95 to 0.998 per porosity. It is also what makes the per-cell noise tolerable: which rung of a coarse ladder first crosses the target is close to arbitrary, so individual cells are not monotonic in size even where the underlying cost is.
 
-    The projected values, at blobiness 1.0 and the 0.1% target: on the CPU ``1000^3`` comes to 3537 s at ε ≈ 0.4, 10658 s at 0.6, 3532 s at 0.8 and 1665 s at 0.95. **The two ε ≈ 0.2 projections are the weakest numbers in this document** — 27.7 h at ``800^3`` and 85.3 h at ``1000^3``, from three measured sizes and an exponent of 5.04, extrapolating two size steps rather than one. They dominate their geometric means. On the GPU only one cell is projected, ε ≈ 0.2 at ``1000^3``, at 5328 s; that case did run, reaching 0.86% error in 2349 s before it timed out, so the measurement bounds the projection from below and is consistent with it.
+    The projected values, at blobiness 1.0 and the 0.1% target: on the CPU ``1000^3`` comes to 3537 s at ε ≈ 0.4, 10658 s at 0.6, 3532 s at 0.8 and 1665 s at 0.95. **The two ε ≈ 0.2 projections are the weakest numbers in this document** — 27.7 h at ``800^3`` and 85.3 h at ``1000^3``, from three measured sizes and an exponent of 5.04, extrapolating two size steps rather than one. They dominate their geometric means. On the GPU only one cell is projected, ε ≈ 0.2 at ``1000^3``, at 5103 s; that case did run, reaching 0.86% error in 2349 s before it timed out, so the measurement bounds the projection from below and is consistent with it.
 
 ### Against our own CPU path
 
-On the GPU the solver is **6.33× faster than its own HostCG CPU path**, geometric mean over all 74 cases, ranging 1.51× to 9.94×:
+On the GPU the solver is **8.10× faster than its own HostCG CPU path**, geometric mean over all 74 cases, ranging 2.31× to 12.2×:
 
 | | ``N=200`` | ``N=400`` | ``N=600`` | ``N=800`` | ``N=1000`` |
 |---|---|---|---|---|---|
-| GPU over CPU | 3.00× | 6.17× | 8.02× | 8.59× | 8.09× |
+| GPU over CPU | 7.00× | 7.95× | 8.18× | 8.43× | 9.19× |
 
-The ratio rises with size and then holds near 8×, which is what a device with a fixed launch overhead and a large bandwidth advantage should do.
+The ratio rises with size and then holds between 8× and 9×, which is what a device with a fixed launch overhead and a large bandwidth advantage should do.
 
 ### Against the CPU-only tools
 
@@ -336,20 +336,20 @@ Peak device memory, blobiness 1.0, in GB. **The figure plots `results/memory/*.c
 | ``N`` | | ε ≈ 0.20 | 0.40 | 0.60 | 0.80 | 0.95 | taufactor |
 |---|---|---|---|---|---|---|---|
 | 200 | matrix-free, solve only | 0.081 | 0.128 | 0.177 | 0.225 | 0.260 | 0.227 |
-| | matrix-free, as shipped | 0.101 | 0.192 | 0.274 | 0.354 | 0.412 | |
-| | assembled, as shipped | 0.197 | 0.340 | 0.519 | 0.698 | 0.829 | |
+| | matrix-free, as shipped | 0.109 | 0.200 | 0.282 | 0.362 | 0.421 | |
+| | assembled, as shipped | 0.225 | 0.421 | 0.600 | 0.778 | 0.829 | |
 | 400 | matrix-free, solve only | 0.632 | 1.065 | 1.491 | 1.911 | 2.205 | 1.801 |
-| | matrix-free, as shipped | 0.867 | 1.570 | 2.262 | 2.945 | 3.422 | |
-| | assembled, as shipped | 1.285 | 2.780 | 4.268 | 5.746 | 6.788 | |
+| | matrix-free, as shipped | 0.867 | 1.570 | 2.263 | 2.946 | 3.424 | |
+| | assembled, as shipped | 1.285 | 2.781 | 4.269 | 5.747 | 6.789 | |
 | 600 | matrix-free, solve only | 2.152 | 3.632 | 5.023 | 6.403 | 7.440 | 6.068 |
-| | matrix-free, as shipped | 2.956 | 5.360 | 7.620 | 9.862 | 11.547 | |
-| | assembled, as shipped | 4.430 | 9.566 | 14.424 | 19.269 | 22.932 | |
+| | matrix-free, as shipped | 2.957 | 5.362 | 7.622 | 9.864 | 11.549 | |
+| | assembled, as shipped | 4.431 | 9.568 | 14.426 | 19.271 | 22.934 | |
 | 800 | matrix-free, solve only | 5.089 | 8.521 | 11.876 | 15.212 | 17.658 | 14.375 |
-| | matrix-free, as shipped | 6.988 | 12.562 | 18.013 | 23.432 | 27.407 | |
-| | assembled, as shipped | 10.499 | 22.424 | 43.852 | *oom* | *oom* | |
+| | matrix-free, as shipped | 6.989 | 12.564 | 18.015 | 23.436 | 27.411 | |
+| | assembled, as shipped | 10.500 | 22.426 | 43.855 | *oom* | *oom* | |
 | 1000 | matrix-free, solve only | 9.900 | 16.660 | 23.275 | 29.788 | 34.443 | 28.057 |
-| | matrix-free, as shipped | 13.584 | 24.565 | 35.312 | 45.892 | 49.653 | |
-| | assembled, as shipped | 20.421 | 48.506 | *oom* | *oom* | *oom* | |
+| | matrix-free, as shipped | 13.586 | 24.568 | 35.316 | 45.898 | 49.660 | |
+| | assembled, as shipped | 20.423 | 48.509 | *oom* | *oom* | *oom* | |
 
 **The measured matrix-free footprint is a two-term model, and it is exact for this dataset.** Fitted by least squares on the five ``800^3`` solve-only points: **32.02 bytes per pore node plus 4.00 bytes per grid voxel**. Extrapolated to ``1000^3`` it reproduces all five measured points to within 0.013%, and the worst residual anywhere at ``N \ge 400`` is 0.09%. The two terms are the mechanism written down: 4 bytes per *voxel* is the `Int32` index map over the grid, and 32 bytes per *pore node* is the Krylov workspace and preconditioner, which both operator forms share. The later direct-readout path adds at most 8 bytes per open inlet-face voxel, an ``O(N^2)`` term that these measurements predate and that remains negligible beside the ``O(N^3)`` solve storage. (``200^3`` sits about 5% off the model, which is allocation granularity at a footprint of a few hundred megabytes.)
 
@@ -359,7 +359,7 @@ Refinement adds a flat **20.0 bytes per pore node**, giving 52 B/node + 4 B/voxe
 
 | basis | geometric mean | range |
 |---|---|---|
-| as shipped (solve + refinement) | **1.84×** | 1.48× – 2.43× |
+| as shipped (solve + refinement) | **1.87×** | 1.48× – 2.43× |
 | solve only | **2.32×** | 1.73× – 3.18× |
 
 The two differ because refinement's 20 B/node is charged to *both* operators and is common to them, so including it pushes the ratio toward 1. Ratios are the robust quantity here: any workspace both forms share is conservative, and a common scale error cancels.
@@ -371,7 +371,7 @@ The two differ because refinement's 20 B/node is charged to *both* operators and
 
 **Against taufactor.** taufactor holds dense arrays over the whole grid, so its device footprint is flat in porosity: at ``1000^3`` all five porosities report the identical 28 056 869 888 bytes, and the per-voxel figure converges from 28.43 B/voxel at ``200^3`` to 28.06 at ``1000^3``. The comparison therefore turns entirely on our side of the ledger. As shipped, `Tortuosity.jl` uses less device memory at the **two lowest porosities and more at the three highest, at every size**. On the solve alone it is four of five at ``200^3`` and three of five from ``400^3`` up. The porosities where refinement costs the comparison are exactly the porosities where it buys nothing: the campaign's worst GPU error at ε ≈ 0.6 is 7.9e-4 and at ε ≈ 0.95 is 5.8e-4, both inside the 0.1% target with no refinement at all.
 
-**The ceiling.** The matrix-free operator completes every ``1000^3`` case on the 48 GB card, but not with much to spare: at ε ≈ 0.95 it peaks at 49.653 GB, which is 46.24 of the 47.268 GiB the runtime reports — 97.8% — and that is the case where the refinement guard fires. The assembled operator runs out above ε ≈ 0.8 at ``800^3`` and above ε ≈ 0.4 at ``1000^3``. Those `oom` rows are results, not gaps.
+**The ceiling.** The matrix-free operator completes every ``1000^3`` case on the 48 GB card, but not with much to spare: at ε ≈ 0.95 it peaks at 49.660 GB, which is 46.25 of the 47.268 GiB the runtime reports — 97.8% — and that is the case where the refinement guard fires. The assembled operator runs out above ε ≈ 0.8 at ``800^3`` and above ε ≈ 0.4 at ``1000^3``. Those `oom` rows are results, not gaps.
 
 ![Peak host memory on the CPU](assets/benchmark_memory_cpu.png)
 
@@ -408,7 +408,7 @@ Against the 250 GB this host holds, ``400^3`` fits everywhere, ``600^3`` fits up
 
 The tables above are measured with both enabled, because that is what `solve(sim)` selects for images this size. They contribute in quite different ways.
 
-**The operator buys memory, while CPU speed is architecture- and size-dependent.** Holding everything else fixed and switching only the operator, matrix-free is **1.14×** faster end to end on the GPU (geometric mean over 59 paired cases). On the Waterloo CPU the two HostCG paths are within 1.4% geometrically over 74 cases: assembled is 1.14× faster at ``200^3``, the paths are within 1% at ``400^3`` and ``600^3``, and matrix-free becomes 1.07× faster at ``800^3`` and 1.14× at ``1000^3``. The memory result is unambiguous: assembled uses **2.08×** as much host memory geometrically, ranging 1.48×–2.62×, and its size-wise ratio rises from 1.85× at ``200^3`` to 2.36× at ``1000^3``. The 20 cases where the assembled operator does not fit are on the GPU and remain unchanged.
+**The operator buys memory, while CPU speed is architecture- and size-dependent.** Holding everything else fixed and switching only the operator, matrix-free is **1.16×** faster end to end on the GPU (geometric mean over 59 paired cases). On the Waterloo CPU the two HostCG paths are within 1.4% geometrically over 74 cases: assembled is 1.14× faster at ``200^3``, the paths are within 1% at ``400^3`` and ``600^3``, and matrix-free becomes 1.07× faster at ``800^3`` and 1.14× at ``1000^3``. The memory result is unambiguous: assembled uses **2.08×** as much host memory geometrically, ranging 1.48×–2.62×, and its size-wise ratio rises from 1.85× at ``200^3`` to 2.36× at ``1000^3``. The 20 cases where the assembled operator does not fit are on the GPU and remain unchanged.
 
 **The preconditioner buys iterations.** Measured directly at a fixed relative residual of 1e-6, on the CPU in `Float64`, matrix-free, blobiness 1.0, over the cached campaign images (`results/iteration-counts-2026-08-21.log`). Iteration counts are deterministic given the image and the code, so this needs no quiet machine and reproduces exactly.
 
@@ -449,7 +449,7 @@ The honest headline is therefore not a flat count but a widening benefit — geo
 
 ![Tortuosity and solver ranking across the three microstructures](assets/benchmark_blobiness.png)
 
-The left panel establishes that the three blobiness values really are different problems: at ``N = 1000``, low porosity, the coarse and fine structures differ in ``\tau`` by a factor that grows as the medium closes up. The remaining panels ask whether the ranking between solvers survives that. It does — the margin against taufactor is smaller on the finest structure at every porosity (pooled geometric means at the 0.1% target: 7.23× at blobiness 0.5, 7.95× at 1.0, 5.00× at 2.0) but never changes sign except in the ``200^3`` cells already noted.
+The left panel establishes that the three blobiness values really are different problems: at ``N = 1000``, low porosity, the coarse and fine structures differ in ``\tau`` by a factor that grows as the medium closes up. The remaining panels ask whether the ranking between solvers survives that. It does — the margin against taufactor is smaller on the finest structure at every porosity (pooled geometric means at the 0.1% target: 9.21× at blobiness 0.5, 9.97× at 1.0, 6.58× at 2.0) and never changes sign.
 
 ### Cross-code agreement
 
@@ -459,7 +459,7 @@ The reference is our own code, which is the weakest link in the accuracy chain, 
 
 **The GPU result is reproducible run to run, but not guaranteed bit-for-bit.** The two-level preconditioner used to accumulate its restriction with atomic floating-point additions, whose order is not fixed between launches. A float sum is not associative, so the same image at the same tolerance returned a slightly different ``\tau`` on every run — by roughly the size of the accuracy target on the most ill-conditioned images. That has been fixed. `_restrict!` now **gathers over a fixed coarse-to-fine adjacency** built once at setup (`Aggregation` in `src/preconditioner.jl`), which needs no atomic and fixes the summation order, paying for the ordering once instead of on every CG iteration.
 
-The campaign data shows the fix took: across `results/timings/tortuosity-gpu-matrixfree.csv`, **all 621 of the 621 rows measured with three repeats record `tau_spread` of exactly 0** — three GPU runs of the same configuration returning the identical ``\tau`` to every recorded digit. The same holds for all 496 three-repeat rows of the assembled GPU file. (The remaining rows carry `repeats = 1` because the first repeat exceeded the 60 s threshold, and a NaN spread rather than a zero, which is the honest record of not having looked.)
+The campaign data shows the fix took: across `results/timings/tortuosity-gpu-matrixfree.csv`, **all 634 of the 634 rows measured with three repeats record `tau_spread` of exactly 0** — three GPU runs of the same configuration returning the identical ``\tau`` to every recorded digit. The same holds for all 507 three-repeat rows of the assembled GPU file. (The remaining rows carry `repeats = 1` because the first repeat exceeded the 60 s threshold, and a NaN spread rather than a zero, which is the honest record of not having looked.)
 
 What remains is narrower: **atomic additions are still used to assemble the Galerkin coarse operator** (`_coarse_stencil_kernel!`, which forms ``W^\top A W`` in one pass over the stored entries). That runs once per solve at setup, not once per iteration, but it means bit-for-bit equality across runs is still not guaranteed. If you need an exactly reproducible number, use the CPU `Float64` path. It shows zero spread throughout.
 
