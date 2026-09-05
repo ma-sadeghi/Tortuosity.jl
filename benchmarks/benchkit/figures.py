@@ -243,23 +243,44 @@ def validate_target_status(frame, target):
     raise ValueError(f"target status disagrees with rel_error for: {cases}")
 
 
+# Columns a case is identified by that are floats rather than labels. They reach
+# a figure as a configured value and reach the frame through a CSV, so the two
+# need not agree bit for bit and an exact comparison would silently select
+# nothing.
+APPROX_COLUMNS = ("porosity_target", "blobiness")
+
+
+def select(frame, **keys):
+    """Rows of `frame` where every `column=value` holds.
+
+    The one place a case is picked out of a result frame, so that every figure
+    matches a size, a porosity and a structure the same way. `APPROX_COLUMNS` are
+    compared with `np.isclose` and everything else exactly.
+    """
+    mask = np.ones(len(frame), dtype=bool)
+    for column, value in keys.items():
+        if column in APPROX_COLUMNS:
+            mask &= np.isclose(frame[column], value)
+        else:
+            mask &= (frame[column] == value).to_numpy()
+    return frame[mask]
+
+
 def target_times(data, target, *, device, series, sizes, porosities, blobiness):
     """`{(size, porosity): seconds}` for one series on one device, at one blobiness."""
-    sub = data[(data["device"] == device) & (data["series"] == series)
-               & np.isclose(data["blobiness"], blobiness)]
+    sub = select(data, device=device, series=series, blobiness=blobiness)
     out = {}
     for size in sizes:
         for por in porosities:
-            cell = sub[(sub["size"] == size) & np.isclose(sub["porosity_target"], por)]
+            cell = select(sub, size=size, porosity_target=por)
             out[(size, por)] = time_to_target(cell, target) if len(cell) else np.nan
     return out
 
 
 def memory_gib(memory, *, device, series, size, porosity, blobiness, column):
     """Peak memory one series held solving one case, in GiB."""
-    sub = memory[(memory["device"] == device) & (memory["series"] == series)
-                 & (memory["size"] == size) & np.isclose(memory["porosity_target"], porosity)
-                 & np.isclose(memory["blobiness"], blobiness) & (memory["status"] == "ok")]
+    sub = select(memory, device=device, series=series, size=size,
+                 porosity_target=porosity, blobiness=blobiness, status="ok")
     if sub.empty:
         return np.nan
     values = pd.to_numeric(sub[column], errors="coerce").dropna()
